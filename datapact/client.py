@@ -9,17 +9,33 @@ from loguru import logger
 
 class DataPactClient:
     """
-    A client to programmatically manage and run DataPact validation workflows on Databricks.
+    A client to programmatically manage and run DataPact validation workflows.
+
+    This class is the core of the CLI's functionality. It interacts directly
+    with the Databricks SDK to manage workspace assets (notebooks), ensure
+    compute resources (SQL Warehouses) are available, and dynamically construct
+    and execute the multi-task validation job based on the user's configuration.
     """
 
     def __init__(self, profile: str = "DEFAULT"):
+        """Initializes the client with Databricks workspace credentials.
+
+        Args:
+            profile: The Databricks CLI profile to use for authentication.
+        """
         logger.info(f"Initializing WorkspaceClient with profile '{profile}'...")
         self.w = WorkspaceClient(profile=profile)
         self.root_path = f"/Shared/datapact/{self.w.currentUser.me().workspace_user_name}"
         logger.info(f"Using workspace path: {self.root_path}")
 
     def _upload_notebooks(self) -> None:
-        """Uploads the validation and aggregation notebooks to the Databricks workspace."""
+        """
+        Uploads the validation and aggregation notebooks to the Databricks workspace.
+
+        This method ensures that the latest versions of the task notebooks from the
+        local package are present in the user's Databricks workspace before a
+        job run is triggered.
+        """
         logger.info(f"Uploading notebooks to {self.root_path}...")
         templates_dir = Path(__file__).parent / "templates"
         self.w.workspace.mkdirs(self.root_path)
@@ -34,7 +50,12 @@ class DataPactClient:
 
     def _ensure_sql_warehouse(self, name: str, auto_create: bool) -> compute.EndpointInfo:
         """
-        Ensures a Serverless SQL Warehouse with the given name exists and is running.
+        Ensures a Serverless SQL Warehouse exists and is running.
+
+        This method is idempotent. It first checks for an existing warehouse. If
+        not found, it creates one (if auto_create is True). If found but not
+        running, it starts it. This makes the workflow robust to different
+        workspace states.
 
         Args:
             name: The name of the SQL Warehouse.
@@ -42,10 +63,9 @@ class DataPactClient:
 
         Returns:
             The EndpointInfo object for the running warehouse.
-        
+
         Raises:
             ValueError: If the warehouse doesn't exist and auto_create is False.
-            TimeoutError: If the warehouse fails to start in time.
         """
         try:
             logger.info(f"Looking for SQL Warehouse '{name}'...")
@@ -81,6 +101,19 @@ class DataPactClient:
     ) -> None:
         """
         Constructs, deploys, and runs the DataPact validation workflow.
+
+        This is the main orchestration method. It calls helper methods to set up
+        the environment, then dynamically builds a Databricks Job definition
+        in memory from the user's config. It creates one parallel notebook task
+        for each validation and a final aggregation task that depends on all
+        others. It then submits and monitors the job run.
+
+        Args:
+            config: The parsed validation configuration dictionary.
+            job_name: The name for the Databricks job.
+            warehouse_name: The name of the Serverless SQL Warehouse to use.
+            create_warehouse: Whether to create the warehouse if it's not found.
+            results_table: Optional FQN of a Delta table to store results.
         """
         self._upload_notebooks()
         warehouse = self._ensure_sql_warehouse(warehouse_name, create_warehouse)
