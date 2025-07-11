@@ -4,28 +4,28 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "datapact"
-version = "0.0.3"
+version = "0.0.4"
 description = "DataPact: An enterprise grade, programmatic data validation accelerator for Databricks."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 authors = [
   { name = "Skyler Myers", email = "skyler@entrada.ai" },
 ]
+
 classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
     "Development Status :: 5 - Production/Stable",
 ]
 dependencies = [
-    "databricks-sdk>=0.18.0",
+    "databricks-sdk>=0.58.0",
     "pyyaml",
     "loguru",
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/Entrada-AI/datapact" # Example URL
-"Bug Tracker" = "https://github.com/Entrada-AI/datapact/issues" # Example URL
+"Homepage" = "https://www.entrada.ai/datapact"
+"Documentation" = "https://docs.entrada.ai/datapact"
 
 [project.scripts]
 datapact = "datapact.main:main"
