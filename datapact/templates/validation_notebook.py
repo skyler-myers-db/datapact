@@ -1,4 +1,23 @@
-# datapact/templates/validation_notebook.py
+"""
+DataPact Validation Task Notebook.
+
+IMPORTANT: This script is not intended to be run locally. It is uploaded to
+Databricks and executed as a notebook task on Serverless Compute by a
+Databricks Job.
+
+This script represents the "brain" for a single table validation. It is
+parameterized via job widgets (`config_json`, `databricks_host`, etc.).
+
+Its responsibilities are:
+1.  Parse the incoming JSON configuration for a specific table validation.
+2.  Connect to the specified Serverless SQL Warehouse using the Databricks SQL Connector.
+3.  Execute the full suite of validation logic (count, aggregates, hash, nulls)
+    by dynamically building and sending SQL queries to the warehouse.
+4.  Log the results of each check.
+5.  Package a final JSON summary of all metrics.
+6.  Pass this summary to the downstream aggregation task using `dbutils.jobs.taskValues.set`.
+"""
+
 import json
 import os
 from typing import Any, Dict, List, Tuple, Optional
