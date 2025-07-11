@@ -1,24 +1,69 @@
-# datapact/main.py
 import argparse
 import yaml
+from typing import Dict, Any
 from .client import DataPactClient
+from loguru import logger
 
-def main():
-    parser = argparse.ArgumentParser(description="DataPact: The Databricks Data Validation Accelerator")
-    parser.add_argument("command", choices=["run"])
-    parser.add_argument("--config", required=True, help="Path to the validation_config.yml file.")
-    parser.add_argument("--job-name", default="datapact-validation-run", help="Name of the Databricks job to create.")
-    parser.add_argument("--warehouse", required=True, help="Name of the Serverless SQL Warehouse to use.")
-    parser.add_argument("--profile", default="DEFAULT", help="Databricks CLI profile to use for authentication.")
+def main() -> None:
+    """The main entry point for the DataPact CLI."""
+    parser = argparse.ArgumentParser(
+        description="DataPact: The enterprise grade data validation accelerator for Databricks.",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    parser.add_argument(
+        "command",
+        choices=["run"],
+        help="The command to execute."
+    )
+    parser.add_argument(
+        "--config",
+        required=True,
+        help="Path to the validation_config.yml file."
+    )
+    parser.add_argument(
+        "--job-name",
+        default="datapact-validation-run",
+        help="Name of the Databricks job to create or update."
+    )
+    parser.add_argument(
+        "--warehouse",
+        required=True,
+        help="Name of the Serverless SQL Warehouse to use for validation queries."
+    )
+    parser.add_argument(
+        "--create-warehouse",
+        action="store_true",
+        help="If specified, creates the SQL warehouse if it does not exist."
+    )
+    parser.add_argument(
+        "--results-table",
+        help="Optional: A 3-level (catalog.schema.table) Delta table name to store results."
+    )
+    parser.add_argument(
+        "--profile",
+        default="DEFAULT",
+        help="Databricks CLI profile to use for authentication."
+    )
     
     args = parser.parse_args()
 
     if args.command == "run":
+        logger.info(f"Loading configuration from {args.config}...")
         with open(args.config, 'r') as f:
-            config = yaml.safe_load(f)
+            config: Dict[str, Any] = yaml.safe_load(f)
         
-        client = DataPactClient(profile=args.profile)
-        client.run_validation(config, args.job_name, args.warehouse)
+        try:
+            client = DataPactClient(profile=args.profile)
+            client.run_validation(
+                config=config,
+                job_name=args.job_name,
+                warehouse_name=args.warehouse,
+                create_warehouse=args.create_warehouse,
+                results_table=args.results_table,
+            )
+        except Exception as e:
+            logger.critical(f"An error occurred during the DataPact run: {e}")
+            exit(1)
 
 if __name__ == "__main__":
     main()
