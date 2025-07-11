@@ -1,7 +1,6 @@
 import json
 import time
 from pathlib import Path
-from typing import Dict, Any, Optional
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.errors import NotFound
@@ -14,12 +13,6 @@ class DataPactClient:
     """
 
     def __init__(self, profile: str = "DEFAULT"):
-        """
-        Initializes the client with Databricks workspace credentials.
-
-        Args:
-            profile: The Databricks CLI profile to use for authentication.
-        """
         logger.info(f"Initializing WorkspaceClient with profile '{profile}'...")
         self.w = WorkspaceClient(profile=profile)
         self.root_path = f"/Shared/datapact/{self.w.currentUser.me().workspace_user_name}"
@@ -80,31 +73,23 @@ class DataPactClient:
 
     def run_validation(
         self,
-        config: Dict[str, Any],
+        config: dict[str, any],
         job_name: str,
         warehouse_name: str,
         create_warehouse: bool,
-        results_table: Optional[str] = None,
+        results_table: str | None = None,
     ) -> None:
         """
         Constructs, deploys, and runs the DataPact validation workflow.
-
-        Args:
-            config: The parsed validation configuration dictionary.
-            job_name: The name for the Databricks job.
-            warehouse_name: The name of the Serverless SQL Warehouse to use.
-            create_warehouse: Whether to create the warehouse if it's not found.
-            results_table: Optional FQN of a Delta table to store results.
         """
         self._upload_notebooks()
         warehouse = self._ensure_sql_warehouse(warehouse_name, create_warehouse)
 
-        validation_tasks = []
+        validation_tasks: list[jobs.Task] = []
         task_keys = [v_conf["task_key"] for v_conf in config["validations"]]
 
-        # The DBR version for Serverless Notebooks
         dbr_version = self.w.clusters.select_spark_version(long_term_support=True, serverless=True)
-        logger.info(f"Using Serverless DBR version: {dbr_version}")
+        logger.info(f"Using Serverless DBR version for orchestration: {dbr_version}")
 
         for v_conf in config["validations"]:
             validation_tasks.append(jobs.Task(
@@ -117,7 +102,6 @@ class DataPactClient:
                         "sql_warehouse_http_path": warehouse.odbc_params.path,
                     },
                 ),
-                # This task runs on Serverless compute
             ))
 
         aggregation_task = jobs.Task(
@@ -128,7 +112,6 @@ class DataPactClient:
                 base_parameters={
                     "upstream_task_keys": json.dumps(task_keys),
                     "results_table": results_table or "",
-                    # Pass the run_id for reporting
                     "run_id": "{{job.run_id}}",
                 },
             ),
@@ -137,16 +120,14 @@ class DataPactClient:
         job_settings = jobs.JobSettings(
             name=job_name,
             tasks=validation_tasks + [aggregation_task],
-            # Use a single DBR version for all tasks
             spark_version=dbr_version,
-            # This allows the job to run without a cluster if all tasks are serverless
             run_as=jobs.JobRunAs(user_name=self.w.currentUser.me().user_name),
         )
 
         try:
             existing_job = self.w.jobs.get_by_name(job_name)
             logger.info(f"Updating existing job '{job_name}' (ID: {existing_job.job_id})...")
-            self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings)
+            self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings.as_dict())
             job_id = existing_job.job_id
         except NotFound:
             logger.info(f"Creating new job '{job_name}'...")
@@ -160,10 +141,11 @@ class DataPactClient:
         while not run.is_terminal:
             time.sleep(20)
             run = self.w.jobs.get_run(run.run_id)
-            logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {len(run.tasks)}/{len(task_keys)+1}")
+            finished_tasks = sum(1 for t in run.tasks if t.state.life_cycle_state == jobs.RunLifeCycleState.TERMINATED)
+            logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{len(task_keys)+1}")
 
         final_state = run.state.result_state
         logger.info(f"Run finished with state: {final_state}")
         if final_state != jobs.RunResultState.SUCCESS:
             raise Exception(f"DataPact job failed with state {final_state}. View details at {run.run_page_url}")
-        logger.info("DataPact job completed successfully.")
+        logger.success("DataPact job completed successfully.")
