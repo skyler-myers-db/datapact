@@ -194,14 +194,20 @@ try:
         logger.info("Starting Null Count Validation...")
         # This implementation compares null counts on a per column basis
         for col in null_validation_columns:
-            source_null_q = f"SELECT COUNT(1) as cnt FROM {source_fqn} WHERE `{col}` IS NULL"
-            target_null_q = f"SELECT COUNT(1) as cnt FROM {target_fqn} WHERE `{col}` IS NULL"
+            source_null_q: str = f"SELECT COUNT(1) as cnt FROM {source_fqn} WHERE `{col}` IS NULL"
+            target_null_q: str = f"SELECT COUNT(1) as cnt FROM {target_fqn} WHERE `{col}` IS NULL"
             
-            source_nulls = execute_query(source_null_q)[0]['cnt']
-            target_nulls = execute_query(target_null_q)[0]['cnt']
+            source_nulls: int = execute_query(source_null_q)[0]['cnt']
+            target_nulls: int = execute_query(target_null_q)[0]['cnt']
 
-            null_rel_diff = 0 if source_nulls == 0 else abs(target_nulls - source_nulls) / source_nulls
-            null_passed = null_rel_diff <= null_validation_threshold
+            if source_nulls == 0:
+                # If source has no nulls, the relative difference is effectively infinite
+                # if the target has any nulls. It only passes if the target also has zero.
+                null_rel_diff: float = 0.0 if target_nulls == 0 else float('inf')
+            else:
+                null_rel_diff: float = abs(target_nulls - source_nulls) / float(source_nulls)
+
+            null_passed: bool = null_rel_diff <= null_validation_threshold
 
             metric_key = f"null_count_{col}"
             metrics[f"{metric_key}_source_nulls"] = source_nulls
@@ -210,7 +216,7 @@ try:
             metrics[f"{metric_key}_validation_passed"] = null_passed
 
             if not null_passed:
-                validation_passed = False
+                validation_passed: bool = False
                 logger.error(f"❌ NULL COUNT FAILED ({col}): Diff {null_rel_diff*100:.2f}% > Threshold {null_validation_threshold*100:.2f}%")
             else:
                 logger.success(f"✅ Null Count Validation Passed for {col}.")
