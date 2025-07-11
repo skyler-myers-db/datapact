@@ -1,3 +1,16 @@
+"""
+The main entry point for the DataPact Command-Line Interface (CLI).
+
+This module is responsible for defining and parsing all command-line arguments
+that the user provides. It uses Python's `argparse` library to create a
+user-friendly interface for running validations.
+
+Its primary role is to act as the bridge between the user's terminal and the
+core application logic. It parses the user's inputs (like the config file path
+and warehouse name), instantiates the `DataPactClient`, and then invokes the
+main `run_validation` method to start the process.
+"""
+
 import argparse
 import yaml
 from typing import Dict, Any
