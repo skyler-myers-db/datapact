@@ -1,3 +1,20 @@
+"""
+The core client for interacting with the Databricks API.
+
+This module contains the `DataPactClient` class, which encapsulates all the
+programmatic logic for managing and executing DataPact workflows. It is the
+engine room of the accelerator, responsible for:
+
+1.  Authenticating with the Databricks workspace using the SDK.
+2.  Uploading the necessary task notebooks to a user-specific path.
+3.  Programmatically ensuring the specified Serverless SQL Warehouse exists and is running.
+4.  Dynamically constructing a multi-task Databricks Job definition in memory based
+    on the user's YAML configuration.
+5.  Submitting the job to the Databricks API, either creating a new job or updating
+    an existing one (idempotency).
+6.  Monitoring the job run until it reaches a terminal state and reporting the outcome.
+"""
+
 import json
 import time
 from pathlib import Path
