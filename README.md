@@ -1,8 +1,8 @@
 # DataPact 🚀
 
-**An enterprise-grade, programmatic data validation accelerator for Databricks.**
+**An enterprise grade, programmatic data validation accelerator for Databricks.**
 
-DataPact ensures the integrity of your data by creating a "pact" between your source and target tables. It programmatically generates, runs, and reports on a suite of validation tests directly within your Databracks workspace, enabling reliable and scalable data quality assurance.
+DataPact ensures the integrity of your data by creating a "pact" between your source and target tables. It programmatically generates, runs, and reports on a suite of validation tests directly within your Databricks workspace, enabling reliable and scalable data quality assurance.
 
 ---
 
@@ -30,7 +30,7 @@ DataPact operates on a simple but powerful three-layer model:
 1.  **Databricks Workspace:** A Databricks workspace with Unity Catalog enabled.
 2.  **Federated Source:** Your source database (e.g., PostgreSQL, Snowflake, or another Databricks workspace) must be registered as a Federated Catalog in Unity Catalog.
 3.  **Permissions:** You need permissions in Databricks to create and run jobs, and to create and use a SQL Warehouse.
-4.  **Python >= 3.8:** A local Python environment.
+4.  **Python >= 3.10:** A local Python environment.
 5.  **Databricks CLI:** Authenticate your local machine with your workspace:
     ```bash
     pip install databricks-cli
