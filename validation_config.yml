@@ -1,0 +1,38 @@
+# DataPact Validation Sample Configuration
+# Each item under 'validations' will become a parallel task in the Databricks Workflow.
+
+validations:
+  - task_key: "validate_dim_users"
+    source_catalog: "prod_redshift"
+    source_schema: "public"
+    source_table: "dim_users"
+    target_catalog: "main"
+    target_schema: "migrated"
+    target_table: "dim_users"
+    primary_keys: ["user_id"]
+    count_tolerance: 0.0 # Exact match required
+    pk_row_hash_check: true
+    pk_hash_threshold: 0.01 # Tolerate 1% row mismatches based on PK join
+    # hash_columns: ["email", "last_name", "signup_date"] # Optional: hash only specific columns
+    null_validation_threshold: 0.01
+    null_validation_columns: ["first_name", "last_name"]
+    agg_validations:
+      - column: "age"
+        validations:
+          - { agg: "avg", tolerance: 0.05 }
+          - { agg: "sum", tolerance: 0.02 }
+      - column: "monthly_spend"
+        validations:
+          - { agg: "sum", tolerance: 0.01 }
+
+  - task_key: "validate_fact_transactions"
+    source_catalog: "prod_redshift"
+    source_schema: "public"
+    source_table: "fact_transactions"
+    target_catalog: "main"
+    target_schema: "migrated"
+    target_table: "fact_transactions"
+    primary_keys: ["transaction_id"]
+    count_tolerance: 0.001 # Tolerate 0.1% count difference
+    pk_row_hash_check: true
+    hash_columns: ["transaction_id", "user_id", "amount", "product_id"] # Hash only critical columns for performance
