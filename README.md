@@ -45,7 +45,7 @@ See DataPact in action with a realistic, high volume dataset without using your 
 Clone this repository and install the package in editable mode.
 
 ```bash
-git clone <your-repo-url>
+git clone git@github.com:skyler-myers-db/datapact.git
 cd datapact
 pip install -e .
 ```
