@@ -1,3 +1,16 @@
+"""
+A local utility script to set up the DataPact demo environment.
+
+This script is designed to be run from a user's local machine. It provides a
+one-step command to create all the necessary Databricks assets for a compelling
+and realistic demonstration of the DataPact tool.
+
+It connects to the user's Databricks workspace, reads a pure SQL file
+(`demo/setup.sql`), and executes it against a specified Serverless SQL
+Warehouse. This creates the `datapact_demo_catalog` with high-volume source
+and target tables containing intentional discrepancies that DataPact can find.
+"""
+
 import argparse
 import time
 from pathlib import Path
