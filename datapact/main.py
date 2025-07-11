@@ -5,7 +5,14 @@ from .client import DataPactClient
 from loguru import logger
 
 def main() -> None:
-    """The main entry point for the DataPact CLI."""
+    """
+    The main entry point for the DataPact Command-Line Interface (CLI).
+
+    This function is responsible for parsing command-line arguments, loading the
+    validation configuration, initializing the DataPactClient, and triggering
+    the validation run. It acts as the primary user-facing interface for
+    running DataPact from an external environment like a terminal or CI/CD pipeline.
+    """
     parser = argparse.ArgumentParser(
         description="DataPact: The enterprise grade data validation accelerator for Databricks.",
         formatter_class=argparse.RawTextHelpFormatter
