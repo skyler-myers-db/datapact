@@ -1,30 +1,34 @@
-# validation_config.yml
+# my_validations.yml
+# A sample configuration for validating your own data with DataPact.
 
 validations:
-  - task_key: "validate_dim_users"
-    source_catalog: "source_postgres_prod"
-    source_schema: "public"
-    source_table: "users"
+  # This task validates a dimension table.
+  - task_key: "validate_dim_customers"
+    source_catalog: "source_db_catalog"
+    source_schema: "sales"
+    source_table: "customers"
     target_catalog: "main"
-    target_schema: "migrated"
-    target_table: "dim_users"
-    primary_keys: ["user_id"]
+    target_schema: "gold_layer"
+    target_table: "dim_customers"
+    primary_keys: ["customer_id"]
     count_tolerance: 0.0
     pk_row_hash_check: true
-    pk_hash_threshold: 0.01
+    pk_hash_threshold: 0.01 # Allow for 1% of rows to have hash mismatches.
     agg_validations:
-      - column: "user_age"
+      - column: "lifetime_value"
         validations:
-          - { agg: "avg", tolerance: 0.05 }
+          - { agg: "sum", tolerance: 0.005 } # Tolerate a 0.5% difference in total lifetime value.
 
-  - task_key: "validate_fact_transactions"
-    source_catalog: "source_postgres_prod"
-    source_schema: "public"
-    source_table: "transactions"
+  # This task validates a large fact table where only critical columns are hashed.
+  - task_key: "validate_fact_orders"
+    source_catalog: "source_db_catalog"
+    source_schema: "sales"
+    source_table: "orders"
     target_catalog: "main"
-    target_schema: "migrated"
-    target_table: "fact_transactions"
-    primary_keys: ["transaction_id"]
-    count_tolerance: 0.001
+    target_schema: "gold_layer"
+    target_table: "fact_orders"
+    primary_keys: ["order_id"]
+    count_tolerance: 0.001 # Tolerate a 0.1% difference in row count.
     pk_row_hash_check: true
-    hash_columns: ["transaction_id", "user_id", "amount"]
+    pk_hash_threshold: 0.0
+    hash_columns: ["order_id", "customer_id", "order_date", "total_amount"] # Hash only key columns for performance.
