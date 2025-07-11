@@ -6,8 +6,14 @@ from loguru import logger
 
 def run_demo_setup():
     """
-    Sets up the DataPact demo environment in Databricks by executing a pure SQL script
-    against a Serverless SQL Warehouse.
+    Sets up the DataPact demo environment in a Databricks workspace.
+
+    This script acts as a local client to prepare the necessary resources for
+    running the DataPact demo. It reads a pure SQL file (`setup.sql`) and
+    executes it statement-by-statement against a specified Serverless SQL
+    Warehouse. This approach ensures the demo setup is 100% SQL-based and
+    does not require any Spark or notebook execution for the setup itself,
+    perfectly aligning with the DataPact architectural philosophy.
     """
     parser = argparse.ArgumentParser(description="Set up the DataPact demo environment.")
     parser.add_argument("--warehouse", required=True, help="Name of the Serverless SQL Warehouse to use.")
