@@ -1,0 +1,27 @@
+# DataPact Demo Validation Configuration
+# This file validates the tables created by the `demo/setup.py` script.
+
+validations:
+  - task_key: "validate_demo_users"
+    source_catalog: "datapact_demo_catalog"
+    source_schema: "source_data"
+    source_table: "users"
+    target_catalog: "datapact_demo_catalog"
+    target_schema: "target_data"
+    target_table: "users"
+    primary_keys: ["user_id"]
+    count_tolerance: 0.1 # Expecting this to fail (4 vs 3)
+    pk_row_hash_check: true
+    pk_hash_threshold: 0.1 # Expecting this to fail (bob's email is different)
+
+  - task_key: "validate_demo_transactions"
+    source_catalog: "datapact_demo_catalog"
+    source_schema: "source_data"
+    source_table: "transactions"
+    target_catalog: "datapact_demo_catalog"
+    target_schema: "target_data"
+    target_table: "transactions"
+    primary_keys: ["transaction_id"]
+    count_tolerance: 0.0 # Expecting this to pass
+    pk_row_hash_check: true
+    pk_hash_threshold: 0.0 # Expecting this to pass
