@@ -87,7 +87,7 @@ try:
         validation_passed = False
         logger.error(f"❌ COUNT FAILED: Diff {rel_diff*100:.2f}% > Tolerance {count_tolerance*100:.2f}%")
     else:
-        logger.info("✅ Count Validation Passed.")
+        logger.success("✅ Count Validation Passed.")
 
     # === Aggregated Validations ===
     if agg_validations:
@@ -119,7 +119,7 @@ try:
                     validation_passed = False
                     logger.error(f"❌ AGG FAILED ({col}/{agg_func}): Diff {rel_diff_agg*100:.2f}% > Tolerance {tolerance*100:.2f}%")
                 else:
-                    logger.info(f"✅ Agg Validation Passed for {col}/{agg_func}.")
+                    logger.success(f"✅ Agg Validation Passed for {col}/{agg_func}.")
 
     # === Per-Row Hash Comparison (Primary Key based) ===
     if pk_row_hash_check and primary_keys:
@@ -168,12 +168,12 @@ try:
                 validation_passed = False
                 logger.error(f"❌ HASH FAILED: Mismatch ratio {ratio*100:.2f}% > Threshold {threshold*100:.2f}%")
             else:
-                logger.info("✅ Per-Row Hash Validation Passed.")
+                logger.success("✅ Per-Row Hash Validation Passed.")
 
     # === Null Count Validation ===
     if null_validation_threshold is not None and null_validation_columns:
         logger.info("Starting Null Count Validation...")
-        # This implementation compares null counts on a per-column basis
+        # This implementation compares null counts on a per column basis
         for col in null_validation_columns:
             source_null_q = f"SELECT COUNT(1) as cnt FROM {source_fqn} WHERE `{col}` IS NULL"
             target_null_q = f"SELECT COUNT(1) as cnt FROM {target_fqn} WHERE `{col}` IS NULL"
@@ -194,7 +194,7 @@ try:
                 validation_passed = False
                 logger.error(f"❌ NULL COUNT FAILED ({col}): Diff {null_rel_diff*100:.2f}% > Threshold {null_validation_threshold*100:.2f}%")
             else:
-                logger.info(f"✅ Null Count Validation Passed for {col}.")
+                logger.success(f"✅ Null Count Validation Passed for {col}.")
 
 except Exception as e:
     logger.critical(f"A critical error occurred during validation for task {task_key}: {e}")
