@@ -1,7 +1,7 @@
 import json
 from typing import List, Dict, Any
 from databricks.sdk.runtime import *
-from pyspark.sql import SparkSession
+from pyspark.sql import DataFrame
 from pyspark.sql.types import StructType, StructField, StringType, BooleanType, DoubleType, LongType, MapType
 from loguru import logger
 
@@ -50,10 +50,9 @@ logger.info("="*60)
 if results_table:
     logger.info(f"Writing {len(all_results)} results to Delta table: {results_table}")
     try:
-        spark = SparkSession.builder.appName("DataPact-Aggregation").getOrCreate()
-        
+
         # Flatten the metrics for easier querying
-        flat_results = []
+        flat_results: list = []
         for result in all_results:
             base_info = {
                 "run_id": run_id,
@@ -65,7 +64,7 @@ if results_table:
             base_info.update(result)
             flat_results.append(base_info)
 
-        results_df = spark.createDataFrame(flat_results)
+        results_df: DataFrame = spark.createDataFrame(flat_results)
         results_df.write.format("delta").mode("append").saveAsTable(results_table)
         logger.info("Successfully wrote results to Delta table.")
     except Exception as e:
