@@ -1,3 +1,23 @@
+"""
+DataPact Aggregation Task Notebook.
+
+IMPORTANT: This script is not intended to be run locally. It is uploaded to
+Databricks and executed as the final notebook task in a DataPact workflow,
+running on Serverless Compute.
+
+This script runs after all individual validation tasks have completed. Its
+purpose is to collect and consolidate the results from the entire job run.
+
+Its responsibilities are:
+1.  Receive a list of all upstream task keys via a job widget.
+2.  Iterate through these keys and retrieve the JSON summary from each task
+    using `dbutils.jobs.taskValues.get`.
+3.  Generate a final, human-readable summary report in the job logs.
+4.  If a `results_table` is specified, write the detailed metrics from all
+    tasks into that Delta table for historical analysis and reporting.
+5.  Fail the job if any of the upstream validation tasks failed.
+"""
+
 import json
 from typing import List, Dict, Any
 from databricks.sdk.runtime import *
