@@ -18,6 +18,9 @@ Its responsibilities are:
 5.  Fail the job if any of the upstream validation tasks failed.
 """
 
+# Install required libraries for the serverless environment.
+%pip install databricks-sql-connector loguru
+
 import json
 from typing import List, Dict, Any
 from databricks.sdk.runtime import *
