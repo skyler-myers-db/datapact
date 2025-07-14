@@ -20,7 +20,6 @@ import time
 from pathlib import Path
 
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.errors import NotFound
 from databricks.sdk.service import jobs, sql as sql_service
 from loguru import logger
 
@@ -37,7 +36,7 @@ class DataPactClient:
         """
         logger.info(f"Initializing WorkspaceClient with profile '{profile}'...")
         self.w = WorkspaceClient(profile=profile)
-        self.root_path = f"/Shared/datapact/{self.w.current_user.me().workspace_user_name}"
+        self.root_path = f"/Shared/datapact/{self.w.current_user.me().user_name}"
         logger.info(f"Using workspace path: {self.root_path}")
 
     def _upload_notebooks(self) -> None:
@@ -161,21 +160,26 @@ class DataPactClient:
             name=job_name,
             tasks=validation_tasks + [aggregation_task],
             spark_version=dbr_version,
-            run_as=jobs.JobRunAs(user_name=self.w.currentUser.me().user_name),
+            run_as=jobs.JobRunAs(user_name=self.w.current_user.me().user_name),
         )
 
-        try:
-            existing_job = self.w.jobs.get_by_name(job_name)
+        existing_job = None
+        for j in self.w.jobs.list(name=job_name):
+            existing_job = j
+            break
+        
+        if existing_job:
             logger.info(f"Updating existing job '{job_name}' (ID: {existing_job.job_id})...")
             self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings.as_dict())
             job_id = existing_job.job_id
-        except NotFound:
+        else:
             logger.info(f"Creating new job '{job_name}'...")
             new_job = self.w.jobs.create(**job_settings.as_dict())
             job_id = new_job.job_id
 
         logger.info(f"Launching job {job_id}...")
-        run = self.w.jobs.run_now(job_id=job_id).result(timeout=3600)
+        run_info = self.w.jobs.run_now(job_id=job_id)
+        run = self.w.jobs.get_run(run_info.run_id)
         
         logger.info(f"Run started! View progress here: {run.run_page_url}")
         while not run.is_terminal:
@@ -186,6 +190,7 @@ class DataPactClient:
 
         final_state = run.state.result_state
         logger.info(f"Run finished with state: {final_state}")
-        if final_state != jobs.RunResultState.SUCCESS:
-            raise Exception(f"DataPact job failed with state {final_state}. View details at {run.run_page_url}")
-        logger.success("DataPact job completed successfully.")
+        if final_state == jobs.RunResultState.SUCCESS:
+            logger.success("✅ DataPact job completed successfully.")
+        else:
+            raise Exception(f"DataPact job did not succeed. Final state: {final_state}. View details at {run.run_page_url}")
