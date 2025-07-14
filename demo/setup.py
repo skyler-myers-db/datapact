@@ -2,14 +2,18 @@
 A local utility script to set up the DataPact demo environment.
 
 This script acts as a local client to prepare the necessary resources for
-running the DataPact demo. It reads a pure SQL file (`setup.sql`) and
-executes it as a single, multi-statement query against a specified
-Serverless SQL Warehouse. It uses a robust asynchronous polling pattern
-to handle the potentially long-running setup script.
+running the DataPact demo. It reads a pure SQL file (`setup.sql`), parses it
+into individual statements, and executes them sequentially against a specified
+Serverless SQL Warehouse.
+
+This one-statement-at-a-time, synchronous-wait approach is the most robust
+method for executing a series of DDL commands, ensuring that each step
+completes before the next one begins.
 """
 
 import argparse
 import time
+import re
 from pathlib import Path
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import sql as sql_service
@@ -43,58 +47,72 @@ def run_demo_setup():
     logger.info(f"Found warehouse '{args.warehouse}' (ID: {warehouse.id}).")
 
     sql_file_path = Path(__file__).parent / "setup.sql"
-    logger.info(f"Reading setup script from: {sql_file_path}")
+    logger.info(f"Reading and parsing setup script from: {sql_file_path}")
     with open(sql_file_path, 'r') as f:
         sql_script = f.read()
 
-    logger.info("Submitting SQL script for asynchronous execution...")
+    # Robustly parse the SQL script into individual statements.
+    # 1. Remove block comments /* ... */
+    sql_script = re.sub(r'/\*.*?\*/', '', sql_script, flags=re.DOTALL)
+    # 2. Remove line comments -- ...
+    sql_script = re.sub(r'--.*', '', sql_script)
+    # 3. Split by semicolon and filter out any empty strings resulting from the split.
+    sql_commands = [cmd.strip() for cmd in sql_script.split(';') if cmd.strip()]
 
-    try:
-        # Step 1: Execute the statement with wait_timeout='0s' to get the statement_id immediately.
-        resp = w.statement_execution.execute_statement(
-            statement=sql_script,
-            warehouse_id=warehouse.id,
-            wait_timeout='0s', # Makes the call non-blocking
-        )
-        statement_id = resp.statement_id
-        logger.info(f"Successfully submitted statement with ID: {statement_id}")
+    logger.info(f"Found {len(sql_commands)} individual SQL statements to execute sequentially.")
 
-        # Step 2: Poll for the result in a loop.
-        timeout_seconds: int = 600  # 10 minutes
-        start_time = time.time()
-        while time.time() - start_time < timeout_seconds:
-            status = w.statement_execution.get_statement(statement_id=statement_id)
-            current_state = status.status.state
-            logger.info(f"Polling statement status... Current state: {current_state}")
+    # Execute each statement one-by-one and wait for completion.
+    for i, command in enumerate(sql_commands):
+        logger.info(f"Executing statement {i+1}/{len(sql_commands)}...")
+        logger.debug(f"SQL: {command}")
+        try:
+            # Use the robust asynchronous polling pattern for each statement.
+            resp = w.statement_execution.execute_statement(
+                statement=command,
+                warehouse_id=warehouse.id,
+                wait_timeout='0s'  # Submit and poll.
+            )
+            statement_id = resp.statement_id
 
-            if current_state == sql_service.StatementState.SUCCEEDED:
-                logger.success("✅ SQL script executed successfully!")
-                logger.success("✅ Demo environment setup complete!")
-                logger.info("You can now run the demo validation with the following command:")
-                
-                run_command: str = (
-                    "datapact run \\\n"
-                    "  --config demo/demo_config.yml \\\n"
-                    f"  --warehouse \"{args.warehouse}\" \\\n"
-                    "  --job-name \"DataPact Demo Run\" \\\n"
-                    f"  --profile {args.profile}"
-                )
-                logger.info("\n\n" + "="*50 + f"\n{run_command}\n" + "="*50 + "\n")
-                return # Exit successfully
+            timeout_seconds = 300  # 5-minute timeout per statement.
+            start_time = time.time()
+            while time.time() - start_time < timeout_seconds:
+                status = w.statement_execution.get_statement(statement_id=statement_id)
+                current_state = status.status.state
 
-            if current_state in [sql_service.StatementState.FAILED, sql_service.StatementState.CANCELED, sql_service.StatementState.CLOSED]:
-                error = status.status.error
-                logger.critical(f"SQL script execution failed with terminal state: {current_state}")
-                if error:
-                    logger.critical(f"Error: {error.message}")
-                return # Exit with failure
+                if current_state == sql_service.StatementState.SUCCEEDED:
+                    logger.success(f"Statement {i+1} succeeded.")
+                    break  # Exit the while loop, move to the next command.
 
-            time.sleep(10) # Wait 10 seconds between polls
+                if current_state in [sql_service.StatementState.FAILED, sql_service.StatementState.CANCELED, sql_service.StatementState.CLOSED]:
+                    error = status.status.error
+                    logger.critical(f"Statement {i+1} failed with state: {current_state}")
+                    if error:
+                        logger.critical(f"Error: {error.message}")
+                    raise Exception(f"Setup script failed at statement {i+1}.")
 
-        logger.critical(f"Timeout: Script execution did not complete within {timeout_seconds} seconds.")
+                time.sleep(5)  # Poll every 5 seconds.
+            else:  # This executes if the while loop finishes without a 'break'.
+                raise TimeoutError(f"Statement {i+1} timed out after {timeout_seconds} seconds.")
 
-    except Exception as e:
-        logger.critical(f"An unexpected error occurred during statement execution: {e}")
+        except Exception as e:
+            logger.critical(f"An error occurred during execution. Halting setup.")
+            # Re-raise the exception to stop the script.
+            raise e
+
+    # If the entire loop completes, all statements were successful.
+    logger.success("✅ All setup statements executed successfully!")
+    logger.success("✅ Demo environment setup complete!")
+    logger.info("You can now run the demo validation with the following command:")
+
+    run_command = (
+        "datapact run \\\n"
+        "  --config demo/demo_config.yml \\\n"
+        f"  --warehouse \"{args.warehouse}\" \\\n"
+        "  --job-name \"DataPact Demo Run\" \\\n"
+        f"  --profile {args.profile}"
+    )
+    logger.info("\n\n" + "="*50 + f"\n{run_command}\n" + "="*50 + "\n")
 
 if __name__ == "__main__":
     run_demo_setup()
