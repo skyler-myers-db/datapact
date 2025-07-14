@@ -109,7 +109,7 @@ class DataPactClient:
             sql_script = self._generate_validation_sql(task_config, results_table)
             
             script_path = f"{sql_tasks_path}/{task_key}.sql"
-            self.w.workspace.import_(
+            self.w.workspace.upload(
                 path=script_path,
                 content=sql_script.encode('utf-8'),
                 overwrite=True,
@@ -131,7 +131,7 @@ class DataPactClient:
                     ELSE 'All validation tasks reported success.'
                   END;
             """)
-            self.w.workspace.import_(
+            self.w.workspace.upload(
                 path=agg_script_path,
                 content=agg_sql_script.encode('utf-8'),
                 overwrite=True,
