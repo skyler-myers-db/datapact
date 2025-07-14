@@ -159,25 +159,34 @@ class DataPactClient:
             agg_sql_script = textwrap.dedent(f"""\
                 -- DataPact Aggregation Task
                 -- This task verifies that all upstream tasks have successfully logged their results.
+                DECLARE validations_passed BOOLEAN;
+                
+                SET VAR validations_passed = (
+                  SELECT
+                    CASE
+                      WHEN
+                        (
+                          SELECT
+                            COUNT(*)
+                          FROM
+                            datapact_demo_catalog.source_data.datapact_run_history
+                          WHERE
+                            run_id = :run_id
+                            AND result_payload:overall_validation_passed = FALSE
+                        ) = 0
+                      THEN
+                        TRUE
+                      ELSE FALSE
+                    END AS validation_status
+                );
+                
                 SELECT
                   CASE
-                    WHEN
-                      (
-                        SELECT
-                          COUNT(*)
-                        FROM
-                          `{results_table}`
-                        WHERE
-                          run_id = :run_id
-                          AND result_payload:overall_validation_passed = FALSE
-                      ) = 0
-                    THEN
-                      'All validation tasks succeeded.'
-                    ELSE
-                        RAISE ERROR(
-                          'Aggregation check failed: One or more validation tasks failed.'
-                        )
-                  END AS validation_status;
+                    WHEN validations_passed THEN TRUE
+                    ELSE RAISE_ERROR(
+                      'One or more validations failed for task {config[' task_key ']}. Check history table for details.'
+                    )
+                  END AS `Validation Passed`;
             """)
             self.w.workspace.upload(
                 path=agg_script_path,
