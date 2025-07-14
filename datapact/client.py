@@ -151,19 +151,19 @@ class DataPactClient:
 
         if results_table:
             agg_script_path = f"{sql_tasks_path}/aggregate_results.sql"
-        agg_sql_script = textwrap.dedent(f"""\
-            -- DataPact Aggregation Task
-            -- This task verifies that all upstream tasks have successfully logged their results.
-            IF (
-              SELECT COUNT(*)
-              FROM `{results_table}`
-              WHERE run_id = '{{{{job.run_id}}}}'
-                AND from_json(result_payload, 'overall_validation_passed BOOLEAN').overall_validation_passed = false
-            ) > 0
-            THEN RAISE_ERROR('Aggregation check failed: One or more validation tasks failed.');
-            ELSE SELECT 'All validation tasks succeeded.';
-            END IF;
-        """)
+            agg_sql_script = textwrap.dedent(f"""\
+                -- DataPact Aggregation Task
+                -- This task verifies that all upstream tasks have successfully logged their results.
+                IF (
+                  SELECT COUNT(*)
+                  FROM `{results_table}`
+                  WHERE run_id = '{{{{job.run_id}}}}'
+                    AND from_json(result_payload, 'overall_validation_passed BOOLEAN').overall_validation_passed = false
+                ) > 0
+                THEN RAISE_ERROR('Aggregation check failed: One or more validation tasks failed.');
+                ELSE SELECT 'All validation tasks succeeded.';
+                END IF;
+            """)
             self.w.workspace.upload(
                 path=agg_script_path,
                 content=agg_sql_script.encode('utf-8'),
