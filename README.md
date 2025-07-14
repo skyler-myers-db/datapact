@@ -35,6 +35,7 @@ See DataPact in action with a realistic, high volume dataset without using your 
 2.  **Permissions:** Permissions to create catalogs, schemas, tables, and run jobs.
 3.  **Python >= 3.10:** A local Python environment.
 4.  **Databricks CLI:** [Download the Databricks CLI](https://docs.databricks.com/aws/en/dev-tools/cli/install) and authenticate your local machine with your workspace using token authentication:
+
     ```bash
     databricks configure --profile my-profile
     ```
