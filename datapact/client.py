@@ -114,7 +114,6 @@ class DataPactClient:
                 content=sql_script.encode('utf-8'),
                 overwrite=True,
                 format=workspace.ImportFormat.SOURCE,
-                language=workspace.Language.SQL
             )
             task_paths[task_key] = script_path
             logger.info(f"  - Uploaded SQL FILE for task '{task_key}' to {script_path}")
