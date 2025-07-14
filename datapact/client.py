@@ -2,8 +2,8 @@
 The core client for interacting with the Databricks API.
 
 This module contains the `DataPactClient` class. Its architecture is a
-local-first orchestrator that dynamically generates pure SQL validation scripts.
-It uploads these scripts and creates a multi-task Databricks Job where each
+local-first orchestrator that dynamically generates pure SQL validation scripts
+in memory. It uploads these scripts and creates a multi-task Databricks Job where each
 task is a SQL Task of type 'File', running directly on a specified
 Serverless SQL Warehouse. This is the definitive, correct architecture.
 """
@@ -33,7 +33,6 @@ class DataPactClient:
         logger.info(f"Initializing WorkspaceClient with profile '{profile}'...")
         self.w = WorkspaceClient(profile=profile)
         self.user_name = self.w.current_user.me().user_name
-        # Use a user-owned path to avoid permissions issues with /Shared
         self.root_path = f"/Users/{self.user_name}/datapact"
         self.w.workspace.mkdirs(self.root_path)
 
@@ -109,12 +108,23 @@ class DataPactClient:
             task_paths[task_key] = script_path
             logger.info(f"  - Uploaded script for task '{task_key}' to {script_path}")
 
-        # Upload the aggregation notebook
-        agg_notebook_path = f"{self.root_path}/aggregation_notebook.sql"
-        agg_notebook_content = (Path(__file__).parent / "templates/aggregation_notebook.sql").read_text()
-        self.w.workspace.upload(path=agg_notebook_path, content=agg_notebook_content.encode('utf-8'), overwrite=True)
-        task_paths['aggregate_results'] = agg_notebook_path
-        logger.info(f"  - Uploaded aggregation notebook to {agg_notebook_path}")
+        # CORRECTED: Generate the aggregation SQL in-memory, removing the file dependency.
+        if results_table:
+            agg_notebook_path = f"{sql_tasks_path}/aggregate_results.sql"
+            agg_notebook_content = f"""
+            -- DataPact Aggregation Task
+            CREATE WIDGET TEXT results_table DEFAULT "{results_table}";
+            CREATE WIDGET TEXT expected_tasks DEFAULT "0";
+
+            ASSERT (
+              (SELECT COUNT(*) FROM IDENTIFIER(get_widget_value('results_table')) WHERE run_id = '{{{{job.run_id}}}}' AND status = 'SUCCESS') = CAST(get_widget_value('expected_tasks') AS INT)
+            ) : 'One or more validation tasks failed to record a success in the history table.';
+
+            SELECT "All validation tasks reported success." AS overall_status;
+            """
+            self.w.workspace.upload(path=agg_notebook_path, content=agg_notebook_content.encode('utf-8'), overwrite=True)
+            task_paths['aggregate_results'] = agg_notebook_path
+            logger.info(f"  - Uploaded aggregation notebook to {agg_notebook_path}")
 
         return task_paths
 
@@ -141,12 +151,10 @@ class DataPactClient:
                 }
             })
 
-        # Add the final aggregation task if a results table is specified.
-        if results_table:
+        if results_table and 'aggregate_results' in task_paths:
             tasks_list.append({
                 "task_key": "aggregate_results",
                 "depends_on": [{"task_key": tk} for tk in validation_task_keys],
-                # This task is a SQL Notebook.
                 "sql_task": {
                     "notebook": {"path": task_paths['aggregate_results']},
                     "warehouse_id": warehouse.id,
