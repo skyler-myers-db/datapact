@@ -63,6 +63,7 @@ def run_demo_setup():
             logger.success("✅ Demo environment setup complete!")
             logger.info("You can now run the demo validation with the following command:")
 
+            # Use loguru for all output, with formatting for clarity
             run_command = (
                 "datapact run \\\n"
                 "  --config demo/demo_config.yml \\\n"
@@ -71,7 +72,7 @@ def run_demo_setup():
                 f"  --profile {args.profile}"
             )
 
-        logger.info("\n\n" + "="*50 + f"\n{run_command}\n" + "="*50 + "\n")
+            logger.info("\n\n" + "="*50 + f"\n{run_command}\n" + "="*50 + "\n")
         else:
             # If the statement fails, provide the error details
             error = result.status.error
