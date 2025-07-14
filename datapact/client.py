@@ -2,11 +2,10 @@
 The core client for interacting with the Databricks API.
 
 This module contains the `DataPactClient` class. Its architecture is a
-local-first orchestrator that dynamically generates pure SQL validation scripts.
-It uploads these scripts as raw SOURCE files using the correct `import_` API
-and creates a multi-task Databricks Job where each task is a SQL Task of type
-'File', running directly on a specified Serverless SQL Warehouse. This is the
-definitive, correct architecture.
+local-first orchestrator that dynamically generates sophisticated, multi-step
+SQL validation scripts. It uploads these scripts as raw SQL files and creates
+a multi-task Databricks Job where each task runs on a Serverless SQL Warehouse.
+This is the definitive, correct architecture.
 """
 
 import json
@@ -17,7 +16,7 @@ import textwrap
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import jobs, sql as sql_service, workspace
-from databricks.sdk.service.jobs import RunLifeCycleState
+from databricks.sdk.service.jobs import RunIf, RunLifeCycleState
 from loguru import logger
 
 TERMINAL_STATES: list[RunLifeCycleState] = [
@@ -63,40 +62,66 @@ class DataPactClient:
         
         return self.w.warehouses.get(warehouse.id)
 
-    def _generate_validation_sql(self, config: dict[str, any], results_table: str | None) -> str:
+    def _generate_validation_sql(self, config: dict[str, any], results_table: str) -> str:
         """Generates a complete, idempotent SQL validation script for a single task."""
         source_fqn = f"`{config['source_catalog']}`.`{config['source_schema']}`.`{config['source_table']}`"
         target_fqn = f"`{config['target_catalog']}`.`{config['target_schema']}`.`{config['target_table']}`"
         
         count_tolerance = config.get('count_tolerance', 0.0)
         
+        # CORRECTED: Use the user-provided, working SQL syntax and a more robust structure.
         sql = textwrap.dedent(f"""\
             -- DataPact Validation for task: {config['task_key']}
-            -- This script uses a CASE statement with RAISE_ERROR to ensure the task fails if a condition is not met.
+            -- Step 1: Calculate all metrics using CTEs.
+            CREATE OR REPLACE TEMP VIEW validation_metrics AS
+            WITH source_metrics AS (
+              SELECT COUNT(1) AS count FROM {source_fqn}
+            ),
+            target_metrics AS (
+              SELECT COUNT(1) AS count FROM {target_fqn}
+            ),
+            -- Step 2: Perform validation checks and generate boolean flags.
+            validation_checks AS (
+              SELECT
+                (SELECT count FROM source_metrics) AS source_count,
+                (SELECT count FROM target_metrics) AS target_count,
+                (abs((SELECT count FROM target_metrics) - (SELECT count FROM source_metrics)) / NULLIF(CAST((SELECT count FROM source_metrics) AS DOUBLE), 0)) <= {count_tolerance} AS count_check_passed
+            )
+            -- Step 3: Construct a single JSON object with all results.
+            SELECT
+              to_json(
+                struct(
+                  '{config['task_key']}' AS task_key,
+                  source_count,
+                  target_count,
+                  count_check_passed,
+                  (count_check_passed) AS overall_validation_passed -- In a full version, this would be AND of all checks
+                )
+              ) AS result_payload,
+              (count_check_passed) AS overall_validation_passed
+            FROM validation_checks;
 
-            CREATE OR REPLACE TEMP VIEW source_metrics AS SELECT COUNT(1) AS count FROM {source_fqn};
-            CREATE OR REPLACE TEMP VIEW target_metrics AS SELECT COUNT(1) AS count FROM {target_fqn};
+            -- Step 4: Always insert the detailed results into the history table.
+            INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload)
+            SELECT
+              '{config['task_key']}',
+              CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
+              '{{{{job.run_id}}}}',
+              current_timestamp(),
+              result_payload
+            FROM validation_metrics;
 
+            -- Step 5: After logging, fail the task if any check was unsuccessful.
             SELECT
               CASE
-                WHEN ((abs((SELECT count FROM target_metrics) - (SELECT count FROM source_metrics)) / NULLIF(CAST((SELECT count FROM source_metrics) AS DOUBLE), 0))) > {count_tolerance}
-                THEN RAISE_ERROR('Count validation failed: Relative difference exceeded tolerance of {count_tolerance}.')
-                ELSE 'Count validation passed.'
+                WHEN NOT (SELECT overall_validation_passed FROM validation_metrics)
+                THEN RAISE_ERROR('One or more validations failed for task {config['task_key']}. Check history table for details.')
+                ELSE 'Task {config['task_key']} completed successfully.'
               END;
         """)
-
-        if results_table:
-            sql += textwrap.dedent(f"""\
-
-                -- If all checks pass, log success to the history table.
-                CREATE TABLE IF NOT EXISTS {results_table} (task_key STRING, status STRING, run_id STRING, timestamp TIMESTAMP);
-                INSERT INTO {results_table} VALUES ('{config['task_key']}', 'SUCCESS', '{{{{job.run_id}}}}', current_timestamp());
-            """)
-        
-        sql += f"\nSELECT 'Task {config['task_key']} completed successfully.' AS final_status;"
         return sql
 
-    def _upload_sql_scripts(self, config: dict[str, any], results_table: str | None) -> dict[str, str]:
+    def _upload_sql_scripts(self, config: dict[str, any], results_table: str) -> dict[str, str]:
         """Generates and uploads SQL scripts for all validation tasks."""
         logger.info("Generating and uploading SQL validation scripts...")
         task_paths: dict[str, str] = {}
@@ -114,32 +139,35 @@ class DataPactClient:
                 content=sql_script.encode('utf-8'),
                 overwrite=True,
                 format=workspace.ImportFormat.RAW,
-                language=workspace.Language.SQL
             )
             task_paths[task_key] = script_path
             logger.info(f"  - Uploaded SQL FILE for task '{task_key}' to {script_path}")
 
-        if results_table:
-            agg_script_path = f"{sql_tasks_path}/aggregate_results.sql"
-            agg_sql_script = textwrap.dedent(f"""\
-                -- DataPact Aggregation Task
-                -- This task verifies that all upstream tasks have successfully logged their results.
-                SELECT
-                  CASE
-                    WHEN ((SELECT COUNT(*) FROM `{results_table}` WHERE run_id = '{{{{job.run_id}}}}' AND status = 'SUCCESS') != {len(config['validations'])})
-                    THEN RAISE_ERROR('Aggregation check failed: Not all validation tasks recorded a success in the history table.')
-                    ELSE 'All validation tasks reported success.'
-                  END;
-            """)
-            self.w.workspace.upload(
-                path=agg_script_path,
-                content=agg_sql_script.encode('utf-8'),
-                overwrite=True,
-                format=workspace.ImportFormat.RAW,
-                language=workspace.Language.SQL
-            )
-            task_paths['aggregate_results'] = agg_script_path
-            logger.info(f"  - Uploaded aggregation SQL FILE to {agg_script_path}")
+        # Generate and upload the aggregation script
+        agg_script_path = f"{sql_tasks_path}/aggregate_results.sql"
+        agg_sql_script = textwrap.dedent(f"""\
+            -- DataPact Aggregation Task
+            -- This task verifies that all upstream tasks have successfully logged their results.
+            SELECT
+              CASE
+                WHEN (
+                  SELECT COUNT(*)
+                  FROM `{results_table}`
+                  WHERE run_id = '{{{{job.run_id}}}}'
+                    AND from_json(result_payload, 'overall_validation_passed BOOLEAN').overall_validation_passed = false
+                ) > 0
+                THEN RAISE_ERROR('Aggregation check failed: One or more validation tasks failed.')
+                ELSE 'All validation tasks succeeded.'
+              END;
+        """)
+        self.w.workspace.upload(
+            path=agg_script_path,
+            content=agg_sql_script.encode('utf-8'),
+            overwrite=True,
+            format=workspace.ImportFormat.RAW
+        )
+        task_paths['aggregate_results'] = agg_script_path
+        logger.info(f"  - Uploaded aggregation SQL FILE to {agg_script_path}")
 
         return task_paths
 
@@ -151,6 +179,9 @@ class DataPactClient:
         results_table: str | None = None,
     ) -> None:
         """Constructs, deploys, and runs the DataPact validation workflow."""
+        if not results_table:
+            raise ValueError("The '--results-table' argument is mandatory for this architecture.")
+
         warehouse = self._ensure_sql_warehouse(warehouse_name)
         task_paths = self._upload_sql_scripts(config, results_table)
 
@@ -169,18 +200,18 @@ class DataPactClient:
                 }
             })
 
-        if results_table and 'aggregate_results' in task_paths:
-            tasks_list.append({
-                "task_key": "aggregate_results",
-                "depends_on": [{"task_key": tk} for tk in validation_task_keys],
-                "sql_task": {
-                    "file": {
-                        "path": task_paths['aggregate_results'],
-                        "source": "WORKSPACE"
-                    },
-                    "warehouse_id": warehouse.id,
-                }
-            })
+        tasks_list.append({
+            "task_key": "aggregate_results",
+            "depends_on": [{"task_key": tk} for tk in validation_task_keys],
+            "run_if": RunIf.ALL_DONE,
+            "sql_task": {
+                "file": {
+                    "path": task_paths['aggregate_results'],
+                    "source": "WORKSPACE"
+                },
+                "warehouse_id": warehouse.id,
+            }
+        })
 
         job_settings_dict = {
             "name": job_name,
