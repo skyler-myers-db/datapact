@@ -3,10 +3,10 @@ The core client for interacting with the Databricks API.
 
 This module contains the `DataPactClient` class. Its architecture is a
 local-first orchestrator that dynamically generates sophisticated, multi-step
-SQL validation scripts. It uploads these scripts as raw files and creates a
-multi-task Databricks Job where each task is a SQL Task of type 'File',
-running directly on a specified Serverless SQL Warehouse. This is the
-definitive, correct architecture.
+SQL validation scripts. It uploads these scripts as raw SQL files using the
+correct `import_` API and creates a multi-task Databricks Job where each
+task is a SQL Task of type 'File', running directly on a specified
+Serverless SQL Warehouse. This is the definitive, correct architecture.
 """
 
 import json
@@ -72,7 +72,11 @@ class DataPactClient:
         
         sql = textwrap.dedent(f"""\
             -- DataPact Validation for task: {config['task_key']}
-            -- Step 1: Calculate all metrics and insert a detailed JSON payload into the history table.
+            -- Step 1: Declare a variable to hold the validation outcome.
+            DECLARE validation_passed BOOLEAN;
+
+            -- Step 2: Calculate all metrics and insert a detailed JSON payload into the history table.
+            -- This step will ALWAYS run to ensure logging, even on failure.
             INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload)
             WITH
               source_metrics AS (
@@ -85,7 +89,11 @@ class DataPactClient:
                 SELECT
                   (SELECT count FROM source_metrics) AS source_count,
                   (SELECT count FROM target_metrics) AS target_count,
-                  (abs((SELECT count FROM target_metrics) - (SELECT count FROM source_metrics)) / NULLIF(CAST((SELECT count FROM source_metrics) AS DOUBLE), 0)) <= {count_tolerance} AS count_check_passed
+                  -- Correctly handle division by zero
+                  CASE
+                    WHEN (SELECT count FROM source_metrics) = 0 THEN (SELECT count FROM target_metrics) = 0
+                    ELSE (abs((SELECT count FROM target_metrics) - (SELECT count FROM source_metrics)) / CAST((SELECT count FROM source_metrics) AS DOUBLE)) <= {count_tolerance}
+                  END AS count_check_passed
               )
             SELECT
               '{config['task_key']}',
@@ -103,19 +111,19 @@ class DataPactClient:
               )
             FROM validation_checks v;
 
-            -- Step 2: After logging, check the result and fail the task if any validation was unsuccessful.
-            SELECT
-              CASE
-                WHEN NOT (
-                  SELECT from_json(result_payload, 'overall_validation_passed BOOLEAN').overall_validation_passed
-                  FROM {results_table}
-                  WHERE run_id = '{{{{job.run_id}}}}' AND task_key = '{config['task_key']}'
-                  ORDER BY timestamp DESC
-                  LIMIT 1
-                )
-                THEN RAISE_ERROR('One or more validations failed for task {config['task_key']}. Check history table for details.')
-                ELSE 'Task {config['task_key']} completed successfully.'
-              END;
+            -- Step 3: Set the variable based on the result that was just inserted.
+            SET VAR validation_passed = (
+                SELECT from_json(result_payload, 'overall_validation_passed BOOLEAN').overall_validation_passed
+                FROM {results_table}
+                WHERE run_id = '{{{{job.run_id}}}}' AND task_key = '{config['task_key']}'
+                ORDER BY timestamp DESC
+                LIMIT 1
+            );
+
+            -- Step 4: After logging, use the variable to conditionally fail the task.
+            IF NOT validation_passed THEN
+              RAISE_ERROR('One or more validations failed for task {config['task_key']}. Check history table for details.');
+            END IF;
         """)
         return sql
 
@@ -136,7 +144,7 @@ class DataPactClient:
                 path=script_path,
                 content=sql_script.encode('utf-8'),
                 overwrite=True,
-                format=workspace.ImportFormat.RAW,
+                format=workspace.ImportFormat.RAW
             )
             task_paths[task_key] = script_path
             logger.info(f"  - Uploaded SQL FILE for task '{task_key}' to {script_path}")
@@ -146,17 +154,15 @@ class DataPactClient:
         agg_sql_script = textwrap.dedent(f"""\
             -- DataPact Aggregation Task
             -- This task verifies that all upstream tasks have successfully logged their results.
-            SELECT
-              CASE
-                WHEN (
-                  SELECT COUNT(*)
-                  FROM `{results_table}`
-                  WHERE run_id = '{{{{job.run_id}}}}'
-                    AND from_json(result_payload, 'overall_validation_passed BOOLEAN').overall_validation_passed = false
-                ) > 0
-                THEN RAISE_ERROR('Aggregation check failed: One or more validation tasks failed.')
-                ELSE 'All validation tasks succeeded.'
-              END;
+            IF (
+              SELECT COUNT(*)
+              FROM `{results_table}`
+              WHERE run_id = '{{{{job.run_id}}}}'
+                AND from_json(result_payload, 'overall_validation_passed BOOLEAN').overall_validation_passed = false
+            ) > 0
+            THEN RAISE_ERROR('Aggregation check failed: One or more validation tasks failed.');
+            ELSE SELECT 'All validation tasks succeeded.';
+            END IF;
         """)
         self.w.workspace.upload(
             path=agg_script_path,
@@ -179,6 +185,14 @@ class DataPactClient:
         """Constructs, deploys, and runs the DataPact validation workflow."""
         if not results_table:
             raise ValueError("The '--results-table' argument is mandatory for this architecture.")
+
+        # Ensure the history table exists BEFORE generating SQL that depends on it.
+        logger.info(f"Ensuring history table '{results_table}' exists...")
+        self.w.statement_execution.execute_statement(
+            statement=f"CREATE TABLE IF NOT EXISTS {results_table} (task_key STRING, status STRING, run_id STRING, timestamp TIMESTAMP, result_payload STRING)",
+            warehouse_id=self._ensure_sql_warehouse(warehouse_name).id,
+            wait_timeout='50s'
+        ).result()
 
         warehouse = self._ensure_sql_warehouse(warehouse_name)
         task_paths = self._upload_sql_scripts(config, results_table)
