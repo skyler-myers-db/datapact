@@ -76,7 +76,7 @@ class DataPactClient:
 
             -- Step 2: Calculate all metrics and insert a detailed JSON payload into the history table.
             -- This step will ALWAYS run to ensure logging, even on failure.
-            CREATE TABLE IF NOT EXISTS {results_table} (task_key STRING, status STRING, run_id BIGINT, timestamp TIMESTAMP, result_payload VARIANT);
+            CREATE TABLE IF NOT EXISTS {results_table} (task_key STRING, status STRING, run_id BIGINT, timestamp TIMESTAMP, result_payload STRING);
             INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload)
             WITH
               source_metrics AS (
