@@ -108,7 +108,6 @@ class DataPactClient:
             task_paths[task_key] = script_path
             logger.info(f"  - Uploaded script for task '{task_key}' to {script_path}")
 
-        # CORRECTED: Generate the aggregation SQL in-memory, removing the file dependency.
         if results_table:
             agg_notebook_path = f"{sql_tasks_path}/aggregate_results.sql"
             agg_notebook_content = f"""
@@ -146,7 +145,10 @@ class DataPactClient:
             tasks_list.append({
                 "task_key": task_key,
                 "sql_task": {
-                    "file": {"path": task_paths[task_key]},
+                    "file": {
+                        "path": task_paths[task_key],
+                        "source": "WORKSPACE"
+                    },
                     "warehouse_id": warehouse.id
                 }
             })
@@ -156,7 +158,11 @@ class DataPactClient:
                 "task_key": "aggregate_results",
                 "depends_on": [{"task_key": tk} for tk in validation_task_keys],
                 "sql_task": {
-                    "notebook": {"path": task_paths['aggregate_results']},
+                    # The aggregation task is also a SQL file.
+                    "file": {
+                        "path": task_paths['aggregate_results'],
+                        "source": "WORKSPACE"
+                    },
                     "warehouse_id": warehouse.id,
                     "parameters": {
                         "results_table": results_table,
