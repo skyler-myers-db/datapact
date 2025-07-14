@@ -5,7 +5,7 @@ This module contains the `DataPactClient` class, which encapsulates all the
 programmatic logic for managing and executing DataPact workflows. It is the
 engine room of the accelerator, responsible for:
 
-1.  Authenticating with the Databricks workspace using the SDK.
+1.  Authenticating with the Databrabs workspace using the SDK.
 2.  Uploading the necessary task notebooks to a user-specific path.
 3.  Programmatically ensuring the specified Serverless SQL Warehouse exists and is running.
 4.  Dynamically constructing a multi-task Databricks Job definition in memory based
@@ -21,9 +21,18 @@ from pathlib import Path
 from datetime import timedelta
 
 from databricks.sdk import WorkspaceClient
-# Import the necessary enum for state checking
-from databricks.sdk.service import jobs, sql as sql_service
-from databricks.sdk.service.jobs import RunLifeCycleState
+# CORRECTED: Import every required class explicitly for maximum robustness.
+from databricks.sdk.service import sql as sql_service
+from databricks.sdk.service.jobs import (
+    JobSettings,
+    JobRunAs,
+    Task,
+    NotebookTask,
+    TaskDependency,
+    Library,
+    PyPi,
+    RunLifeCycleState
+)
 from loguru import logger
 
 # Define the states that indicate a job run has finished.
@@ -38,25 +47,15 @@ class DataPactClient:
     A client to programmatically manage and run DataPact validation workflows.
     """
 
-    def __init__(self, profile: str = "DEFAULT"):
-        """Initializes the client with Databricks workspace credentials.
-
-        Args:
-            profile: The Databricks CLI profile to use for authentication.
-        """
+    def __init__(self, profile: str = "DEFAULT") -> None:
+        """Initializes the client with Databricks workspace credentials."""
         logger.info(f"Initializing WorkspaceClient with profile '{profile}'...")
         self.w = WorkspaceClient(profile=profile)
         self.root_path = f"/Shared/datapact/{self.w.current_user.me().user_name}"
         logger.info(f"Using workspace path: {self.root_path}")
 
     def _upload_notebooks(self) -> None:
-        """
-        Uploads the validation and aggregation notebooks to the Databricks workspace.
-
-        This method ensures that the latest versions of the task notebooks from the
-        local package are present in the user's Databricks workspace before a
-        job run is triggered.
-        """
+        """Uploads the validation and aggregation notebooks to the Databricks workspace."""
         logger.info(f"Uploading notebooks to {self.root_path}...")
         templates_dir = Path(__file__).parent / "templates"
         self.w.workspace.mkdirs(self.root_path)
@@ -67,12 +66,10 @@ class DataPactClient:
                     content=f.read(),
                     overwrite=True,
                 )
-        logger.info("Notebooks uploaded successfully.")
+        logger.success("Notebooks uploaded successfully.")
 
     def _ensure_sql_warehouse(self, name: str, auto_create: bool) -> sql_service.EndpointInfo:
-        """
-        Ensures a Serverless SQL Warehouse exists and is running.
-        """
+        """Ensures a Serverless SQL Warehouse exists and is running."""
         logger.info(f"Looking for SQL Warehouse '{name}'...")
         warehouse = None
         try:
@@ -99,9 +96,9 @@ class DataPactClient:
             )
             logger.success(f"Successfully created and started warehouse {warehouse.id}.")
             return warehouse
+
         if warehouse.state not in [sql_service.State.RUNNING, sql_service.State.STARTING]:
             logger.info(f"Warehouse '{name}' is in state {warehouse.state}. Starting it...")
-            # Use timedelta for the timeout parameter.
             self.w.warehouses.start(warehouse.id).result(timeout=timedelta(seconds=600))
             logger.success(f"Warehouse '{name}' started successfully.")
         
@@ -115,32 +112,17 @@ class DataPactClient:
         create_warehouse: bool,
         results_table: str | None = None,
     ) -> None:
-        """
-        Constructs, deploys, and runs the DataPact validation workflow.
-
-        This is the main orchestration method. It calls helper methods to set up
-        the environment, then dynamically builds a Databricks Job definition
-        in memory from the user's config. It creates one parallel notebook task
-        for each validation and a final aggregation task that depends on all
-        others. It then submits and monitors the job run.
-
-        Args:
-            config: The parsed validation configuration dictionary.
-            job_name: The name for the Databricks job.
-            warehouse_name: The name of the Serverless SQL Warehouse to use.
-            create_warehouse: Whether to create the warehouse if it's not found.
-            results_table: Optional FQN of a Delta table to store results.
-        """
+        """Constructs, deploys, and runs the DataPact validation workflow."""
         self._upload_notebooks()
         warehouse = self._ensure_sql_warehouse(warehouse_name, create_warehouse)
 
-        validation_tasks: list[jobs.Task] = []
+        validation_tasks: list[Task] = []
         task_keys = [v_conf["task_key"] for v_conf in config["validations"]]
 
         for v_conf in config["validations"]:
-            validation_tasks.append(jobs.Task(
+            validation_tasks.append(Task(
                 task_key=v_conf["task_key"],
-                notebook_task=jobs.NotebookTask(
+                notebook_task=NotebookTask(
                     notebook_path=f"{self.root_path}/validation_notebook.py",
                     base_parameters={
                         "config_json": json.dumps(v_conf),
@@ -150,10 +132,10 @@ class DataPactClient:
                 ),
             ))
 
-        aggregation_task = jobs.Task(
+        aggregation_task = Task(
             task_key="aggregate_results",
-            depends_on=[jobs.TaskDependency(task_key=tk) for tk in task_keys],
-            notebook_task=jobs.NotebookTask(
+            depends_on=[TaskDependency(task_key=tk) for tk in task_keys],
+            notebook_task=NotebookTask(
                 notebook_path=f"{self.root_path}/aggregation_notebook.py",
                 base_parameters={
                     "upstream_task_keys": json.dumps(task_keys),
@@ -163,18 +145,16 @@ class DataPactClient:
             ),
         )
 
-        # Define the libraries required by the job tasks.
-        # These will be pip installed on the serverless compute environment before execution.
         job_libraries = [
-            jobs.Library(pypi=jobs.PyPi(package="databricks-sql-connector")),
-            jobs.Library(pypi=jobs.PyPi(package="loguru")),
+            Library(pypi=PyPi(package="databricks-sql-connector")),
+            Library(pypi=PyPi(package="loguru"))
         ]
 
         job_settings_dict = {
             "name": job_name,
             "tasks": validation_tasks + [aggregation_task],
-            "run_as": jobs.JobRunAs(user_name=self.w.current_user.me().user_name),
-            "libraries": job_libraries,
+            "run_as": JobRunAs(user_name=self.w.current_user.me().user_name),
+            "libraries": job_libraries
         }
 
         existing_job = None
@@ -184,25 +164,23 @@ class DataPactClient:
         
         if existing_job:
             logger.info(f"Updating existing job '{job_name}' (ID: {existing_job.job_id})...")
-            # For 'reset', we instantiate a JobSettings object from the dictionary.
-            job_settings_obj = jobs.JobSettings(**job_settings_dict)
+            job_settings_obj = JobSettings(**job_settings_dict)
             self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings_obj)
             job_id = existing_job.job_id
         else:
             logger.info(f"Creating new job '{job_name}'...")
-            # For 'create', we unpack the dictionary into keyword arguments.
             new_job = self.w.jobs.create(**job_settings_dict)
             job_id = new_job.job_id
 
         logger.info(f"Launching job {job_id}...")
         run_info = self.w.jobs.run_now(job_id=job_id)
-        run: int = self.w.jobs.get_run(run_info.run_id)
+        run = self.w.jobs.get_run(run_info.run_id)
         
         logger.info(f"Run started! View progress here: {run.run_page_url}")
         while run.state.life_cycle_state not in TERMINAL_STATES:
             time.sleep(20)
             run = self.w.jobs.get_run(run.run_id)
-            finished_tasks = sum(1 for t in run.tasks if t.state.life_cycle_state == jobs.RunLifeCycleState.TERMINATED)
+            finished_tasks = sum(1 for t in run.tasks if t.state.life_cycle_state == RunLifeCycleState.TERMINATED)
             logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{len(task_keys)+1}")
 
         final_state = run.state.result_state
