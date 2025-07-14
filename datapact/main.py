@@ -12,8 +12,8 @@ main `run_validation` method to start the process.
 """
 
 import argparse
+import os
 import yaml
-from typing import Dict, Any
 from .client import DataPactClient
 from loguru import logger
 
@@ -27,57 +27,48 @@ def main() -> None:
     running DataPact from an external environment like a terminal or CI/CD pipeline.
     """
     parser = argparse.ArgumentParser(
-        description="DataPact: The enterprise grade data validation accelerator for Databricks.",
+        description="DataPact: The enterprise-grade data validation accelerator for Databricks.",
         formatter_class=argparse.RawTextHelpFormatter
     )
-    parser.add_argument(
-        "command",
-        choices=["run"],
-        help="The command to execute."
-    )
-    parser.add_argument(
-        "--config",
-        required=True,
-        help="Path to the validation_config.yml file."
-    )
-    parser.add_argument(
-        "--job-name",
-        default="datapact-validation-run",
-        help="Name of the Databricks job to create or update."
-    )
+    parser.add_argument("command", choices=["run"])
+    parser.add_argument("--config", required=True, help="Path to the validation_config.yml file.")
+    parser.add_argument("--job-name", default="datapact-validation-run", help="Name of the Databricks job.")
+    
     parser.add_argument(
         "--warehouse",
-        required=True,
-        help="Name of the Serverless SQL Warehouse to use for validation queries."
-    )
-    parser.add_argument(
-        "--create-warehouse",
-        action="store_true",
-        help="If specified, creates the SQL warehouse if it does not exist."
-    )
-    parser.add_argument(
-        "--results-table",
-        help="Optional: A 3-level (catalog.schema.table) Delta table name to store results."
+        help="Name of the Serverless SQL Warehouse. Can also be set via DATAPACT_WAREHOUSE env var."
     )
     parser.add_argument(
         "--profile",
-        default="DEFAULT",
-        help="Databricks CLI profile to use for authentication."
+        help="Databricks CLI profile. Can also be set via DATABRICKS_PROFILE env var."
     )
     
+    parser.add_argument("--create-warehouse", action="store_true", help="If specified, creates the SQL warehouse if it does not exist.")
+    parser.add_argument("--results-table", help="Optional: FQN of a Delta table to store results.")
+    
     args = parser.parse_args()
+
+    warehouse_name = args.warehouse or os.getenv("DATAPACT_WAREHOUSE")
+    profile_name = args.profile or os.getenv("DATABRICKS_PROFILE")
+
+    if not warehouse_name:
+        raise ValueError("Warehouse must be provided via --warehouse flag or DATAPACT_WAREHOUSE environment variable.")
+    if not profile_name:
+        # Default to 'DEFAULT' if nothing is provided, as the SDK does.
+        profile_name = "DEFAULT"
+        logger.info("No --profile or DATABRICKS_PROFILE found, using 'DEFAULT' profile.")
 
     if args.command == "run":
         logger.info(f"Loading configuration from {args.config}...")
         with open(args.config, 'r') as f:
-            config: Dict[str, Any] = yaml.safe_load(f)
+            config = yaml.safe_load(f)
         
         try:
-            client = DataPactClient(profile=args.profile)
+            client = DataPactClient(profile=profile_name)
             client.run_validation(
                 config=config,
                 job_name=args.job_name,
-                warehouse_name=args.warehouse,
+                warehouse_name=warehouse_name,
                 create_warehouse=args.create_warehouse,
                 results_table=args.results_table,
             )
