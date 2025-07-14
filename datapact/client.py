@@ -112,7 +112,7 @@ class DataPactClient:
                 path=script_path,
                 content=sql_script.encode('utf-8'),
                 overwrite=True,
-                format=workspace.ImportFormat.SOURCE
+                format=workspace.ImportFormat.RAW
             )
             task_paths[task_key] = script_path
             logger.info(f"  - Uploaded SQL FILE for task '{task_key}' to {script_path}")
@@ -131,7 +131,7 @@ class DataPactClient:
                 path=agg_script_path,
                 content=agg_sql_script.encode('utf-8'),
                 overwrite=True,
-                format=workspace.ImportFormat.SOURCE,
+                format=workspace.ImportFormat.RAW,
             )
             task_paths['aggregate_results'] = agg_script_path
             logger.info(f"  - Uploaded aggregation SQL FILE to {agg_script_path}")
