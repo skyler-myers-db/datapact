@@ -155,10 +155,12 @@ class DataPactClient:
             ),
         )
 
+        # The values in this dictionary MUST be of the correct type expected by the SDK.
         job_settings_dict = {
             "name": job_name,
             "tasks": validation_tasks,
-            "run_as": {"user_name": self.w.current_user.me().user_name},
+            # The 'run_as' parameter requires a JobRunAs OBJECT, not a dictionary.
+            "run_as": jobs.JobRunAs(user_name=self.w.current_user.me().user_name),
         }
 
         existing_job = None
