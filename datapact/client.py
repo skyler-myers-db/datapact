@@ -169,15 +169,14 @@ class DataPactClient:
                           `{results_table}`
                         WHERE
                           run_id = :run_id
-                          AND from_json(
-                            result_payload, 'overall_validation_passed BOOLEAN'
-                          ).overall_validation_passed = FALSE
-                      ) > 0
+                          AND result_payload:overall_validation_passed = FALSE
+                      ) = 0
                     THEN
-                      RAISE ERROR(
+                      'All validation tasks succeeded.'
+                    ELSE
+                        RAISE ERROR(
                           'Aggregation check failed: One or more validation tasks failed.'
                         )
-                    ELSE 'All validation tasks succeeded.'
                   END AS validation_status;
             """)
             self.w.workspace.upload(
