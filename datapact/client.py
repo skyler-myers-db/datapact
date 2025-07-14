@@ -129,9 +129,6 @@ class DataPactClient:
         validation_tasks: list[jobs.Task] = []
         task_keys = [v_conf["task_key"] for v_conf in config["validations"]]
 
-        dbr_version = self.w.clusters.select_spark_version(long_term_support=True, serverless=True)
-        logger.info(f"Using Serverless DBR version for orchestration: {dbr_version}")
-
         for v_conf in config["validations"]:
             validation_tasks.append(jobs.Task(
                 task_key=v_conf["task_key"],
@@ -161,7 +158,6 @@ class DataPactClient:
         job_settings = jobs.JobSettings(
             name=job_name,
             tasks=validation_tasks + [aggregation_task],
-            spark_version=dbr_version,
             run_as=jobs.JobRunAs(user_name=self.w.current_user.me().user_name),
         )
 
