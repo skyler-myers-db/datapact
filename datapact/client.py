@@ -26,7 +26,7 @@ from databricks.sdk.service.jobs import RunLifeCycleState
 from loguru import logger
 
 # Define the states that indicate a job run has finished.
-TERMINAL_STATES = [
+TERMINAL_STATES: list[RunLifeCycleState] = [
     RunLifeCycleState.TERMINATED,
     RunLifeCycleState.SKIPPED,
     RunLifeCycleState.INTERNAL_ERROR
@@ -106,7 +106,12 @@ class DataPactClient:
         self._upload_notebooks()
         warehouse = self._ensure_sql_warehouse(warehouse_name, create_warehouse)
 
-        # Build the task list using dictionaries that conform to the API schema
+        # THIS IS THE CRITICAL FIX: Define the libraries required by the job tasks.
+        task_libraries = [
+            {"pypi": {"package": "databricks-sql-connector"}},
+            {"pypi": {"package": "loguru"}}
+        ]
+
         tasks_list = []
         task_keys = [v_conf["task_key"] for v_conf in config["validations"]]
 
@@ -121,6 +126,7 @@ class DataPactClient:
                         "sql_warehouse_http_path": warehouse.odbc_params.path,
                     },
                 },
+                "libraries": task_libraries # <-- ADD LIBRARIES TO EACH VALIDATION TASK
             })
 
         tasks_list.append({
@@ -134,17 +140,13 @@ class DataPactClient:
                     "run_id": "{{job.run_id}}",
                 },
             },
+            "libraries": task_libraries # <-- ADD LIBRARIES TO THE AGGREGATION TASK
         })
 
-        # Build the final job settings as a pure dictionary
         job_settings_dict = {
             "name": job_name,
             "tasks": tasks_list,
             "run_as": {"user_name": self.w.current_user.me().user_name},
-            "libraries": [
-                {"pypi": {"package": "databricks-sql-connector"}},
-                {"pypi": {"package": "loguru"}}
-            ]
         }
 
         existing_job = None
@@ -154,13 +156,11 @@ class DataPactClient:
         
         if existing_job:
             logger.info(f"Updating existing job '{job_name}' (ID: {existing_job.job_id})...")
-            # The 'reset' method requires a JobSettings object, which we can create from our dict.
             job_settings_obj = jobs.JobSettings.from_dict(job_settings_dict)
             self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings_obj)
             job_id = existing_job.job_id
         else:
             logger.info(f"Creating new job '{job_name}'...")
-            # The 'create' method unpacks the dictionary into keyword arguments.
             new_job = self.w.jobs.create(**job_settings_dict)
             job_id = new_job.job_id
 
