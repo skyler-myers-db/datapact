@@ -3,10 +3,9 @@ The core client for interacting with the Databricks API.
 
 This module contains the `DataPactClient` class. Its architecture is a
 local-first orchestrator that dynamically generates pure SQL validation scripts.
-It uploads these scripts as raw SOURCE files using the correct `import_` API
-and creates a multi-task Databricks Job where each task is a SQL Task of type
-'File', running directly on a specified Serverless SQL Warehouse. This is the
-definitive, correct architecture.
+It uploads these scripts as raw SOURCE files and creates a multi-task Databricks
+Job where each task is a SQL Task of type 'File', running directly on a
+specified Serverless SQL Warehouse. This is the definitive, correct architecture.
 """
 
 import json
@@ -17,7 +16,15 @@ import textwrap
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import jobs, sql as sql_service, workspace
-from databricks.sdk.service.jobs import RunLifeCycleState
+from databricks.sdk.service.jobs import (
+    JobSettings,
+    JobRunAs,
+    Task,
+    SqlTask,
+    SqlTaskFile,
+    TaskDependency,
+    RunLifeCycleState
+)
 from loguru import logger
 
 TERMINAL_STATES: list[RunLifeCycleState] = [
@@ -123,7 +130,6 @@ class DataPactClient:
             agg_script_path = f"{sql_tasks_path}/aggregate_results.sql"
             agg_sql_script = textwrap.dedent(f"""\
                 -- DataPact Aggregation Task
-                -- This task verifies that all upstream tasks have successfully logged their results.
                 SELECT
                   CASE
                     WHEN NOT ((SELECT COUNT(*) FROM `{results_table}` WHERE run_id = '{{{{job.run_id}}}}' AND status = 'SUCCESS') = {len(config['validations'])})
@@ -154,39 +160,43 @@ class DataPactClient:
         warehouse = self._ensure_sql_warehouse(warehouse_name)
         task_paths = self._upload_sql_scripts(config, results_table)
 
-        tasks_list = []
+        tasks_list: list[Task] = []
         validation_task_keys = [v_conf["task_key"] for v_conf in config["validations"]]
 
         for task_key in validation_task_keys:
-            tasks_list.append({
-                "task_key": task_key,
-                "sql_task": {
-                    "file": {
-                        "path": task_paths[task_key],
-                        "source": "WORKSPACE"
-                    },
-                    "warehouse_id": warehouse.id,
-                }
-            })
+            tasks_list.append(
+                Task(
+                    task_key=task_key,
+                    sql_task=SqlTask(
+                        file=SqlTaskFile(
+                            path=task_paths[task_key],
+                            source=jobs.Source.WORKSPACE
+                        ),
+                        warehouse_id=warehouse.id
+                    )
+                )
+            )
 
         if results_table and 'aggregate_results' in task_paths:
-            tasks_list.append({
-                "task_key": "aggregate_results",
-                "depends_on": [{"task_key": tk} for tk in validation_task_keys],
-                "sql_task": {
-                    "file": {
-                        "path": task_paths['aggregate_results'],
-                        "source": "WORKSPACE"
-                    },
-                    "warehouse_id": warehouse.id,
-                }
-            })
+            tasks_list.append(
+                Task(
+                    task_key="aggregate_results",
+                    depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys],
+                    sql_task=SqlTask(
+                        file=SqlTaskFile(
+                            path=task_paths['aggregate_results'],
+                            source=jobs.Source.WORKSPACE
+                        ),
+                        warehouse_id=warehouse.id
+                    )
+                )
+            )
 
-        job_settings_dict = {
-            "name": job_name,
-            "tasks": tasks_list,
-            "run_as": {"user_name": self.user_name},
-        }
+        job_settings = JobSettings(
+            name=job_name,
+            tasks=tasks_list,
+            run_as=JobRunAs(user_name=self.user_name),
+        )
 
         existing_job = None
         for j in self.w.jobs.list(name=job_name):
@@ -195,12 +205,11 @@ class DataPactClient:
         
         if existing_job:
             logger.info(f"Updating existing job '{job_name}' (ID: {existing_job.job_id})...")
-            job_settings_obj = jobs.JobSettings.from_dict(job_settings_dict)
-            self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings_obj)
+            self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings)
             job_id = existing_job.job_id
         else:
             logger.info(f"Creating new job '{job_name}'...")
-            new_job = self.w.jobs.create(**job_settings_dict)
+            new_job = self.w.jobs.create(**job_settings.as_dict())
             job_id = new_job.job_id
 
         logger.info(f"Launching job {job_id}...")
@@ -212,7 +221,7 @@ class DataPactClient:
             time.sleep(20)
             run = self.w.jobs.get_run(run.run_id)
             finished_tasks = sum(1 for t in run.tasks if t.state.life_cycle_state == RunLifeCycleState.TERMINATED)
-            logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{len(task_keys)}")
+            logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{len(tasks_list)}")
 
         final_state = run.state.result_state
         logger.info(f"Run finished with state: {final_state}")
