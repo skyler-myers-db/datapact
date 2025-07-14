@@ -124,3 +124,12 @@ In your terminal (or add to `~/.bash_profile`, `~/.zshrc`):
 export DATAPACT_WAREHOUSE="Your Serverless Warehouse Name"
 export DATABRICKS_PROFILE="my-profile"
 ```
+
+Now you can run DataPact with a much shorter command:
+
+```bash
+datapact run \
+  --config my_validations.yml \
+  --job-name "My Production Validation" \
+  --results-table "main.reporting.datapact_results"
+```
