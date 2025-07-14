@@ -275,7 +275,7 @@ class DataPactClient:
             time.sleep(20)
             run = self.w.jobs.get_run(run.run_id)
             finished_tasks = sum(1 for t in run.tasks if t.state.life_cycle_state == RunLifeCycleState.TERMINATED)
-            logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{len(task_keys)}")
+            logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{len(task_list)}")
 
         final_state = run.state.result_state
         logger.info(f"Run finished with state: {final_state}")
