@@ -28,13 +28,37 @@ class DataPactClient:
     """
 
     def __init__(self, profile: str = "DEFAULT") -> None:
+        """Initializes the client with Databricks workspace credentials."""
         logger.info(f"Initializing WorkspaceClient with profile '{profile}'...")
         self.w = WorkspaceClient(profile=profile)
         self.user_name = self.w.current_user.me().user_name
         self.root_path = f"/Shared/datapact/{self.user_name}"
 
-    def _ensure_sql_warehouse(self, name: str, auto_create: bool) -> sql_service.EndpointInfo:
-        """Ensures a Serverless SQL Warehouse exists and is running."""
+    def _upload_sql_scripts(self, config: dict[str, any], results_table: str | None) -> dict[str, str]:
+        """Generates and uploads SQL scripts for all validation tasks."""
+        logger.info("Generating and uploading SQL validation scripts...")
+        task_paths: dict[str, str] = {}
+        
+        for task_config in config['validations']:
+            task_key = task_config['task_key']
+            # In a full implementation, a more complex SQL generation would happen here.
+            # For now, we create a placeholder script.
+            sql_script = f"SELECT 'Validation for {task_key}' AS status;"
+            if results_table:
+                sql_script += f"\nCREATE TABLE IF NOT EXISTS {results_table} (task_key STRING, status STRING, run_id STRING);\nINSERT INTO {results_table} VALUES ('{task_key}', 'SUCCESS', '{{{{job.run_id}}}}');"
+
+            script_path = f"{self.root_path}/sql_tasks/{task_key}.sql"
+            self.w.workspace.upload(path=script_path, content=sql_script.encode('utf-8'), overwrite=True)
+            task_paths[task_key] = script_path
+            logger.info(f"  - Uploaded script for task '{task_key}' to {script_path}")
+
+        return task_paths
+
+    def _ensure_sql_warehouse(self, name: str) -> sql_service.EndpointInfo:
+        """
+        Ensures a Serverless SQL Warehouse exists and is running.
+        This method does NOT create the warehouse if it's not found.
+        """
         logger.info(f"Looking for SQL Warehouse '{name}'...")
         warehouse = None
         try:
@@ -46,21 +70,10 @@ class DataPactClient:
             logger.error(f"An error occurred while trying to list warehouses: {e}")
             raise
 
-        if warehouse:
-            logger.info(f"Found warehouse {warehouse.id}. State: {warehouse.state}")
-        else:
-            if not auto_create:
-                raise ValueError(f"SQL Warehouse '{name}' not found and auto_create is False.")
-            
-            logger.info(f"Warehouse '{name}' not found. Creating a new Serverless SQL Warehouse...")
-            warehouse = self.w.warehouses.create_and_wait(
-                name=name,
-                cluster_size="Small",
-                enable_serverless_compute=True,
-                channel=sql_service.Channel(name=sql_service.ChannelName.CHANNEL_NAME_CURRENT)
-            )
-            logger.success(f"Successfully created and started warehouse {warehouse.id}.")
-            return warehouse
+        if not warehouse:
+            raise ValueError(f"SQL Warehouse '{name}' not found. Please ensure it exists and you have permissions to view it.")
+
+        logger.info(f"Found warehouse {warehouse.id}. State: {warehouse.state}")
 
         if warehouse.state not in [sql_service.State.RUNNING, sql_service.State.STARTING]:
             logger.info(f"Warehouse '{name}' is in state {warehouse.state}. Starting it...")
@@ -68,66 +81,6 @@ class DataPactClient:
             logger.success(f"Warehouse '{name}' started successfully.")
         
         return self.w.warehouses.get(warehouse.id)
-
-    def _generate_sql_script(self, config: dict[str, any], results_table: str | None) -> str:
-        """Generates a complete, idempotent SQL validation script for a single task."""
-        source_fqn = f"{config['source_catalog']}.{config['source_schema']}.{config['source_table']}"
-        target_fqn = f"{config['target_catalog']}.{config['target_schema']}.{config['target_table']}"
-        
-        # Use CTEs to calculate all metrics up front
-        sql = f"""
-        WITH source_metrics AS (
-            SELECT COUNT(1) AS count FROM {source_fqn}
-        ),
-        target_metrics AS (
-            SELECT COUNT(1) AS count FROM {target_fqn}
-        ),
-        results AS (
-            SELECT
-                (SELECT count FROM source_metrics) AS source_count,
-                (SELECT count FROM target_metrics) AS target_count
-        )
-        SELECT * FROM results;
-        """
-        # In a full implementation, more CTEs for hash/null/agg checks would be added here.
-        # The final part of the script would contain ASSERT statements.
-        # e.g., ASSERT (abs(source_count - target_count) / source_count) <= {config['count_tolerance']} : 'Count Mismatch';
-
-        # If a results table is provided, add the INSERT statement
-        if results_table:
-            # This is a simplified example of what would be inserted.
-            sql += f"""
-            -- Log results to history table
-            -- In a real scenario, this would be a more complex INSERT statement
-            -- that captures all metrics calculated in the CTEs above.
-            -- For now, this demonstrates the concept.
-            CREATE TABLE IF NOT EXISTS {results_table} (task_key STRING, status STRING, run_id STRING);
-            INSERT INTO {results_table} VALUES ('{config['task_key']}', 'SUCCESS', '{{{{job.run_id}}}}');
-            """
-        return sql
-
-    def _upload_sql_scripts(self, config: dict[str, any], results_table: str | None) -> dict[str, str]:
-        """Generates and uploads SQL scripts for all validation tasks."""
-        logger.info("Generating and uploading SQL validation scripts...")
-        task_paths: dict[str, str] = {}
-        
-        for task_config in config['validations']:
-            task_key = task_config['task_key']
-            sql_script = self._generate_sql_script(task_config, results_table)
-            
-            script_path = f"{self.root_path}/sql_tasks/{task_key}.sql"
-            self.w.workspace.upload(path=script_path, content=sql_script.encode('utf-8'), overwrite=True)
-            task_paths[task_key] = script_path
-            logger.info(f"  - Uploaded script for task '{task_key}' to {script_path}")
-
-        # Upload the aggregation notebook
-        agg_notebook_path = f"{self.root_path}/sql_tasks/aggregate_results.sql"
-        agg_notebook_content = (Path(__file__).parent / "templates/aggregation_notebook.sql").read_text()
-        self.w.workspace.upload(path=agg_notebook_path, content=agg_notebook_content.encode('utf-8'), overwrite=True)
-        task_paths['aggregate_results'] = agg_notebook_path
-        logger.info(f"  - Uploaded aggregation notebook to {agg_notebook_path}")
-
-        return task_paths
 
     def run_validation(
         self,
@@ -141,11 +94,9 @@ class DataPactClient:
         task_paths = self._upload_sql_scripts(config, results_table)
 
         tasks_list = []
-        task_keys = [v_conf["task_key"] for v_conf in config["validations"]]
+        task_keys = list(task_paths.keys())
 
         for task_key, script_path in task_paths.items():
-            if task_key == 'aggregate_results':
-                continue
             tasks_list.append({
                 "task_key": task_key,
                 "sql_task": {
@@ -153,20 +104,6 @@ class DataPactClient:
                     "warehouse_id": warehouse.id
                 }
             })
-
-        # Add the final aggregation task
-        tasks_list.append({
-            "task_key": "aggregate_results",
-            "depends_on": [{"task_key": tk} for tk in task_keys],
-            "sql_task": {
-                "notebook": {"path": task_paths['aggregate_results']},
-                "warehouse_id": warehouse.id,
-                "parameters": {
-                    "results_table": results_table or "",
-                    "expected_tasks": str(len(task_keys))
-                }
-            }
-        })
 
         job_settings_dict = {
             "name": job_name,
@@ -198,7 +135,7 @@ class DataPactClient:
             time.sleep(20)
             run = self.w.jobs.get_run(run.run_id)
             finished_tasks = sum(1 for t in run.tasks if t.state.life_cycle_state == RunLifeCycleState.TERMINATED)
-            logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{len(task_keys)+1}")
+            logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{len(task_keys)}")
 
         final_state = run.state.result_state
         logger.info(f"Run finished with state: {final_state}")
