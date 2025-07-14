@@ -184,7 +184,7 @@ class DataPactClient:
                   CASE
                     WHEN validations_passed THEN TRUE
                     ELSE RAISE_ERROR(
-                      'One or more table validations failed for run :run_id. Check history table for details.'
+                      'One or more table validations failed for the current run. Check history table for details.'
                     )
                   END AS `Validations Passed`;
             """)
