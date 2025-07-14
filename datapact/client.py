@@ -113,7 +113,7 @@ class DataPactClient:
 
             -- Step 3: Set the variable based on the result that was just inserted.
             SET VAR validation_passed = (
-                SELECT result_payload.overall_validation_passed.overall_validation_passed
+                SELECT result_payload:overall_validation_passed
                 FROM {results_table}
                 WHERE run_id = :run_id AND task_key = '{config['task_key']}'
                 ORDER BY timestamp DESC
