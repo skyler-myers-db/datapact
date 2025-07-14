@@ -15,7 +15,7 @@ from datetime import timedelta
 import textwrap
 
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service import jobs, sql as sql_service
+from databricks.sdk.service import jobs, sql as sql_service, workspace
 from databricks.sdk.service.jobs import RunLifeCycleState
 from loguru import logger
 
@@ -108,23 +108,31 @@ class DataPactClient:
             sql_script = self._generate_validation_sql(task_config, results_table)
             
             script_path = f"{sql_tasks_path}/{task_key}.sql"
-            self.w.workspace.upload(path=script_path, content=sql_script.encode('utf-8'), overwrite=True, format="SOURCE")
+            self.w.workspace.upload(
+                path=script_path,
+                content=sql_script.encode('utf-8'),
+                overwrite=True,
+                format=workspace.ImportFormat.SOURCE
+            )
             task_paths[task_key] = script_path
             logger.info(f"  - Uploaded SQL FILE for task '{task_key}' to {script_path}")
 
-        # Generate and upload the aggregation script if a results table is specified.
         if results_table:
             agg_script_path = f"{sql_tasks_path}/aggregate_results.sql"
             agg_sql_script = textwrap.dedent(f"""\
                 -- DataPact Aggregation Task
-                -- This task verifies that all upstream tasks have successfully logged their results.
                 ASSERT (
                   (SELECT COUNT(*) FROM `{results_table}` WHERE run_id = '{{{{job.run_id}}}}' AND status = 'SUCCESS') = {len(config['validations'])}
                 ) : 'One or more validation tasks failed to record a success in the history table.';
 
                 SELECT "All validation tasks reported success." AS overall_status;
             """)
-            self.w.workspace.upload(path=agg_script_path, content=agg_sql_script.encode('utf-8'), overwrite=True, format="SOURCE")
+            self.w.workspace.upload(
+                path=agg_script_path,
+                content=agg_sql_script.encode('utf-8'),
+                overwrite=True,
+                format=workspace.ImportFormat.SOURCE
+            )
             task_paths['aggregate_results'] = agg_script_path
             logger.info(f"  - Uploaded aggregation SQL FILE to {agg_script_path}")
 
@@ -156,7 +164,7 @@ class DataPactClient:
                 }
             })
 
-        if results_table:
+        if results_table and 'aggregate_results' in task_paths:
             tasks_list.append({
                 "task_key": "aggregate_results",
                 "depends_on": [{"task_key": tk} for tk in validation_task_keys],
