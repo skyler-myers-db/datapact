@@ -23,10 +23,10 @@ Its responsibilities are:
 
 import json
 import os
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Optional
 
-from databricks import sql
 from databricks.sdk.runtime import *
+from pyspark.sql import SparkSession
 from loguru import logger
 
 # --- 1. Configuration & Setup ---
@@ -70,24 +70,22 @@ target_fqn = f"{target_catalog}.{target_schema}.{target_table}"
 logger.info(f"Source: {source_fqn} | Target: {target_fqn}")
 
 # --- 2. Database Connection Helper ---
-def execute_query(query: str) -> List[Dict[str, Any]]:
-    """Executes a SQL query on the configured Serverless Warehouse and returns results."""
-    token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+def execute_query(query: str) -> list[dict[str, any]]:
+    """
+    Executes a SQL query using the native, built-in Spark session and returns
+    the result as a list of dictionaries.
+    """
+    global spark # Access the global spark session provided by the environment
+    logger.debug(f"Executing query via spark.sql: {query}")
     try:
-        with sql.connect(
-            server_hostname=databricks_host,
-            http_path=sql_warehouse_http_path,
-            token=token,
-        ) as connection:
-            with connection.cursor() as cursor:
-                logger.debug(f"Executing query: {query}")
-                cursor.execute(query)
-                columns = [desc[0] for desc in cursor.description]
-                return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        # The correct way to run SQL from a notebook is spark.sql()
+        df = spark.sql(query)
+        # .collect() brings the results to the driver, .asDict() converts each row.
+        return [row.asDict() for row in df.collect()]
     except Exception as e:
         logger.error(f"Query execution failed for query: {query}")
-        logger.error(f"Error: {e}")
-        raise
+        # Re-raise the exception to be caught by the main error handler.
+        raise e
 
 # --- 3. Validation Logic ---
 validation_passed = True
