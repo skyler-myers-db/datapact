@@ -78,7 +78,7 @@ class DataPactClient:
 
             SELECT
               CASE
-                WHEN ((abs((SELECT count FROM target_metrics) - (SELECT count FROM source_metrics)) / NULLIF(CAST((SELECT count FROM source_metrics) AS DOUBLE), 0))) > {count_tolerance})
+                WHEN ((abs((SELECT count FROM target_metrics) - (SELECT count FROM source_metrics)) / NULLIF(CAST((SELECT count FROM source_metrics) AS DOUBLE), 0))) > {count_tolerance}
                 THEN RAISE_ERROR('Count validation failed: Relative difference exceeded tolerance of {count_tolerance}.')
                 ELSE 'Count validation passed.'
               END;
