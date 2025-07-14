@@ -114,3 +114,13 @@ Below are all available parameters for each task in your `validation_config.yml`
 ### Results & Reporting
 
 If you provide the `--results-table` argument, DataPact will write a detailed summary of every validation task to the specified Delta table. This allows you to build dashboards in Databricks SQL to monitor data quality trends over time.
+
+#### Simplified Configuration with Environment Variables (Recommended)
+
+For convenience, you can set your warehouse and profile as environment variables to avoid typing them in every command.
+
+In your terminal (or add to `~/.bash_profile`, `~/.zshrc`):
+```bash
+export DATAPACT_WAREHOUSE="Your Serverless Warehouse Name"
+export DATABRICKS_PROFILE="my-profile"
+```
