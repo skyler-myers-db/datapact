@@ -1,56 +1,54 @@
 """
 A local utility script to set up the DataPact demo environment.
 
-This script is designed to be run from a user's local machine. It provides a
-one-step command to create all the necessary Databricks assets for a compelling
-and realistic demonstration of the DataPact tool.
-
-It connects to the user's Databricks workspace, reads a pure SQL file
-(`demo/setup.sql`), and executes it against a specified Serverless SQL
-Warehouse. This creates the `datapact_demo_catalog` with high-volume source
-and target tables containing intentional discrepancies that DataPact can find.
+This script acts as a local client to prepare the necessary resources for
+running the DataPact demo. It reads a pure SQL file (`setup.sql`) and
+executes it statement-by-statement against a specified Serverless SQL
+Warehouse. This approach ensures the demo setup is 100% SQL-based and
+does not require any Spark or notebook execution for the setup itself,
+perfectly aligning with the DataPact architectural philosophy.
 """
 
 import argparse
 import time
 from pathlib import Path
 from databricks import sql
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service import compute
 from loguru import logger
 
-def run_demo_setup():
-    """
-    Sets up the DataPact demo environment in a Databricks workspace.
+def get_warehouse_by_name(w: WorkspaceClient, name: str) -> compute.EndpointInfo | None:
+    """Finds a SQL warehouse by name by listing all warehouses."""
+    try:
+        for wh in w.warehouses.list():
+            if wh.name == name:
+                return wh
+    except Exception as e:
+        logger.error(f"An error occurred while trying to list warehouses: {e}")
+    return None
 
-    This script acts as a local client to prepare the necessary resources for
-    running the DataPact demo. It reads a pure SQL file (`setup.sql`) and
-    executes it statement-by-statement against a specified Serverless SQL
-    Warehouse. This approach ensures the demo setup is 100% SQL-based and
-    does not require any Spark or notebook execution for the setup itself,
-    perfectly aligning with the DataPact architectural philosophy.
-    """
+def run_demo_setup():
+    """The main function to set up the DataPact demo environment."""
     parser = argparse.ArgumentParser(description="Set up the DataPact demo environment.")
     parser.add_argument("--warehouse", required=True, help="Name of the Serverless SQL Warehouse to use.")
     parser.add_argument("--profile", default="DEFAULT", help="Databricks CLI profile to use.")
     args = parser.parse_args()
 
     logger.info(f"Connecting to Databricks with profile '{args.profile}'...")
-    # We use the SDK's sql.connect for direct SQL execution
-    from databricks.sdk import WorkspaceClient
     w = WorkspaceClient(profile=args.profile)
-    
-    try:
-        warehouse = w.warehouses.get_by_name(args.warehouse)
-        logger.info(f"Found warehouse '{args.warehouse}' (ID: {warehouse.id}).")
-    except Exception as e:
-        logger.critical(f"Failed to find warehouse '{args.warehouse}'. Please ensure it exists. Error: {e}")
+
+    warehouse = get_warehouse_by_name(w, args.warehouse)
+    if not warehouse:
+        logger.critical(f"Failed to find warehouse '{args.warehouse}'. Please ensure it exists and you have permissions to view it.")
         return
+
+    logger.info(f"Found warehouse '{args.warehouse}' (ID: {warehouse.id}).")
 
     sql_file_path = Path(__file__).parent / "setup.sql"
     logger.info(f"Reading setup commands from: {sql_file_path}")
     with open(sql_file_path, 'r') as f:
-        # Split SQL script into individual statements, filtering out empty lines and comments
         sql_commands = [
-            cmd.strip() for cmd in f.read().split(';') 
+            cmd.strip() for cmd in f.read().split(';')
             if cmd.strip() and not cmd.strip().startswith('--')
         ]
 
@@ -67,8 +65,8 @@ def run_demo_setup():
                     logger.info(f"Executing command {i+1}/{len(sql_commands)}...")
                     logger.debug(command)
                     cursor.execute(command)
-                    time.sleep(1) # Small delay to prevent overwhelming the API
-        
+                    time.sleep(1)
+
         logger.success("✅ Demo environment setup complete!")
         logger.info("You can now run the demo validation with:")
         logger.info(f"datapact run --config demo/demo_config.yml --warehouse \"{args.warehouse}\" --profile {args.profile}")
