@@ -135,7 +135,6 @@ class DataPactClient:
                 content=agg_sql_script.encode('utf-8'),
                 overwrite=True,
                 format=workspace.ImportFormat.SOURCE,
-                language=workspace.Language.SQL
             )
             task_paths['aggregate_results'] = agg_script_path
             logger.info(f"  - Uploaded aggregation SQL FILE to {agg_script_path}")
