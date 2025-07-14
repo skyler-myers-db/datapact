@@ -37,7 +37,7 @@ class DataPactClient:
         """
         logger.info(f"Initializing WorkspaceClient with profile '{profile}'...")
         self.w = WorkspaceClient(profile=profile)
-        self.root_path = f"/Shared/datapact/{self.w.currentUser.me().workspace_user_name}"
+        self.root_path = f"/Shared/datapact/{self.w.current_user.me().workspace_user_name}"
         logger.info(f"Using workspace path: {self.root_path}")
 
     def _upload_notebooks(self) -> None:
