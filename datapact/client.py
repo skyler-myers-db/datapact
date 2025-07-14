@@ -76,7 +76,7 @@ class DataPactClient:
 
             -- Step 2: Calculate all metrics and insert a detailed JSON payload into the history table.
             -- This step will ALWAYS run to ensure logging, even on failure.
-            CREATE TABLE IF NOT EXISTS {results_table} (task_key STRING, status STRING, run_id STRING, timestamp TIMESTAMP, result_payload STRING);
+            CREATE TABLE IF NOT EXISTS {results_table} (task_key STRING, status STRING, run_id BIGINT, timestamp TIMESTAMP, result_payload VARIANT);
             INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload)
             WITH
               source_metrics AS (
@@ -98,7 +98,7 @@ class DataPactClient:
             SELECT
               '{config['task_key']}',
               CASE WHEN v.count_check_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
-              '{{{{job.run_id}}}}',
+              :run_id,
               current_timestamp(),
               to_json(
                 struct(
@@ -115,15 +115,20 @@ class DataPactClient:
             SET VAR validation_passed = (
                 SELECT from_json(result_payload, 'overall_validation_passed BOOLEAN').overall_validation_passed
                 FROM {results_table}
-                WHERE run_id = '{{{{job.run_id}}}}' AND task_key = '{config['task_key']}'
+                WHERE run_id = :run_id AND task_key = '{config['task_key']}'
                 ORDER BY timestamp DESC
                 LIMIT 1
             );
 
             -- Step 4: After logging, use the variable to conditionally fail the task.
-            IF NOT validation_passed THEN
-              RAISE_ERROR('One or more validations failed for task {config['task_key']}. Check history table for details.');
-            END IF;
+            SELECT
+              CASE
+                WHEN validation_passed THEN TRUE
+                ELSE
+                  RAISE_ERROR(
+                    'One or more validations failed for task {config['task_key']}. Check history table for details.'
+                  )
+              END AS `Validation Passed`;
         """)
         return sql
 
@@ -219,6 +224,12 @@ class DataPactClient:
             "name": job_name,
             "tasks": tasks_list,
             "run_as": {"user_name": self.user_name},
+            "parameters": [
+                {
+                    "name": "run_id",
+                    "default": "{{{{job.run_id}}}}",
+                },
+            ],
         }
 
         existing_job = None
