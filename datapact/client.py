@@ -27,11 +27,6 @@ from loguru import logger
 class DataPactClient:
     """
     A client to programmatically manage and run DataPact validation workflows.
-
-    This class is the core of the CLI's functionality. It interacts directly
-    with the Databricks SDK to manage workspace assets (notebooks), ensure
-    compute resources (SQL Warehouses) are available, and dynamically construct
-    and execute the multi-task validation job based on the user's configuration.
     """
 
     def __init__(self, profile: str = "DEFAULT"):
@@ -68,29 +63,24 @@ class DataPactClient:
     def _ensure_sql_warehouse(self, name: str, auto_create: bool) -> compute.EndpointInfo:
         """
         Ensures a Serverless SQL Warehouse exists and is running.
-
-        This method is idempotent. It first checks for an existing warehouse. If
-        not found, it creates one (if auto_create is True). If found but not
-        running, it starts it. This makes the workflow robust to different
-        workspace states.
-
-        Args:
-            name: The name of the SQL Warehouse.
-            auto_create: If True, creates the warehouse if it doesn't exist.
-
-        Returns:
-            The EndpointInfo object for the running warehouse.
-
-        Raises:
-            ValueError: If the warehouse doesn't exist and auto_create is False.
         """
+        logger.info(f"Looking for SQL Warehouse '{name}'...")
+        warehouse = None
         try:
-            logger.info(f"Looking for SQL Warehouse '{name}'...")
-            warehouse = self.w.warehouses.get_by_name(name)
+            for wh in self.w.warehouses.list():
+                if wh.name == name:
+                    warehouse = wh
+                    break
+        except Exception as e:
+            logger.error(f"An error occurred while trying to list warehouses: {e}")
+            raise
+
+        if warehouse:
             logger.info(f"Found warehouse {warehouse.id}. State: {warehouse.state}")
-        except NotFound:
+        else:
             if not auto_create:
                 raise ValueError(f"SQL Warehouse '{name}' not found and auto_create is False.")
+            
             logger.info(f"Warehouse '{name}' not found. Creating a new Serverless SQL Warehouse...")
             warehouse = self.w.warehouses.create_and_wait(
                 name=name,
@@ -98,13 +88,13 @@ class DataPactClient:
                 enable_serverless_compute=True,
                 channel=compute.Channel(name=compute.ChannelName.CHANNEL_NAME_CURRENT)
             )
-            logger.info(f"Successfully created and started warehouse {warehouse.id}.")
+            logger.success(f"Successfully created and started warehouse {warehouse.id}.")
             return warehouse
 
         if warehouse.state not in [compute.State.RUNNING, compute.State.STARTING]:
             logger.info(f"Warehouse '{name}' is in state {warehouse.state}. Starting it...")
-            self.w.warehouses.start(warehouse.id).result()
-            logger.info(f"Warehouse '{name}' started successfully.")
+            self.w.warehouses.start(warehouse.id).result(timeout=600)
+            logger.success(f"Warehouse '{name}' started successfully.")
         
         return self.w.warehouses.get(warehouse.id)
 
