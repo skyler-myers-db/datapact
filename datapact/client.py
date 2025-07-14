@@ -18,8 +18,10 @@ engine room of the accelerator, responsible for:
 import json
 import time
 from pathlib import Path
+from datetime import timedelta
 
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.errors import NotFound
 from databricks.sdk.service import jobs, sql as sql_service
 from loguru import logger
 
@@ -89,10 +91,10 @@ class DataPactClient:
             )
             logger.success(f"Successfully created and started warehouse {warehouse.id}.")
             return warehouse
-
         if warehouse.state not in [sql_service.State.RUNNING, sql_service.State.STARTING]:
             logger.info(f"Warehouse '{name}' is in state {warehouse.state}. Starting it...")
-            self.w.warehouses.start(warehouse.id).result(timeout=600)
+            # Use timedelta for the timeout parameter.
+            self.w.warehouses.start(warehouse.id).result(timeout=timedelta(seconds=600))
             logger.success(f"Warehouse '{name}' started successfully.")
         
         return self.w.warehouses.get(warehouse.id)
@@ -171,15 +173,15 @@ class DataPactClient:
         if existing_job:
             logger.info(f"Updating existing job '{job_name}' (ID: {existing_job.job_id})...")
             self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings.as_dict())
-            job_id = existing_job.job_id
+            job_id: int = existing_job.job_id
         else:
             logger.info(f"Creating new job '{job_name}'...")
             new_job = self.w.jobs.create(**job_settings.as_dict())
-            job_id = new_job.job_id
+            job_id: int = new_job.job_id
 
         logger.info(f"Launching job {job_id}...")
         run_info = self.w.jobs.run_now(job_id=job_id)
-        run = self.w.jobs.get_run(run_info.run_id)
+        run: int = self.w.jobs.get_run(run_info.run_id)
         
         logger.info(f"Run started! View progress here: {run.run_page_url}")
         while not run.is_terminal:
