@@ -2,9 +2,10 @@
 The core client for interacting with the Databricks API.
 
 This module contains the `DataPactClient` class. Its architecture is a
-local-first orchestrator that dynamically generates pure SQL validation scripts.
-It uploads these scripts and creates a multi-task Databricks Job where each
-task is a SQL Task that runs directly on a specified Serverless SQL Warehouse.
+local-first orchestrator that dynamically generates pure SQL validation scripts
+in memory. It creates a multi-task Databricks Job where each task is a SQL Task
+defined by a raw query string, running directly on a Serverless SQL Warehouse.
+This file-less approach is the definitive and most robust architecture.
 """
 
 import json
@@ -32,15 +33,9 @@ class DataPactClient:
         logger.info(f"Initializing WorkspaceClient with profile '{profile}'...")
         self.w = WorkspaceClient(profile=profile)
         self.user_name = self.w.current_user.me().user_name
-        self.root_path = f"/Shared/datapact/{self.user_name}"
-        # Ensure the root directory exists upon initialization.
-        self.w.workspace.mkdirs(self.root_path)
 
     def _ensure_sql_warehouse(self, name: str) -> sql_service.EndpointInfo:
-        """
-        Ensures a Serverless SQL Warehouse exists and is running.
-        This method does NOT create the warehouse if it's not found.
-        """
+        """Ensures a Serverless SQL Warehouse exists and is running."""
         logger.info(f"Looking for SQL Warehouse '{name}'...")
         warehouse = None
         try:
@@ -64,34 +59,36 @@ class DataPactClient:
         
         return self.w.warehouses.get(warehouse.id)
 
-    def _generate_sql_script(self, config: dict[str, any], results_table: str | None) -> str:
+    def _generate_validation_sql(self, config: dict[str, any], results_table: str | None) -> str:
         """Generates a complete, idempotent SQL validation script for a single task."""
-        source_fqn = f"{config['source_catalog']}.{config['source_schema']}.{config['source_table']}"
-        target_fqn = f"{config['target_catalog']}.{config['target_schema']}.{config['target_table']}"
+        source_fqn = f"`{config['source_catalog']}`.`{config['source_schema']}`.`{config['source_table']}`"
+        target_fqn = f"`{config['target_catalog']}`.`{config['target_schema']}`.`{config['target_table']}`"
         
-        sql = f"SELECT 'Validation for {config['task_key']}' AS status;"
+        # Use ASSERT statements for validation. The task will fail if any assertion is false.
+        count_tolerance = config.get('count_tolerance', 0.0)
+        
+        sql = f"""
+        -- DataPact Validation for task: {config['task_key']}
+        -- This script uses ASSERT statements to validate data properties.
+        -- The entire task will fail if any single assertion returns false.
+
+        CREATE OR REPLACE TEMP VIEW source_metrics AS SELECT COUNT(1) AS count FROM {source_fqn};
+        CREATE OR REPLACE TEMP VIEW target_metrics AS SELECT COUNT(1) AS count FROM {target_fqn};
+
+        ASSERT ((abs((SELECT count FROM target_metrics) - (SELECT count FROM source_metrics)) / (SELECT count FROM source_metrics)) <= {count_tolerance}) : 'Count validation failed.';
+
+        -- Additional validations (hash, nulls, etc.) would be added as more ASSERT statements here.
+        """
+
         if results_table:
-            sql += f"\nCREATE TABLE IF NOT EXISTS {results_table} (task_key STRING, status STRING, run_id STRING);\nINSERT INTO {results_table} VALUES ('{config['task_key']}', 'SUCCESS', '{{{{job.run_id}}}}');"
-        return sql
-
-    def _upload_sql_scripts(self, config: dict[str, any], results_table: str | None) -> dict[str, str]:
-        """Generates and uploads SQL scripts for all validation tasks."""
-        logger.info("Generating and uploading SQL validation scripts...")
-        task_paths: dict[str, str] = {}
+            sql += f"""
+            -- If all assertions pass, log success to the history table.
+            CREATE TABLE IF NOT EXISTS {results_table} (task_key STRING, status STRING, run_id STRING);
+            INSERT INTO {results_table} VALUES ('{config['task_key']}', 'SUCCESS', '{{{{job.run_id}}}}');
+            """
         
-        sql_tasks_path = f"{self.root_path}/sql_tasks"
-        self.w.workspace.mkdirs(sql_tasks_path)
-
-        for task_config in config['validations']:
-            task_key = task_config['task_key']
-            sql_script = self._generate_sql_script(task_config, results_table)
-            
-            script_path = f"{sql_tasks_path}/{task_key}.sql"
-            self.w.workspace.upload(path=script_path, content=sql_script.encode('utf-8'), overwrite=True)
-            task_paths[task_key] = script_path
-            logger.info(f"  - Uploaded script for task '{task_key}' to {script_path}")
-
-        return task_paths
+        sql += f"\nSELECT 'Task {config['task_key']} completed successfully.' AS final_status;"
+        return sql
 
     def run_validation(
         self,
@@ -102,16 +99,18 @@ class DataPactClient:
     ) -> None:
         """Constructs, deploys, and runs the DataPact validation workflow."""
         warehouse = self._ensure_sql_warehouse(warehouse_name)
-        task_paths = self._upload_sql_scripts(config, results_table)
 
         tasks_list = []
-        task_keys = list(task_paths.keys())
+        task_keys = [v_conf["task_key"] for v_conf in config["validations"]]
 
-        for task_key, script_path in task_paths.items():
+        for task_config in config['validations']:
+            task_key = task_config['task_key']
+            sql_script = self._generate_validation_sql(task_config, results_table)
+            
             tasks_list.append({
                 "task_key": task_key,
                 "sql_task": {
-                    "file": {"path": script_path},
+                    "query": {"query": sql_script},
                     "warehouse_id": warehouse.id
                 }
             })
