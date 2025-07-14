@@ -5,7 +5,7 @@ This module contains the `DataPactClient` class, which encapsulates all the
 programmatic logic for managing and executing DataPact workflows. It is the
 engine room of the accelerator, responsible for:
 
-1.  Authenticating with the Databrabs workspace using the SDK.
+1.  Authenticating with the Databricks workspace using the SDK.
 2.  Uploading the necessary task notebooks to a user-specific path.
 3.  Programmatically ensuring the specified Serverless SQL Warehouse exists and is running.
 4.  Dynamically constructing a multi-task Databricks Job definition in memory based
@@ -21,18 +21,8 @@ from pathlib import Path
 from datetime import timedelta
 
 from databricks.sdk import WorkspaceClient
-# CORRECTED: Import every required class explicitly for maximum robustness.
-from databricks.sdk.service import sql as sql_service
-from databricks.sdk.service.jobs import (
-    JobSettings,
-    JobRunAs,
-    Task,
-    NotebookTask,
-    TaskDependency,
-    Library,
-    PyPi,
-    RunLifeCycleState
-)
+from databricks.sdk.service import jobs, sql as sql_service
+from databricks.sdk.service.jobs import RunLifeCycleState
 from loguru import logger
 
 # Define the states that indicate a job run has finished.
@@ -116,45 +106,45 @@ class DataPactClient:
         self._upload_notebooks()
         warehouse = self._ensure_sql_warehouse(warehouse_name, create_warehouse)
 
-        validation_tasks: list[Task] = []
+        # Build the task list using dictionaries that conform to the API schema
+        tasks_list = []
         task_keys = [v_conf["task_key"] for v_conf in config["validations"]]
 
         for v_conf in config["validations"]:
-            validation_tasks.append(Task(
-                task_key=v_conf["task_key"],
-                notebook_task=NotebookTask(
-                    notebook_path=f"{self.root_path}/validation_notebook.py",
-                    base_parameters={
+            tasks_list.append({
+                "task_key": v_conf["task_key"],
+                "notebook_task": {
+                    "notebook_path": f"{self.root_path}/validation_notebook.py",
+                    "base_parameters": {
                         "config_json": json.dumps(v_conf),
                         "databricks_host": self.w.config.host,
                         "sql_warehouse_http_path": warehouse.odbc_params.path,
                     },
-                ),
-            ))
+                },
+            })
 
-        aggregation_task = Task(
-            task_key="aggregate_results",
-            depends_on=[TaskDependency(task_key=tk) for tk in task_keys],
-            notebook_task=NotebookTask(
-                notebook_path=f"{self.root_path}/aggregation_notebook.py",
-                base_parameters={
+        tasks_list.append({
+            "task_key": "aggregate_results",
+            "depends_on": [{"task_key": tk} for tk in task_keys],
+            "notebook_task": {
+                "notebook_path": f"{self.root_path}/aggregation_notebook.py",
+                "base_parameters": {
                     "upstream_task_keys": json.dumps(task_keys),
                     "results_table": results_table or "",
                     "run_id": "{{job.run_id}}",
                 },
-            ),
-        )
+            },
+        })
 
-        job_libraries = [
-            Library(pypi=PyPi(package="databricks-sql-connector")),
-            Library(pypi=PyPi(package="loguru"))
-        ]
-
+        # Build the final job settings as a pure dictionary
         job_settings_dict = {
             "name": job_name,
-            "tasks": validation_tasks + [aggregation_task],
-            "run_as": JobRunAs(user_name=self.w.current_user.me().user_name),
-            "libraries": job_libraries
+            "tasks": tasks_list,
+            "run_as": {"user_name": self.w.current_user.me().user_name},
+            "libraries": [
+                {"pypi": {"package": "databricks-sql-connector"}},
+                {"pypi": {"package": "loguru"}}
+            ]
         }
 
         existing_job = None
@@ -164,11 +154,13 @@ class DataPactClient:
         
         if existing_job:
             logger.info(f"Updating existing job '{job_name}' (ID: {existing_job.job_id})...")
-            job_settings_obj = JobSettings(**job_settings_dict)
+            # The 'reset' method requires a JobSettings object, which we can create from our dict.
+            job_settings_obj = jobs.JobSettings.from_dict(job_settings_dict)
             self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings_obj)
             job_id = existing_job.job_id
         else:
             logger.info(f"Creating new job '{job_name}'...")
+            # The 'create' method unpacks the dictionary into keyword arguments.
             new_job = self.w.jobs.create(**job_settings_dict)
             job_id = new_job.job_id
 
