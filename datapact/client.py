@@ -106,6 +106,12 @@ class DataPactClient:
         self._upload_notebooks()
         warehouse = self._ensure_sql_warehouse(warehouse_name, create_warehouse)
 
+        # CORRECTED: Define only the libraries that are actually needed by the tasks.
+        # 'databricks-sql-connector' is not needed inside the notebook.
+        task_libraries = [
+            {"pypi": {"package": "loguru"}}
+        ]
+
         tasks_list = []
         task_keys = [v_conf["task_key"] for v_conf in config["validations"]]
 
@@ -116,10 +122,13 @@ class DataPactClient:
                     "notebook_path": f"{self.root_path}/validation_notebook.py",
                     "base_parameters": {
                         "config_json": json.dumps(v_conf),
+                        # NOTE: The host and path are no longer strictly needed by the
+                        # validation notebook, but could be useful for other purposes.
                         "databricks_host": self.w.config.host,
                         "sql_warehouse_http_path": warehouse.odbc_params.path,
                     },
                 },
+                "libraries": task_libraries
             })
 
         tasks_list.append({
@@ -133,9 +142,9 @@ class DataPactClient:
                     "run_id": "{{job.run_id}}",
                 },
             },
+            "libraries": task_libraries
         })
 
-        # The 'libraries' key is NOT SUPPORTED for serverless notebook tasks
         job_settings_dict = {
             "name": job_name,
             "tasks": tasks_list,
