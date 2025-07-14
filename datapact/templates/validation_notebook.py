@@ -18,6 +18,9 @@ Its responsibilities are:
 6.  Pass this summary to the downstream aggregation task using `dbutils.jobs.taskValues.set`.
 """
 
+# This command is executed by Databricks before any other code in this notebook.
+%pip install databricks-sql-connector loguru
+
 import json
 import os
 from typing import Any, Dict, List, Tuple, Optional
