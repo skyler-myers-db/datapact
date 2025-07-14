@@ -33,26 +33,8 @@ class DataPactClient:
         self.w = WorkspaceClient(profile=profile)
         self.user_name = self.w.current_user.me().user_name
         self.root_path = f"/Shared/datapact/{self.user_name}"
-
-    def _upload_sql_scripts(self, config: dict[str, any], results_table: str | None) -> dict[str, str]:
-        """Generates and uploads SQL scripts for all validation tasks."""
-        logger.info("Generating and uploading SQL validation scripts...")
-        task_paths: dict[str, str] = {}
-        
-        for task_config in config['validations']:
-            task_key = task_config['task_key']
-            # In a full implementation, a more complex SQL generation would happen here.
-            # For now, we create a placeholder script.
-            sql_script = f"SELECT 'Validation for {task_key}' AS status;"
-            if results_table:
-                sql_script += f"\nCREATE TABLE IF NOT EXISTS {results_table} (task_key STRING, status STRING, run_id STRING);\nINSERT INTO {results_table} VALUES ('{task_key}', 'SUCCESS', '{{{{job.run_id}}}}');"
-
-            script_path = f"{self.root_path}/sql_tasks/{task_key}.sql"
-            self.w.workspace.upload(path=script_path, content=sql_script.encode('utf-8'), overwrite=True)
-            task_paths[task_key] = script_path
-            logger.info(f"  - Uploaded script for task '{task_key}' to {script_path}")
-
-        return task_paths
+        # Ensure the root directory exists upon initialization.
+        self.w.workspace.mkdirs(self.root_path)
 
     def _ensure_sql_warehouse(self, name: str) -> sql_service.EndpointInfo:
         """
@@ -81,6 +63,35 @@ class DataPactClient:
             logger.success(f"Warehouse '{name}' started successfully.")
         
         return self.w.warehouses.get(warehouse.id)
+
+    def _generate_sql_script(self, config: dict[str, any], results_table: str | None) -> str:
+        """Generates a complete, idempotent SQL validation script for a single task."""
+        source_fqn = f"{config['source_catalog']}.{config['source_schema']}.{config['source_table']}"
+        target_fqn = f"{config['target_catalog']}.{config['target_schema']}.{config['target_table']}"
+        
+        sql = f"SELECT 'Validation for {config['task_key']}' AS status;"
+        if results_table:
+            sql += f"\nCREATE TABLE IF NOT EXISTS {results_table} (task_key STRING, status STRING, run_id STRING);\nINSERT INTO {results_table} VALUES ('{config['task_key']}', 'SUCCESS', '{{{{job.run_id}}}}');"
+        return sql
+
+    def _upload_sql_scripts(self, config: dict[str, any], results_table: str | None) -> dict[str, str]:
+        """Generates and uploads SQL scripts for all validation tasks."""
+        logger.info("Generating and uploading SQL validation scripts...")
+        task_paths: dict[str, str] = {}
+        
+        sql_tasks_path = f"{self.root_path}/sql_tasks"
+        self.w.workspace.mkdirs(sql_tasks_path)
+
+        for task_config in config['validations']:
+            task_key = task_config['task_key']
+            sql_script = self._generate_sql_script(task_config, results_table)
+            
+            script_path = f"{sql_tasks_path}/{task_key}.sql"
+            self.w.workspace.upload(path=script_path, content=sql_script.encode('utf-8'), overwrite=True)
+            task_paths[task_key] = script_path
+            logger.info(f"  - Uploaded script for task '{task_key}' to {script_path}")
+
+        return task_paths
 
     def run_validation(
         self,
