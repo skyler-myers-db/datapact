@@ -3,9 +3,10 @@ The core client for interacting with the Databricks API.
 
 This module contains the `DataPactClient` class. Its architecture is a
 local-first orchestrator that dynamically generates sophisticated, multi-step
-SQL validation scripts. It uploads these scripts as raw SQL files and creates
-a multi-task Databricks Job where each task runs on a Serverless SQL Warehouse.
-This is the definitive, correct architecture.
+SQL validation scripts. It uploads these scripts as raw files and creates a
+multi-task Databricks Job where each task is a SQL Task of type 'File',
+running directly on a specified Serverless SQL Warehouse. This is the
+definitive, correct architecture.
 """
 
 import json
@@ -15,7 +16,7 @@ from datetime import timedelta
 import textwrap
 
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service import jobs, sql as sql_service, workspace
+from databricks.sdk.service import jobs, sql as sql_service
 from databricks.sdk.service.jobs import RunIf, RunLifeCycleState
 from loguru import logger
 
@@ -69,52 +70,49 @@ class DataPactClient:
         
         count_tolerance = config.get('count_tolerance', 0.0)
         
-        # CORRECTED: Use the user-provided, working SQL syntax and a more robust structure.
         sql = textwrap.dedent(f"""\
             -- DataPact Validation for task: {config['task_key']}
-            -- Step 1: Calculate all metrics using CTEs.
-            CREATE OR REPLACE TEMP VIEW validation_metrics AS
-            WITH source_metrics AS (
-              SELECT COUNT(1) AS count FROM {source_fqn}
-            ),
-            target_metrics AS (
-              SELECT COUNT(1) AS count FROM {target_fqn}
-            ),
-            -- Step 2: Perform validation checks and generate boolean flags.
-            validation_checks AS (
-              SELECT
-                (SELECT count FROM source_metrics) AS source_count,
-                (SELECT count FROM target_metrics) AS target_count,
-                (abs((SELECT count FROM target_metrics) - (SELECT count FROM source_metrics)) / NULLIF(CAST((SELECT count FROM source_metrics) AS DOUBLE), 0)) <= {count_tolerance} AS count_check_passed
-            )
-            -- Step 3: Construct a single JSON object with all results.
+            -- Step 1: Calculate all metrics and insert a detailed JSON payload into the history table.
+            INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload)
+            WITH
+              source_metrics AS (
+                SELECT COUNT(1) AS count FROM {source_fqn}
+              ),
+              target_metrics AS (
+                SELECT COUNT(1) AS count FROM {target_fqn}
+              ),
+              validation_checks AS (
+                SELECT
+                  (SELECT count FROM source_metrics) AS source_count,
+                  (SELECT count FROM target_metrics) AS target_count,
+                  (abs((SELECT count FROM target_metrics) - (SELECT count FROM source_metrics)) / NULLIF(CAST((SELECT count FROM source_metrics) AS DOUBLE), 0)) <= {count_tolerance} AS count_check_passed
+              )
             SELECT
+              '{config['task_key']}',
+              CASE WHEN v.count_check_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
+              '{{{{job.run_id}}}}',
+              current_timestamp(),
               to_json(
                 struct(
                   '{config['task_key']}' AS task_key,
-                  source_count,
-                  target_count,
-                  count_check_passed,
-                  (count_check_passed) AS overall_validation_passed -- In a full version, this would be AND of all checks
+                  v.source_count,
+                  v.target_count,
+                  v.count_check_passed,
+                  (v.count_check_passed) AS overall_validation_passed -- In a full version, this would be AND of all checks
                 )
-              ) AS result_payload,
-              (count_check_passed) AS overall_validation_passed
-            FROM validation_checks;
+              )
+            FROM validation_checks v;
 
-            -- Step 4: Always insert the detailed results into the history table.
-            INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload)
-            SELECT
-              '{config['task_key']}',
-              CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
-              '{{{{job.run_id}}}}',
-              current_timestamp(),
-              result_payload
-            FROM validation_metrics;
-
-            -- Step 5: After logging, fail the task if any check was unsuccessful.
+            -- Step 2: After logging, check the result and fail the task if any validation was unsuccessful.
             SELECT
               CASE
-                WHEN NOT (SELECT overall_validation_passed FROM validation_metrics)
+                WHEN NOT (
+                  SELECT from_json(result_payload, 'overall_validation_passed BOOLEAN').overall_validation_passed
+                  FROM {results_table}
+                  WHERE run_id = '{{{{job.run_id}}}}' AND task_key = '{config['task_key']}'
+                  ORDER BY timestamp DESC
+                  LIMIT 1
+                )
                 THEN RAISE_ERROR('One or more validations failed for task {config['task_key']}. Check history table for details.')
                 ELSE 'Task {config['task_key']} completed successfully.'
               END;
@@ -203,7 +201,7 @@ class DataPactClient:
         tasks_list.append({
             "task_key": "aggregate_results",
             "depends_on": [{"task_key": tk} for tk in validation_task_keys],
-            "run_if": RunIf.ALL_DONE,
+            "run_if": "ALL_DONE",
             "sql_task": {
                 "file": {
                     "path": task_paths['aggregate_results'],
