@@ -3,9 +3,10 @@ The core client for interacting with the Databricks API.
 
 This module contains the `DataPactClient` class. Its architecture is a
 local-first orchestrator that dynamically generates pure SQL validation scripts.
-It uploads these scripts as raw SOURCE files and creates a multi-task Databricks
-Job where each task is a SQL Task of type 'File', running directly on a
-specified Serverless SQL Warehouse. This is the definitive, correct architecture.
+It uploads these scripts as raw files using the correct `workspace.upload` API
+and creates a multi-task Databricks Job where each task is a SQL Task of type
+'File', running directly on a specified Serverless SQL Warehouse. This is the
+definitive, correct architecture.
 """
 
 import json
@@ -15,16 +16,8 @@ from datetime import timedelta
 import textwrap
 
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service import jobs, sql as sql_service, workspace
-from databricks.sdk.service.jobs import (
-    JobSettings,
-    JobRunAs,
-    Task,
-    SqlTask,
-    SqlTaskFile,
-    TaskDependency,
-    RunLifeCycleState
-)
+from databricks.sdk.service import jobs, sql as sql_service
+from databricks.sdk.service.jobs import RunLifeCycleState
 from loguru import logger
 
 TERMINAL_STATES: list[RunLifeCycleState] = [
@@ -116,12 +109,10 @@ class DataPactClient:
             sql_script = self._generate_validation_sql(task_config, results_table)
             
             script_path = f"{sql_tasks_path}/{task_key}.sql"
-            self.w.workspace.import_(
+            self.w.workspace.upload(
                 path=script_path,
                 content=sql_script.encode('utf-8'),
-                overwrite=True,
-                format=workspace.ImportFormat.SOURCE,
-                language=workspace.Language.SQL
+                overwrite=True
             )
             task_paths[task_key] = script_path
             logger.info(f"  - Uploaded SQL FILE for task '{task_key}' to {script_path}")
@@ -137,12 +128,10 @@ class DataPactClient:
                     ELSE 'All validation tasks reported success.'
                   END;
             """)
-            self.w.workspace.import_(
+            self.w.workspace.upload(
                 path=agg_script_path,
                 content=agg_sql_script.encode('utf-8'),
-                overwrite=True,
-                format=workspace.ImportFormat.SOURCE,
-                language=workspace.Language.SQL
+                overwrite=True
             )
             task_paths['aggregate_results'] = agg_script_path
             logger.info(f"  - Uploaded aggregation SQL FILE to {agg_script_path}")
@@ -160,43 +149,39 @@ class DataPactClient:
         warehouse = self._ensure_sql_warehouse(warehouse_name)
         task_paths = self._upload_sql_scripts(config, results_table)
 
-        tasks_list: list[Task] = []
+        tasks_list = []
         validation_task_keys = [v_conf["task_key"] for v_conf in config["validations"]]
 
         for task_key in validation_task_keys:
-            tasks_list.append(
-                Task(
-                    task_key=task_key,
-                    sql_task=SqlTask(
-                        file=SqlTaskFile(
-                            path=task_paths[task_key],
-                            source=jobs.Source.WORKSPACE
-                        ),
-                        warehouse_id=warehouse.id
-                    )
-                )
-            )
+            tasks_list.append({
+                "task_key": task_key,
+                "sql_task": {
+                    "file": {
+                        "path": task_paths[task_key],
+                        "source": "WORKSPACE"
+                    },
+                    "warehouse_id": warehouse.id,
+                }
+            })
 
         if results_table and 'aggregate_results' in task_paths:
-            tasks_list.append(
-                Task(
-                    task_key="aggregate_results",
-                    depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys],
-                    sql_task=SqlTask(
-                        file=SqlTaskFile(
-                            path=task_paths['aggregate_results'],
-                            source=jobs.Source.WORKSPACE
-                        ),
-                        warehouse_id=warehouse.id
-                    )
-                )
-            )
+            tasks_list.append({
+                "task_key": "aggregate_results",
+                "depends_on": [{"task_key": tk} for tk in validation_task_keys],
+                "sql_task": {
+                    "file": {
+                        "path": task_paths['aggregate_results'],
+                        "source": "WORKSPACE"
+                    },
+                    "warehouse_id": warehouse.id,
+                }
+            })
 
-        job_settings = JobSettings(
-            name=job_name,
-            tasks=tasks_list,
-            run_as=JobRunAs(user_name=self.user_name),
-        )
+        job_settings_dict = {
+            "name": job_name,
+            "tasks": tasks_list,
+            "run_as": {"user_name": self.user_name},
+        }
 
         existing_job = None
         for j in self.w.jobs.list(name=job_name):
