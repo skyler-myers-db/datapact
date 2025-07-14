@@ -21,7 +21,7 @@ from pathlib import Path
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.errors import NotFound
-from databricks.sdk.service import jobs, compute
+from databricks.sdk.service import jobs, sql as sql_service
 from loguru import logger
 
 class DataPactClient:
@@ -60,7 +60,7 @@ class DataPactClient:
                 )
         logger.info("Notebooks uploaded successfully.")
 
-    def _ensure_sql_warehouse(self, name: str, auto_create: bool) -> compute.EndpointInfo:
+    def _ensure_sql_warehouse(self, name: str, auto_create: bool) -> sql_service.EndpointInfo:
         """
         Ensures a Serverless SQL Warehouse exists and is running.
         """
@@ -86,12 +86,12 @@ class DataPactClient:
                 name=name,
                 cluster_size="Small",
                 enable_serverless_compute=True,
-                channel=compute.Channel(name=compute.ChannelName.CHANNEL_NAME_CURRENT)
+                channel=sql_service.Channel(name=sql_service.ChannelName.CHANNEL_NAME_CURRENT)
             )
             logger.success(f"Successfully created and started warehouse {warehouse.id}.")
             return warehouse
 
-        if warehouse.state not in [compute.State.RUNNING, compute.State.STARTING]:
+        if warehouse.state not in [sql_service.State.RUNNING, sql_service.State.STARTING]:
             logger.info(f"Warehouse '{name}' is in state {warehouse.state}. Starting it...")
             self.w.warehouses.start(warehouse.id).result(timeout=600)
             logger.success(f"Warehouse '{name}' started successfully.")
