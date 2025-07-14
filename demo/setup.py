@@ -29,7 +29,7 @@ def get_warehouse_by_name(w: WorkspaceClient, name: str) -> sql_service.Endpoint
         logger.error(f"An error occurred while trying to list warehouses: {e}")
     return None
 
-def run_demo_setup():
+def run_demo_setup() -> None:
     """The main function to set up the DataPact demo environment."""
     parser = argparse.ArgumentParser(description="Set up the DataPact demo environment.")
     parser.add_argument("--warehouse", required=True, help="Name of the Serverless SQL Warehouse to use.")
