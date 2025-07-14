@@ -171,7 +171,7 @@ class DataPactClient:
                           FROM
                             {results_table}
                           WHERE
-                            run_id = :run_id
+                            run_id = TRY_CAST(:run_id AS BIGINT)
                             AND result_payload:overall_validation_passed = FALSE
                         ) = 0
                       THEN
@@ -186,7 +186,7 @@ class DataPactClient:
                     ELSE RAISE_ERROR(
                       'One or more table validations failed for run :run_id. Check history table for details.'
                     )
-                  END AS `Validation Passed`;
+                  END AS `Validations Passed`;
             """)
             self.w.workspace.upload(
                 path=agg_script_path,
