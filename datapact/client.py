@@ -155,11 +155,11 @@ class DataPactClient:
             ),
         )
 
-        job_settings = jobs.JobSettings(
-            name=job_name,
-            tasks=validation_tasks + [aggregation_task],
-            run_as=jobs.JobRunAs(user_name=self.w.current_user.me().user_name),
-        )
+        job_settings_dict = {
+            "name": job_name,
+            "tasks": validation_tasks,
+            "run_as": {"user_name": self.w.current_user.me().user_name},
+        }
 
         existing_job = None
         for j in self.w.jobs.list(name=job_name):
@@ -168,13 +168,14 @@ class DataPactClient:
         
         if existing_job:
             logger.info(f"Updating existing job '{job_name}' (ID: {existing_job.job_id})...")
-            # The 'new_settings' parameter requires the JobSettings OBJECT, not a dictionary.
-            self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings)
+            # For 'reset', we instantiate a JobSettings object from the dictionary.
+            job_settings_obj = jobs.JobSettings(**job_settings_dict)
+            self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings_obj)
             job_id = existing_job.job_id
         else:
             logger.info(f"Creating new job '{job_name}'...")
-            # The 'create' method correctly takes keyword arguments, so we unpack the dict here.
-            new_job = self.w.jobs.create(**job_settings.as_dict())
+            # For 'create', we unpack the dictionary into keyword arguments.
+            new_job = self.w.jobs.create(**job_settings_dict)
             job_id = new_job.job_id
 
         logger.info(f"Launching job {job_id}...")
