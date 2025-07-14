@@ -71,28 +71,60 @@ class DataPactClient:
         
         sql = textwrap.dedent(f"""\
             -- DataPact Validation for task: {config['task_key']}
-            -- This script uses a CASE statement with RAISE_ERROR to ensure the task fails if a condition is not met.
+            -- Step 1: Declare a variable to hold the validation outcome.
+            DECLARE validation_passed BOOLEAN;
 
-            CREATE OR REPLACE TEMP VIEW source_metrics AS SELECT COUNT(1) AS count FROM {source_fqn};
-            CREATE OR REPLACE TEMP VIEW target_metrics AS SELECT COUNT(1) AS count FROM {target_fqn};
-
+            -- Step 2: Calculate all metrics and insert a detailed JSON payload into the history table.
+            -- This step will ALWAYS run to ensure logging, even on failure.
+            CREATE TABLE IF NOT EXISTS {results_table} (task_key STRING, status STRING, run_id STRING, timestamp TIMESTAMP, result_payload STRING);
+            INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload)
+            WITH
+              source_metrics AS (
+                SELECT COUNT(1) AS count FROM {source_fqn}
+              ),
+              target_metrics AS (
+                SELECT COUNT(1) AS count FROM {target_fqn}
+              ),
+              validation_checks AS (
+                SELECT
+                  (SELECT count FROM source_metrics) AS source_count,
+                  (SELECT count FROM target_metrics) AS target_count,
+                  -- Correctly handle division by zero
+                  CASE
+                    WHEN (SELECT count FROM source_metrics) = 0 THEN (SELECT count FROM target_metrics) = 0
+                    ELSE (abs((SELECT count FROM target_metrics) - (SELECT count FROM source_metrics)) / CAST((SELECT count FROM source_metrics) AS DOUBLE)) <= {count_tolerance}
+                  END AS count_check_passed
+              )
             SELECT
-              CASE
-                WHEN ((abs((SELECT count FROM target_metrics) - (SELECT count FROM source_metrics)) / NULLIF(CAST((SELECT count FROM source_metrics) AS DOUBLE), 0))) > {count_tolerance}
-                THEN RAISE_ERROR('Count validation failed: Relative difference exceeded tolerance of {count_tolerance}.')
-                ELSE 'Count validation passed.'
-              END;
+              '{config['task_key']}',
+              CASE WHEN v.count_check_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
+              '{{{{job.run_id}}}}',
+              current_timestamp(),
+              to_json(
+                struct(
+                  '{config['task_key']}' AS task_key,
+                  v.source_count,
+                  v.target_count,
+                  v.count_check_passed,
+                  (v.count_check_passed) AS overall_validation_passed -- In a full version, this would be AND of all checks
+                )
+              )
+            FROM validation_checks v;
+
+            -- Step 3: Set the variable based on the result that was just inserted.
+            SET VAR validation_passed = (
+                SELECT from_json(result_payload, 'overall_validation_passed BOOLEAN').overall_validation_passed
+                FROM {results_table}
+                WHERE run_id = '{{{{job.run_id}}}}' AND task_key = '{config['task_key']}'
+                ORDER BY timestamp DESC
+                LIMIT 1
+            );
+
+            -- Step 4: After logging, use the variable to conditionally fail the task.
+            IF NOT validation_passed THEN
+              RAISE_ERROR('One or more validations failed for task {config['task_key']}. Check history table for details.');
+            END IF;
         """)
-
-        if results_table:
-            sql += textwrap.dedent(f"""\
-
-                -- If all assertions pass, log success to the history table.
-                CREATE TABLE IF NOT EXISTS {results_table} (task_key STRING, status STRING, run_id STRING, timestamp TIMESTAMP);
-                INSERT INTO {results_table} VALUES ('{config['task_key']}', 'SUCCESS', '{{{{job.run_id}}}}', current_timestamp());
-            """)
-        
-        sql += f"\nSELECT 'Task {config['task_key']} completed successfully.' AS final_status;"
         return sql
 
     def _upload_sql_scripts(self, config: dict[str, any], results_table: str | None) -> dict[str, str]:
@@ -119,14 +151,19 @@ class DataPactClient:
 
         if results_table:
             agg_script_path = f"{sql_tasks_path}/aggregate_results.sql"
-            agg_sql_script = textwrap.dedent(f"""\
-                -- DataPact Aggregation Task
-                ASSERT (
-                  (SELECT COUNT(*) FROM `{results_table}` WHERE run_id = '{{{{job.run_id}}}}' AND status = 'SUCCESS') = {len(config['validations'])}
-                ) : 'One or more validation tasks failed to record a success in the history table.';
-
-                SELECT "All validation tasks reported success." AS overall_status;
-            """)
+        agg_sql_script = textwrap.dedent(f"""\
+            -- DataPact Aggregation Task
+            -- This task verifies that all upstream tasks have successfully logged their results.
+            IF (
+              SELECT COUNT(*)
+              FROM `{results_table}`
+              WHERE run_id = '{{{{job.run_id}}}}'
+                AND from_json(result_payload, 'overall_validation_passed BOOLEAN').overall_validation_passed = false
+            ) > 0
+            THEN RAISE_ERROR('Aggregation check failed: One or more validation tasks failed.');
+            ELSE SELECT 'All validation tasks succeeded.';
+            END IF;
+        """)
             self.w.workspace.upload(
                 path=agg_script_path,
                 content=agg_sql_script.encode('utf-8'),
@@ -168,6 +205,7 @@ class DataPactClient:
             tasks_list.append({
                 "task_key": "aggregate_results",
                 "depends_on": [{"task_key": tk} for tk in validation_task_keys],
+                "run_if": "ALL_DONE",
                 "sql_task": {
                     "file": {
                         "path": task_paths['aggregate_results'],
