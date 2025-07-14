@@ -14,10 +14,10 @@ import time
 from pathlib import Path
 from databricks import sql
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service import compute
+from databricks.sdk.service import sql as sql_service
 from loguru import logger
 
-def get_warehouse_by_name(w: WorkspaceClient, name: str) -> compute.EndpointInfo | None:
+def get_warehouse_by_name(w: WorkspaceClient, name: str) -> sql_service.EndpointInfo | None:
     """Finds a SQL warehouse by name by listing all warehouses."""
     try:
         for wh in w.warehouses.list():
