@@ -80,12 +80,15 @@ datapact run \
 2.  **Run DataPact:**
     ```bash
     datapact run \
-      --config my_validations.yml \
+      --config demo/demo_config.yml \
       --warehouse "Your Serverless Warehouse Name" \
-      --job-name "My Production Validation" \
-      --results-table "main.reporting.datapact_results" \
-      --create-warehouse
+      --job-name "DataPact Demo Run" \
+      --results-table "datapact_demo_catalog.source_data.datapact_run_history" \
+      --profile my-profile
     ```
+
+That's it! You will see the validation results streamed to your terminal, and a new history table will be created and populated in your Databricks workspace.
+
 
 ### Configuration Details
 
