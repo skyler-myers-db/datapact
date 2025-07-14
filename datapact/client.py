@@ -159,15 +159,26 @@ class DataPactClient:
             agg_sql_script = textwrap.dedent(f"""\
                 -- DataPact Aggregation Task
                 -- This task verifies that all upstream tasks have successfully logged their results.
-                IF (
-                  SELECT COUNT(*)
-                  FROM `{results_table}`
-                  WHERE run_id = '{{{{job.run_id}}}}'
-                    AND from_json(result_payload, 'overall_validation_passed BOOLEAN').overall_validation_passed = false
-                ) > 0
-                THEN RAISE_ERROR('Aggregation check failed: One or more validation tasks failed.');
-                ELSE SELECT 'All validation tasks succeeded.';
-                END IF;
+                SELECT
+                  CASE
+                    WHEN
+                      (
+                        SELECT
+                          COUNT(*)
+                        FROM
+                          `{results_table}`
+                        WHERE
+                          run_id = :run_id
+                          AND from_json(
+                            result_payload, 'overall_validation_passed BOOLEAN'
+                          ).overall_validation_passed = FALSE
+                      ) > 0
+                    THEN
+                      RAISE ERROR(
+                          'Aggregation check failed: One or more validation tasks failed.'
+                        )
+                    ELSE 'All validation tasks succeeded.'
+                  END AS validation_status;
             """)
             self.w.workspace.upload(
                 path=agg_script_path,
@@ -227,7 +238,7 @@ class DataPactClient:
             "parameters": [
                 {
                     "name": "run_id",
-                    "default": "{{{{job.run_id}}}}",
+                    "default": "{{job.run_id}}",
                 },
             ],
         }
