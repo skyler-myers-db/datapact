@@ -169,7 +169,7 @@ class DataPactClient:
                           SELECT
                             COUNT(*)
                           FROM
-                            datapact_demo_catalog.source_data.datapact_run_history
+                            {results_table}
                           WHERE
                             run_id = :run_id
                             AND result_payload:overall_validation_passed = FALSE
@@ -184,7 +184,7 @@ class DataPactClient:
                   CASE
                     WHEN validations_passed THEN TRUE
                     ELSE RAISE_ERROR(
-                      'One or more validations failed for task {config[' task_key ']}. Check history table for details.'
+                      'One or more table validations failed for run :run_id. Check history table for details.'
                     )
                   END AS `Validation Passed`;
             """)
