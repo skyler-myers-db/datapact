@@ -16,7 +16,7 @@ from datetime import timedelta
 import textwrap
 
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service import jobs, sql as sql_service
+from databricks.sdk.service import jobs, sql as sql_service, workspace
 from databricks.sdk.service.jobs import RunIf, RunLifeCycleState
 from loguru import logger
 
