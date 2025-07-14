@@ -62,16 +62,15 @@ class DataPactClient:
         
         return self.w.warehouses.get(warehouse.id)
 
-    def _generate_validation_sql(self, config: dict[str, any]) -> str:
+    def _generate_validation_sql(self, config: dict[str, any], results_table: str | None) -> str:
         """Generates a complete, idempotent SQL validation script for a single task."""
         source_fqn = f"`{config['source_catalog']}`.`{config['source_schema']}`.`{config['source_table']}`"
         target_fqn = f"`{config['target_catalog']}`.`{config['target_schema']}`.`{config['target_table']}`"
         
         count_tolerance = config.get('count_tolerance', 0.0)
         
-        # Use textwrap.dedent for clean, readable SQL generation.
         sql = textwrap.dedent(f"""\
-            -- DataPact Validation for task: {{{{task_key}}}}
+            -- DataPact Validation for task: {config['task_key']}
             -- This script uses a CASE statement with RAISE_ERROR to ensure the task fails if a condition is not met.
 
             CREATE OR REPLACE TEMP VIEW source_metrics AS SELECT COUNT(1) AS count FROM {source_fqn};
@@ -83,22 +82,20 @@ class DataPactClient:
                 THEN RAISE_ERROR('Count validation failed: Relative difference exceeded tolerance of {count_tolerance}.')
                 ELSE 'Count validation passed.'
               END;
-
-            -- Additional validations (hash, nulls, etc.) would be added as more CASE statements here.
         """)
 
-        sql += textwrap.dedent("""\
+        if results_table:
+            sql += textwrap.dedent(f"""\
 
-            -- If all assertions pass, log success to the history table.
-            -- This statement will only be reached if the CASE statements above do not raise an error.
-            CREATE TABLE IF NOT EXISTS {{results_table}} (task_key STRING, status STRING, run_id STRING, timestamp TIMESTAMP);
-            INSERT INTO {{results_table}} VALUES ('{{task_key}}', 'SUCCESS', '{{job.run_id}}', current_timestamp());
-
-            SELECT 'Task {{task_key}} completed and logged successfully.' AS final_status;
-        """)
+                -- If all assertions pass, log success to the history table.
+                CREATE TABLE IF NOT EXISTS {results_table} (task_key STRING, status STRING, run_id STRING, timestamp TIMESTAMP);
+                INSERT INTO {results_table} VALUES ('{config['task_key']}', 'SUCCESS', '{{{{job.run_id}}}}', current_timestamp());
+            """)
+        
+        sql += f"\nSELECT 'Task {config['task_key']} completed successfully.' AS final_status;"
         return sql
 
-    def _upload_sql_scripts(self, config: dict[str, any]) -> dict[str, str]:
+    def _upload_sql_scripts(self, config: dict[str, any], results_table: str | None) -> dict[str, str]:
         """Generates and uploads SQL scripts for all validation tasks."""
         logger.info("Generating and uploading SQL validation scripts...")
         task_paths: dict[str, str] = {}
@@ -108,12 +105,28 @@ class DataPactClient:
 
         for task_config in config['validations']:
             task_key = task_config['task_key']
-            sql_script = self._generate_validation_sql(task_config)
+            sql_script = self._generate_validation_sql(task_config, results_table)
             
-            # CORRECTED: Use format="SOURCE" to ensure the file is uploaded as a raw SQL file, not a notebook.
+            script_path = f"{sql_tasks_path}/{task_key}.sql"
             self.w.workspace.upload(path=script_path, content=sql_script.encode('utf-8'), overwrite=True, format="SOURCE")
             task_paths[task_key] = script_path
             logger.info(f"  - Uploaded SQL FILE for task '{task_key}' to {script_path}")
+
+        # Generate and upload the aggregation script if a results table is specified.
+        if results_table:
+            agg_script_path = f"{sql_tasks_path}/aggregate_results.sql"
+            agg_sql_script = textwrap.dedent(f"""\
+                -- DataPact Aggregation Task
+                -- This task verifies that all upstream tasks have successfully logged their results.
+                ASSERT (
+                  (SELECT COUNT(*) FROM `{results_table}` WHERE run_id = '{{{{job.run_id}}}}' AND status = 'SUCCESS') = {len(config['validations'])}
+                ) : 'One or more validation tasks failed to record a success in the history table.';
+
+                SELECT "All validation tasks reported success." AS overall_status;
+            """)
+            self.w.workspace.upload(path=agg_script_path, content=agg_sql_script.encode('utf-8'), overwrite=True, format="SOURCE")
+            task_paths['aggregate_results'] = agg_script_path
+            logger.info(f"  - Uploaded aggregation SQL FILE to {agg_script_path}")
 
         return task_paths
 
@@ -126,22 +139,33 @@ class DataPactClient:
     ) -> None:
         """Constructs, deploys, and runs the DataPact validation workflow."""
         warehouse = self._ensure_sql_warehouse(warehouse_name)
-        task_paths = self._upload_sql_scripts(config)
+        task_paths = self._upload_sql_scripts(config, results_table)
 
         tasks_list = []
-        for task_key, script_path in task_paths.items():
+        validation_task_keys = [v_conf["task_key"] for v_conf in config["validations"]]
+
+        for task_key in validation_task_keys:
             tasks_list.append({
                 "task_key": task_key,
                 "sql_task": {
                     "file": {
-                        "path": script_path,
+                        "path": task_paths[task_key],
                         "source": "WORKSPACE"
                     },
                     "warehouse_id": warehouse.id,
-                    "parameters": {
-                        "results_table": results_table or "",
-                        "task_key": task_key
-                    }
+                }
+            })
+
+        if results_table:
+            tasks_list.append({
+                "task_key": "aggregate_results",
+                "depends_on": [{"task_key": tk} for tk in validation_task_keys],
+                "sql_task": {
+                    "file": {
+                        "path": task_paths['aggregate_results'],
+                        "source": "WORKSPACE"
+                    },
+                    "warehouse_id": warehouse.id,
                 }
             })
 
