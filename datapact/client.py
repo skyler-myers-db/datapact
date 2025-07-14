@@ -163,12 +163,18 @@ class DataPactClient:
             ),
         )
 
-        # The values in this dictionary MUST be of the correct type expected by the SDK.
+        # Define the libraries required by the job tasks.
+        # These will be pip installed on the serverless compute environment before execution.
+        job_libraries = [
+            jobs.Library(pypi=jobs.PyPi(package="databricks-sql-connector")),
+            jobs.Library(pypi=jobs.PyPi(package="loguru")),
+        ]
+
         job_settings_dict = {
             "name": job_name,
-            "tasks": validation_tasks,
-            # The 'run_as' parameter requires a JobRunAs OBJECT, not a dictionary.
+            "tasks": validation_tasks + [aggregation_task],
             "run_as": jobs.JobRunAs(user_name=self.w.current_user.me().user_name),
+            "libraries": job_libraries,
         }
 
         existing_job = None
