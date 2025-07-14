@@ -68,8 +68,18 @@ def run_demo_setup():
                     time.sleep(1)
 
         logger.success("✅ Demo environment setup complete!")
-        logger.info("You can now run the demo validation with:")
-        logger.info(f"datapact run --config demo/demo_config.yml --warehouse \"{args.warehouse}\" --profile {args.profile}")
+        logger.info("You can now run the demo validation with the following command:")
+
+        run_command: str = (
+            "datapact run \\\n"
+            "  --config demo/demo_config.yml \\\n"
+            f"  --warehouse \"{args.warehouse}\" \\\n"
+            "  --job-name \"DataPact Demo Run\" \\\n"
+            f"  --profile {args.profile}"
+        )
+        logger.info("\n" + "="*50)
+        logger.info(run_command)
+        logger.info("="*50 + "\n")
 
     except Exception as e:
         logger.critical(f"An error occurred during SQL execution: {e}")
