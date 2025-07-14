@@ -3,9 +3,10 @@ The core client for interacting with the Databricks API.
 
 This module contains the `DataPactClient` class. Its architecture is a
 local-first orchestrator that dynamically generates pure SQL validation scripts.
-It uploads these scripts as raw SOURCE files and creates a multi-task Databricks
-Job where each task is a SQL Task of type 'File', running directly on a
-specified Serverless SQL Warehouse. This is the definitive, correct architecture.
+It uploads these scripts as raw SOURCE files using the correct `import_` API
+and creates a multi-task Databricks Job where each task is a SQL Task of type
+'File', running directly on a specified Serverless SQL Warehouse. This is the
+definitive, correct architecture.
 """
 
 import json
@@ -78,7 +79,7 @@ class DataPactClient:
 
             SELECT
               CASE
-                WHEN NOT ((abs((SELECT count FROM target_metrics) - (SELECT count FROM source_metrics)) / NULLIF(CAST((SELECT count FROM source_metrics) AS DOUBLE), 0))) <= {count_tolerance})
+                WHEN ((abs((SELECT count FROM target_metrics) - (SELECT count FROM source_metrics)) / NULLIF(CAST((SELECT count FROM source_metrics) AS DOUBLE), 0))) > {count_tolerance}
                 THEN RAISE_ERROR('Count validation failed: Relative difference exceeded tolerance of {count_tolerance}.')
                 ELSE 'Count validation passed.'
               END;
@@ -87,7 +88,7 @@ class DataPactClient:
         if results_table:
             sql += textwrap.dedent(f"""\
 
-                -- If all assertions pass, log success to the history table.
+                -- If all checks pass, log success to the history table.
                 CREATE TABLE IF NOT EXISTS {results_table} (task_key STRING, status STRING, run_id STRING, timestamp TIMESTAMP);
                 INSERT INTO {results_table} VALUES ('{config['task_key']}', 'SUCCESS', '{{{{job.run_id}}}}', current_timestamp());
             """)
@@ -108,11 +109,12 @@ class DataPactClient:
             sql_script = self._generate_validation_sql(task_config, results_table)
             
             script_path = f"{sql_tasks_path}/{task_key}.sql"
-            self.w.workspace.upload(
+            self.w.workspace.import_(
                 path=script_path,
                 content=sql_script.encode('utf-8'),
                 overwrite=True,
-                format=workspace.ImportFormat.RAW
+                format=workspace.ImportFormat.RAW,
+                language=workspace.Language.SQL
             )
             task_paths[task_key] = script_path
             logger.info(f"  - Uploaded SQL FILE for task '{task_key}' to {script_path}")
@@ -121,17 +123,20 @@ class DataPactClient:
             agg_script_path = f"{sql_tasks_path}/aggregate_results.sql"
             agg_sql_script = textwrap.dedent(f"""\
                 -- DataPact Aggregation Task
-                ASSERT (
-                  (SELECT COUNT(*) FROM `{results_table}` WHERE run_id = '{{{{job.run_id}}}}' AND status = 'SUCCESS') = {len(config['validations'])}
-                ) : 'One or more validation tasks failed to record a success in the history table.';
-
-                SELECT "All validation tasks reported success." AS overall_status;
+                -- This task verifies that all upstream tasks have successfully logged their results.
+                SELECT
+                  CASE
+                    WHEN ((SELECT COUNT(*) FROM `{results_table}` WHERE run_id = '{{{{job.run_id}}}}' AND status = 'SUCCESS') != {len(config['validations'])})
+                    THEN RAISE_ERROR('Aggregation check failed: Not all validation tasks recorded a success in the history table.')
+                    ELSE 'All validation tasks reported success.'
+                  END;
             """)
-            self.w.workspace.upload(
+            self.w.workspace.import_(
                 path=agg_script_path,
                 content=agg_sql_script.encode('utf-8'),
                 overwrite=True,
                 format=workspace.ImportFormat.RAW,
+                language=workspace.Language.SQL
             )
             task_paths['aggregate_results'] = agg_script_path
             logger.info(f"  - Uploaded aggregation SQL FILE to {agg_script_path}")
@@ -203,11 +208,14 @@ class DataPactClient:
         run = self.w.jobs.get_run(run_info.run_id)
         
         logger.info(f"Run started! View progress here: {run.run_page_url}")
+        
+        total_tasks = len(tasks_list)
+
         while run.state.life_cycle_state not in TERMINAL_STATES:
             time.sleep(20)
             run = self.w.jobs.get_run(run.run_id)
             finished_tasks = sum(1 for t in run.tasks if t.state.life_cycle_state == RunLifeCycleState.TERMINATED)
-            logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{len(task_keys)}")
+            logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{total_tasks}")
 
         final_state = run.state.result_state
         logger.info(f"Run finished with state: {final_state}")
