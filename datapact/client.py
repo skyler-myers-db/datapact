@@ -168,12 +168,14 @@ class DataPactClient:
         
         if existing_job:
             logger.info(f"Updating existing job '{job_name}' (ID: {existing_job.job_id})...")
-            self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings.as_dict())
-            job_id: int = existing_job.job_id
+            # The 'new_settings' parameter requires the JobSettings OBJECT, not a dictionary.
+            self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings)
+            job_id = existing_job.job_id
         else:
             logger.info(f"Creating new job '{job_name}'...")
+            # The 'create' method correctly takes keyword arguments, so we unpack the dict here.
             new_job = self.w.jobs.create(**job_settings.as_dict())
-            job_id: int = new_job.job_id
+            job_id = new_job.job_id
 
         logger.info(f"Launching job {job_id}...")
         run_info = self.w.jobs.run_now(job_id=job_id)
