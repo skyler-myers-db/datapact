@@ -21,9 +21,17 @@ from pathlib import Path
 from datetime import timedelta
 
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.errors import NotFound
+# Import the necessary enum for state checking
 from databricks.sdk.service import jobs, sql as sql_service
+from databricks.sdk.service.jobs import RunLifeCycleState
 from loguru import logger
+
+# Define the states that indicate a job run has finished.
+TERMINAL_STATES = [
+    RunLifeCycleState.TERMINATED,
+    RunLifeCycleState.SKIPPED,
+    RunLifeCycleState.INTERNAL_ERROR
+]
 
 class DataPactClient:
     """
@@ -185,7 +193,7 @@ class DataPactClient:
         run: int = self.w.jobs.get_run(run_info.run_id)
         
         logger.info(f"Run started! View progress here: {run.run_page_url}")
-        while not run.is_terminal:
+        while run.state.life_cycle_state not in TERMINAL_STATES:
             time.sleep(20)
             run = self.w.jobs.get_run(run.run_id)
             finished_tasks = sum(1 for t in run.tasks if t.state.life_cycle_state == jobs.RunLifeCycleState.TERMINATED)
