@@ -54,7 +54,7 @@ def run_demo_setup():
         waiter = w.statement_execution.execute_statement(
             statement=sql_script,
             warehouse_id=warehouse.id,
-            wait_timeout='50' # Wait up to 10 minutes for completion
+            wait_timeout='50s',
         )
         result = waiter.result()
 
