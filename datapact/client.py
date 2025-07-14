@@ -3,7 +3,7 @@ The core client for interacting with the Databricks API.
 
 This module contains the `DataPactClient` class. Its architecture is a
 local-first orchestrator that dynamically generates pure SQL validation scripts.
-It uploads these scripts as raw files using the correct `workspace.upload` API
+It uploads these scripts as raw SOURCE files using the correct `import_` API
 and creates a multi-task Databricks Job where each task is a SQL Task of type
 'File', running directly on a specified Serverless SQL Warehouse. This is the
 definitive, correct architecture.
@@ -16,7 +16,7 @@ from datetime import timedelta
 import textwrap
 
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service import jobs, sql as sql_service
+from databricks.sdk.service import jobs, sql as sql_service, workspace
 from databricks.sdk.service.jobs import RunLifeCycleState
 from loguru import logger
 
@@ -109,10 +109,12 @@ class DataPactClient:
             sql_script = self._generate_validation_sql(task_config, results_table)
             
             script_path = f"{sql_tasks_path}/{task_key}.sql"
-            self.w.workspace.upload(
+            self.w.workspace.import_(
                 path=script_path,
                 content=sql_script.encode('utf-8'),
-                overwrite=True
+                overwrite=True,
+                format=workspace.ImportFormat.SOURCE,
+                language=workspace.Language.SQL
             )
             task_paths[task_key] = script_path
             logger.info(f"  - Uploaded SQL FILE for task '{task_key}' to {script_path}")
@@ -121,6 +123,7 @@ class DataPactClient:
             agg_script_path = f"{sql_tasks_path}/aggregate_results.sql"
             agg_sql_script = textwrap.dedent(f"""\
                 -- DataPact Aggregation Task
+                -- This task verifies that all upstream tasks have successfully logged their results.
                 SELECT
                   CASE
                     WHEN NOT ((SELECT COUNT(*) FROM `{results_table}` WHERE run_id = '{{{{job.run_id}}}}' AND status = 'SUCCESS') = {len(config['validations'])})
@@ -128,10 +131,12 @@ class DataPactClient:
                     ELSE 'All validation tasks reported success.'
                   END;
             """)
-            self.w.workspace.upload(
+            self.w.workspace.import_(
                 path=agg_script_path,
                 content=agg_sql_script.encode('utf-8'),
-                overwrite=True
+                overwrite=True,
+                format=workspace.ImportFormat.SOURCE,
+                language=workspace.Language.SQL
             )
             task_paths['aggregate_results'] = agg_script_path
             logger.info(f"  - Uploaded aggregation SQL FILE to {agg_script_path}")
@@ -190,11 +195,12 @@ class DataPactClient:
         
         if existing_job:
             logger.info(f"Updating existing job '{job_name}' (ID: {existing_job.job_id})...")
-            self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings)
+            job_settings_obj = jobs.JobSettings.from_dict(job_settings_dict)
+            self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings_obj)
             job_id = existing_job.job_id
         else:
             logger.info(f"Creating new job '{job_name}'...")
-            new_job = self.w.jobs.create(**job_settings.as_dict())
+            new_job = self.w.jobs.create(**job_settings_dict)
             job_id = new_job.job_id
 
         logger.info(f"Launching job {job_id}...")
@@ -202,11 +208,14 @@ class DataPactClient:
         run = self.w.jobs.get_run(run_info.run_id)
         
         logger.info(f"Run started! View progress here: {run.run_page_url}")
+        
+        total_tasks: int = len(tasks_list)
+
         while run.state.life_cycle_state not in TERMINAL_STATES:
             time.sleep(20)
             run = self.w.jobs.get_run(run.run_id)
             finished_tasks = sum(1 for t in run.tasks if t.state.life_cycle_state == RunLifeCycleState.TERMINATED)
-            logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{len(tasks_list)}")
+            logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{total_tasks}")
 
         final_state = run.state.result_state
         logger.info(f"Run finished with state: {final_state}")
