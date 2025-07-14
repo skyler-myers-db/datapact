@@ -1,32 +1,19 @@
+%pip install databricks-sql-connector loguru
+
 """
 DataPact Validation Task Notebook.
 
-IMPORTANT: This script is not intended to be run locally. It is uploaded to
-Databricks and executed as a notebook task on Serverless Compute by a
-Databricks Job.
-
-This script represents the "brain" for a single table validation. It is
-parameterized via job widgets (`config_json`, `databricks_host`, etc.).
-
-Its responsibilities are:
-1.  Parse the incoming JSON configuration for a specific table validation.
-2.  Connect to the specified Serverless SQL Warehouse using the Databricks SQL Connector.
-3.  Execute the full suite of validation logic (count, aggregates, hash, nulls)
-    by dynamically building and sending SQL queries to the warehouse.
-4.  Log the results of each check.
-5.  Package a final JSON summary of all metrics.
-6.  Pass this summary to the downstream aggregation task using `dbutils.jobs.taskValues.set`.
+This script represents the "brain" for a single table validation. It runs on a
+lightweight job cluster and its sole purpose is to orchestrate the validation
+by sending SQL queries to the specified Serverless SQL Warehouse for execution.
 """
-
-# This command is executed by Databricks before any other code in this notebook.
-%pip install databricks-sql-connector loguru
 
 import json
 import os
 from typing import Any, Dict, List, Optional
 
+from databricks import sql
 from databricks.sdk.runtime import *
-from pyspark.sql import SparkSession
 from loguru import logger
 
 # --- 1. Configuration & Setup ---
@@ -72,19 +59,23 @@ logger.info(f"Source: {source_fqn} | Target: {target_fqn}")
 # --- 2. Database Connection Helper ---
 def execute_query(query: str) -> list[dict[str, any]]:
     """
-    Executes a SQL query using the native, built-in Spark session and returns
-    the result as a list of dictionaries.
+    Executes a SQL query on the configured Serverless Warehouse using the
+    databricks-sql-connector.
     """
-    global spark # Access the global spark session provided by the environment
-    logger.debug(f"Executing query via spark.sql: {query}")
+    token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+    logger.debug(f"Executing query against SQL Warehouse: {query}")
     try:
-        # The correct way to run SQL from a notebook is spark.sql()
-        df = spark.sql(query)
-        # .collect() brings the results to the driver, .asDict() converts each row.
-        return [row.asDict() for row in df.collect()]
+        with sql.connect(
+            server_hostname=databricks_host,
+            http_path=sql_warehouse_http_path,
+            token=token,
+        ) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(query)
+                columns = [desc[0] for desc in cursor.description]
+                return [dict(zip(columns, row)) for row in cursor.fetchall()]
     except Exception as e:
         logger.error(f"Query execution failed for query: {query}")
-        # Re-raise the exception to be caught by the main error handler.
         raise e
 
 # --- 3. Validation Logic ---
