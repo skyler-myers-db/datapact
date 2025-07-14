@@ -102,7 +102,7 @@ class DataPactClient:
               current_timestamp(),
               to_json(
                 struct(
-                  '{config['task_key']}' AS task_key,
+                  '{config['task_key']}' AS `task_key`,
                   v.source_count,
                   v.target_count,
                   v.count_check_passed,
@@ -113,7 +113,7 @@ class DataPactClient:
 
             -- Step 3: Set the variable based on the result that was just inserted.
             SET VAR validation_passed = (
-                SELECT from_json(result_payload, 'overall_validation_passed BOOLEAN').overall_validation_passed
+                SELECT result_payload.overall_validation_passed.overall_validation_passed
                 FROM {results_table}
                 WHERE run_id = :run_id AND task_key = '{config['task_key']}'
                 ORDER BY timestamp DESC
