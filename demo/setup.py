@@ -100,19 +100,22 @@ def run_demo_setup():
             # Re-raise the exception to stop the script.
             raise e
 
-    # If the entire loop completes, all statements were successful.
-    logger.success("✅ All setup statements executed successfully!")
-    logger.success("✅ Demo environment setup complete!")
-    logger.info("You can now run the demo validation with the following command:")
+    # After successful execution:
+    if result.status.state == sql_service.StatementState.SUCCEEDED:
+        logger.success("✅ SQL script executed successfully!")
+        logger.success("✅ Demo environment setup complete!")
+        logger.info("You can now run the demo validation with the following command:")
 
-    run_command = (
-        "datapact run \\\n"
-        "  --config demo/demo_config.yml \\\n"
-        f"  --warehouse \"{args.warehouse}\" \\\n"
-        "  --job-name \"DataPact Demo Run\" \\\n"
-        f"  --profile {args.profile}"
-    )
-    logger.info("\n\n" + "="*50 + f"\n{run_command}\n" + "="*50 + "\n")
+        # The command includes the --results-table argument to showcase the history tracking feature.
+        run_command = (
+            "datapact run \\\n"
+            "  --config demo/demo_config.yml \\\n"
+            f"  --warehouse \"{args.warehouse}\" \\\n"
+            "  --job-name \"DataPact Demo Run\" \\\n"
+            "  --results-table \"datapact_demo_catalog.source_data.datapact_run_history\" \\\n"
+            f"  --profile {args.profile}"
+        )
+        logger.info("\n\n" + "="*50 + f"\n{run_command}\n" + "="*50 + "\n")
 
 if __name__ == "__main__":
     run_demo_setup()
