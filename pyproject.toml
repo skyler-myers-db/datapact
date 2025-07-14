@@ -11,7 +11,6 @@ requires-python = ">=3.10"
 authors = [
   { name = "Skyler Myers", email = "skyler@entrada.ai" },
 ]
-
 classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -24,8 +23,13 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://www.entrada.ai/datapact"
-"Documentation" = "https://docs.entrada.ai/datapact"
+"Homepage" = "https://www.entrada.ai/datapact" # Example URL
+"Documentation" = "https://docs.entrada.ai/datapact" # Example URL
 
 [project.scripts]
 datapact = "datapact.main:main"
+
+[tool.setuptools.packages.find]
+# This tells setuptools to only look for packages to include under the current directory (.)
+# and to explicitly include ONLY the 'datapact' package and its subpackages.
+include = ["datapact*"]
