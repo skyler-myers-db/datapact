@@ -21,7 +21,7 @@ def main() -> None:
     """
     The main function that executes when the `datapact` command is run.
     """
-    parser = argparse.ArgumentParser(
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(
         description="DataPact: The enterprise-grade data validation accelerator for Databricks.",
         formatter_class=argparse.RawTextHelpFormatter
     )
@@ -41,9 +41,9 @@ def main() -> None:
         help="Optional: A 3-level (catalog.schema.table) Delta table name to store results. If not provided, a default is created."
     )
     
-    args = parser.parse_args()
+    args: argparse.Namespace = parser.parse_args()
 
-    warehouse_name = args.warehouse or os.getenv("DATAPACT_WAREHOUSE")
+    warehouse_name: str | None = args.warehouse or os.getenv("DATAPACT_WAREHOUSE")
     profile_name = args.profile or os.getenv("DATABRICKS_PROFILE", "DEFAULT")
 
     if not warehouse_name:
@@ -55,7 +55,7 @@ def main() -> None:
             config: dict[str, any] = yaml.safe_load(f)
         
         try:
-            client = DataPactClient(profile=profile_name)
+            client: DataPactClient = DataPactClient(profile=profile_name)
             client.run_validation(
                 config=config,
                 job_name=args.job_name,
