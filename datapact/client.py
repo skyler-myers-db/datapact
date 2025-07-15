@@ -123,9 +123,8 @@ class DataPactClient:
         """
         Generates a complete, multi-statement SQL script for the validation task.
 
-        This version resolves the critical [AMBIGUOUS_REFERENCE] bug by creating
-        unique aliases for columns within each CTE, ensuring there are no name
-        collisions when multiple aggregate validations are performed.
+        This is the definitive, correct version that uses f-strings for all SQL
+        template generation and produces a readable, nested VARIANT payload.
 
         Args:
             config: The configuration dictionary for a single validation task.
@@ -143,7 +142,7 @@ class DataPactClient:
 
         if 'count_tolerance' in config:
             tolerance: float = config.get('count_tolerance', 0.0)
-            ctes.append(textwrap.dedent("""
+            ctes.append(textwrap.dedent(f"""
             count_metrics AS (SELECT
                 (SELECT COUNT(1) FROM {source_fqn}) AS source_count,
                 (SELECT COUNT(1) FROM {target_fqn}) AS target_count)
@@ -212,7 +211,6 @@ class DataPactClient:
                     agg: str = validation['agg']
                     tolerance: float = validation['tolerance']
                     
-                    # *** FIX: Create unique column aliases inside each CTE ***
                     cte_key: str = f"agg_metrics_{col}_{agg}"
                     src_val_alias: str = f"source_value_{col}_{agg}"
                     tgt_val_alias: str = f"target_value_{col}_{agg}"
@@ -223,7 +221,6 @@ class DataPactClient:
                         TRY_CAST((SELECT {agg}(`{col}`) FROM {target_fqn}) AS DECIMAL(38, 6)) AS {tgt_val_alias})
                     """))
                     
-                    # *** FIX: Use the unique aliases in the check and payload ***
                     check: str = f"COALESCE(ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0), 0) <= {tolerance}"
                     payload_structs.append(textwrap.dedent(f"""
                     struct(
@@ -310,14 +307,17 @@ class DataPactClient:
         """
         warehouse: sql_service.EndpointInfo = self._ensure_sql_warehouse(warehouse_name)
         
+        final_results_table: str
         if not results_table:
             self._setup_default_infrastructure(warehouse.id)
-            results_table = f"`{DEFAULT_CATALOG}`.`{DEFAULT_SCHEMA}`.`{DEFAULT_TABLE}`"
-            logger.info(f"No results table provided. Using default: {results_table}")
+            final_results_table = f"`{DEFAULT_CATALOG}`.`{DEFAULT_SCHEMA}`.`{DEFAULT_TABLE}`"
+            logger.info(f"No results table provided. Using default: {final_results_table}")
+        else:
+            final_results_table = results_table
 
-        self._ensure_results_table_exists(results_table, warehouse.id)
+        self._ensure_results_table_exists(final_results_table, warehouse.id)
         
-        task_paths: dict[str, str] = self._upload_sql_scripts(config, results_table)
+        task_paths: dict[str, str] = self._upload_sql_scripts(config, final_results_table)
         
         tasks: list[Task] = []
         validation_task_keys: list[str] = [v_conf["task_key"] for v_conf in config["validations"]]
