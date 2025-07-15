@@ -270,28 +270,27 @@ class DataPactClient:
             warehouse = self._ensure_sql_warehouse(warehouse_name)
             task_paths = self._upload_sql_scripts(config, results_table)
     
-            # Use the SDK's Job-related dataclasses
+            # import the specific dataclasses from the SDK
             from databricks.sdk.service.jobs import (
-                JobParameter,
+                JobParameterDefinition,
+                JobRunAs,
                 JobSettings,
-                RunAs,
                 RunIf,
                 SqlTask,
+                SqlTaskFile,
                 Task,
                 TaskDependency,
-                FileSource
             )
     
             tasks: list[Task] = []
             validation_task_keys = [v_conf["task_key"] for v_conf in config["validations"]]
     
-            # Build the list of tasks using the Task dataclass
             for task_key in validation_task_keys:
                 tasks.append(
                     Task(
                         task_key=task_key,
                         sql_task=SqlTask(
-                            file=FileSource(
+                            file=SqlTaskFile(
                                 path=task_paths[task_key],
                                 source="WORKSPACE"
                             ),
@@ -300,7 +299,6 @@ class DataPactClient:
                     )
                 )
     
-            # Build the aggregation task, if needed
             if results_table and 'aggregate_results' in task_paths:
                 tasks.append(
                     Task(
@@ -308,7 +306,7 @@ class DataPactClient:
                         depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys],
                         run_if=RunIf.ALL_DONE,
                         sql_task=SqlTask(
-                            file=FileSource(
+                            file=SqlTaskFile(
                                 path=task_paths['aggregate_results'],
                                 source="WORKSPACE"
                             ),
@@ -317,35 +315,32 @@ class DataPactClient:
                     )
                 )
     
-            # Construct the entire job definition using the JobSettings dataclass
+            # Construct the job definition using the JobSettings dataclass
             job_settings = JobSettings(
                 name=job_name,
                 tasks=tasks,
-                run_as=RunAs(user_name=self.user_name),
+                run_as=JobRunAs(user_name=self.user_name),
                 parameters=[
-                    JobParameter(name="run_id", default="{{job.run_id}}")
+                    JobParameterDefinition(name="run_id", default="{{job.run_id}}")
                 ],
             )
     
-            # Check for an existing job
             existing_job = None
             for j in self.w.jobs.list(name=job_name):
                 existing_job = j
                 break
             
-            # Use the job_settings object for both creating and resetting the job
             if existing_job:
                 logger.info(f"Updating existing job '{job_name}' (ID: {existing_job.job_id})...")
                 self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings)
                 job_id = existing_job.job_id
             else:
                 logger.info(f"Creating new job '{job_name}'...")
-                # The create method takes the attributes of the JobSettings object as keyword arguments
                 new_job = self.w.jobs.create(
                     name=job_settings.name,
                     tasks=job_settings.tasks,
                     run_as=job_settings.run_as,
-                    parameters=job_settings.parameters,
+                    parameters=job_settings.parameters
                 )
                 job_id = new_job.job_id
     
