@@ -52,11 +52,8 @@ def run_demo_setup() -> None:
         sql_script = f.read()
 
     # Robustly parse the SQL script into individual statements.
-    # 1. Remove block comments /* ... */
     sql_script = re.sub(r'/\*.*?\*/', '', sql_script, flags=re.DOTALL)
-    # 2. Remove line comments -- ...
     sql_script = re.sub(r'--.*', '', sql_script)
-    # 3. Split by semicolon and filter out any empty strings resulting from the split.
     sql_commands = [cmd.strip() for cmd in sql_script.split(';') if cmd.strip()]
 
     logger.info(f"Found {len(sql_commands)} individual SQL statements to execute sequentially.")
@@ -66,7 +63,6 @@ def run_demo_setup() -> None:
         logger.info(f"Executing statement {i+1}/{len(sql_commands)}...")
         logger.debug(f"SQL: {command}")
         try:
-            # Use the robust asynchronous polling pattern for each statement.
             resp = w.statement_execution.execute_statement(
                 statement=command,
                 warehouse_id=warehouse.id,
@@ -82,7 +78,7 @@ def run_demo_setup() -> None:
 
                 if current_state == sql_service.StatementState.SUCCEEDED:
                     logger.success(f"Statement {i+1} succeeded.")
-                    break  # Exit the while loop, move to the next command.
+                    break
 
                 if current_state in [sql_service.StatementState.FAILED, sql_service.StatementState.CANCELED, sql_service.StatementState.CLOSED]:
                     error = status.status.error
@@ -91,31 +87,28 @@ def run_demo_setup() -> None:
                         logger.critical(f"Error: {error.message}")
                     raise Exception(f"Setup script failed at statement {i+1}.")
 
-                time.sleep(5)  # Poll every 5 seconds.
-            else:  # This executes if the while loop finishes without a 'break'.
+                time.sleep(5)
+            else:
                 raise TimeoutError(f"Statement {i+1} timed out after {timeout_seconds} seconds.")
 
         except Exception as e:
             logger.critical(f"An error occurred during execution. Halting setup.")
-            # Re-raise the exception to stop the script.
             raise e
 
-    # After successful execution:
-    if result.status.state == sql_service.StatementState.SUCCEEDED:
-        logger.success("✅ SQL script executed successfully!")
-        logger.success("✅ Demo environment setup complete!")
-        logger.info("You can now run the demo validation with the following command:")
+    # If the script reaches this point, all statements have succeeded.
+    logger.success("✅ SQL script executed successfully!")
+    logger.success("✅ Demo environment setup complete!")
+    logger.info("You can now run the demo validation with the following command:")
 
-        # The command includes the --results-table argument to showcase the history tracking feature.
-        run_command = (
-            "datapact run \\\n"
-            "  --config demo/demo_config.yml \\\n"
-            f"  --warehouse \"{args.warehouse}\" \\\n"
-            "  --job-name \"DataPact Demo Run\" \\\n"
-            "  --results-table \"datapact_demo_catalog.source_data.datapact_run_history\" \\\n"
-            f"  --profile {args.profile}"
-        )
-        logger.info("\n\n" + "="*50 + f"\n{run_command}\n" + "="*50 + "\n")
+    run_command = (
+        "datapact run \\\n"
+        "  --config demo/demo_config.yml \\\n"
+        f"  --warehouse \"{args.warehouse}\" \\\n"
+        "  --job-name \"DataPact Demo Run\" \\\n"
+        "  --results-table \"datapact_demo_catalog.source_data.datapact_run_history\" \\\n"
+        f"  --profile {args.profile}"
+    )
+    logger.info("\n\n" + "="*50 + f"\n{run_command}\n" + "="*50 + "\n")
 
 if __name__ == "__main__":
     run_demo_setup()
