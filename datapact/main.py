@@ -38,7 +38,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--results-table",
-        help="Optional: A 3-level (catalog.schema.table) Delta table name to store results."
+        required=True,
+        help="A 3-level (catalog.schema.table) Delta table name to store results. This table will be created if it does not exist.",
     )
     
     args = parser.parse_args()
