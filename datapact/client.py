@@ -49,7 +49,7 @@ class DataPactClient:
     def _execute_sql(self, sql: str, warehouse_id: str) -> None:
         """
         A robust, synchronous helper function to execute a SQL statement.
-
+        
         It submits the statement to the Statement Execution API and polls until
         it reaches a terminal state, raising an exception on failure. This is
         used for setting up infrastructure before the main job runs.
@@ -226,8 +226,10 @@ class DataPactClient:
                     overall_validation_passed_clauses.append(
                         f"(ABS({cte_key}.target_agg - {cte_key}.source_agg) / NULLIF(ABS(CAST({cte_key}.source_agg AS DOUBLE)), 0)) <= {tolerance}"
                     )
+
         # --- Build the Final Query ---
-        from_clause: str = "CROSS JOIN ".join([cte.split(" AS ")[0] for cte in ctes]) if ctes else "(SELECT 1)"
+        from_clause: str = " CROSS JOIN ".join([cte.split(" AS ")[0] for cte in ctes]) if ctes else "(SELECT 1)"
+
         final_sql: str = f"-- DataPact Validation for task: {task_key}\n"
         if ctes:
             final_sql += "WITH\n" + ", \n".join(ctes) + "\n"
@@ -271,9 +273,15 @@ class DataPactClient:
         
         agg_script_path: str = f"{sql_tasks_path}/aggregate_results.sql"
         agg_sql_script: str = textwrap.dedent(f"""
-            SELECT CASE WHEN (SELECT COUNT(1) FROM {results_table} WHERE run_id = :run_id AND status = 'FAILURE') > 0
-            THEN RAISE_ERROR('One or more DataPact validations failed.')
-            ELSE 'All DataPact validations passed successfully!' END;
+            -- This final task fails if any task failed OR if not all tasks reported success.
+            SELECT CASE 
+                WHEN (
+                    (SELECT COUNT(1) FROM {results_table} WHERE run_id = :run_id AND status = 'FAILURE') > 0 OR
+                    (SELECT COUNT(1) FROM {results_table} WHERE run_id = :run_id AND status = 'SUCCESS') < :expected_successes
+                )
+                THEN RAISE_ERROR('One or more DataPact validations failed or did not complete.')
+                ELSE 'All DataPact validations passed successfully!' 
+            END;
         """)
         self.w.workspace.upload(
             path=agg_script_path, content=agg_sql_script.encode('utf-8'),
@@ -300,11 +308,25 @@ class DataPactClient:
         
         tasks: list[Task] = []
         validation_task_keys: list[str] = [v_conf["task_key"] for v_conf in config["validations"]]
+        num_validation_tasks: int = len(validation_task_keys)
 
         for task_key in validation_task_keys:
             tasks.append(Task(task_key=task_key, sql_task=SqlTask(file=SqlTaskFile(path=task_paths[task_key], source=Source.WORKSPACE), warehouse_id=warehouse.id)))
 
-        tasks.append(Task(task_key="aggregate_results", depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys], run_if=RunIf.ALL_DONE, sql_task=SqlTask(file=SqlTaskFile(path=task_paths['aggregate_results'], source=Source.WORKSPACE), warehouse_id=warehouse.id)))
+        # *** PASS THE EXPECTED COUNT TO THE AGGREGATION TASK ***
+        agg_task_parameters: dict[str, str] = {'expected_successes': str(num_validation_tasks)}
+        tasks.append(
+            Task(
+                task_key="aggregate_results",
+                depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys],
+                run_if=RunIf.ALL_DONE,
+                sql_task=SqlTask(
+                    file=SqlTaskFile(path=task_paths['aggregate_results'], source=Source.WORKSPACE),
+                    warehouse_id=warehouse.id,
+                    parameters=agg_task_parameters
+                )
+            )
+        )
 
         job_settings: JobSettings = JobSettings(name=job_name, tasks=tasks, run_as=JobRunAs(user_name=self.user_name), parameters=[JobParameterDefinition(name="run_id", default="{{job.run_id}}")])
 
@@ -358,10 +380,13 @@ class DataPactClient:
         if not warehouse:
             raise ValueError(f"SQL Warehouse '{name}' not found.")
 
-        logger.info(f"Found warehouse {warehouse.id}. State: {warehouse.state}")
+        warehouse_id_to_check: str = warehouse.id
+        logger.info(f"Found warehouse {warehouse_id_to_check}. State: {warehouse.state}")
+        
         if warehouse.state not in [sql_service.State.RUNNING, sql_service.State.STARTING]:
             logger.info(f"Warehouse '{name}' is {warehouse.state}. Starting it...")
             self.w.warehouses.start(warehouse.id).result(timeout=timedelta(minutes=5))
             logger.success(f"Warehouse '{name}' started successfully.")
         
-        return self.w.warehouses.get(warehouse.id)
+        # Get the latest state of the warehouse by its ID and return it
+        return self.w.warehouses.get(warehouse_id_to_check)
