@@ -1,7 +1,7 @@
 """
 The core client for interacting with the Databricks API.
 
-This module contains the `DataPactClient` class. It orchestrates the entire
+This module contains the DataPactClient class. It orchestrates the entire
 validation process by dynamically generating pure SQL validation scripts based
 on a user's configuration. It then creates and runs a multi-task Databricks Job
 where each task executes one of the generated SQL scripts on a specified
@@ -13,14 +13,13 @@ import time
 from pathlib import Path
 from datetime import timedelta
 import textwrap
-from typing import Optional, Any, Dict, List
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import jobs, sql as sql_service, workspace
 from databricks.sdk.service.jobs import RunLifeCycleState
 from loguru import logger
 
-TERMINAL_STATES: List[RunLifeCycleState] = [
+TERMINAL_STATES: list[RunLifeCycleState] = [
     RunLifeCycleState.TERMINATED, RunLifeCycleState.SKIPPED, RunLifeCycleState.INTERNAL_ERROR
 ]
 DEFAULT_CATALOG = "datapact_main"
@@ -42,7 +41,7 @@ class DataPactClient:
         """
         logger.info(f"Initializing WorkspaceClient with profile '{profile}'...")
         self.w: WorkspaceClient = WorkspaceClient(profile=profile)
-        self.user_name: Optional[str] = self.w.current_user.me().user_name
+        self.user_name: str | None = self.w.current_user.me().user_name
         self.root_path: str = f"/Users/{self.user_name}/datapact"
         self.w.workspace.mkdirs(self.root_path)
 
@@ -51,7 +50,8 @@ class DataPactClient:
         A robust, synchronous helper function to execute a SQL statement.
         
         It submits the statement to the Statement Execution API and polls until
-        it reaches a terminal state, raising an exception on failure.
+        it reaches a terminal state, raising an exception on failure. This is
+        used for setting up infrastructure before the main job runs.
 
         Args:
             sql: The SQL string to execute.
@@ -61,23 +61,28 @@ class DataPactClient:
             Exception: If the SQL statement fails to execute.
             TimeoutError: If the execution takes longer than the defined timeout.
         """
-        resp = self.w.statement_execution.execute_statement(
+        resp: sql_service.ExecuteStatementResponse = self.w.statement_execution.execute_statement(
             statement=sql, warehouse_id=warehouse_id, wait_timeout='0s'
         )
-        statement_id = resp.statement_id
-        timeout = timedelta(minutes=2)
+        statement_id: str = resp.statement_id
+        timeout_seconds: int = 120
 
-        try:
-            status = self.w.statement_execution.wait_get_statement(
-                statement_id=statement_id,
-                timeout=timeout,
-            )
-            if status.status.state != sql_service.StatementState.SUCCEEDED:
-                error = status.status.error
-                raise Exception(f"SQL execution failed: {error.message if error else 'Unknown error'}")
-        except TimeoutError:
-            logger.error(f"SQL statement timed out after {timeout.total_seconds()} seconds.")
-            raise
+        start_time: float = time.time()
+        while time.time() - start_time < timeout_seconds:
+            status: sql_service.StatementStatus = self.w.statement_execution.get_statement(statement_id=statement_id)
+            current_state: sql_service.StatementState = status.status.state
+
+            if current_state == sql_service.StatementState.SUCCEEDED:
+                return  # Success
+            
+            if current_state in [sql_service.StatementState.FAILED, sql_service.StatementState.CANCELED, sql_service.StatementState.CLOSED]:
+                error: sql_service.Error | None = status.status.error
+                error_message: str = error.message if error else "Unknown execution error."
+                raise Exception(f"SQL execution failed with state {current_state}: {error_message}")
+
+            time.sleep(3)
+        
+        raise TimeoutError(f"SQL statement timed out after {timeout_seconds} seconds.")
 
     def _setup_default_infrastructure(self, warehouse_id: str) -> None:
         """
@@ -95,14 +100,14 @@ class DataPactClient:
     def _ensure_results_table_exists(self, results_table_fqn: str, warehouse_id: str) -> None:
         """
         Ensures the results Delta table exists, creating it if necessary.
-        This is run locally by the client before the job is submitted.
+        This uses the modern VARIANT data type for storing the JSON payload.
 
         Args:
             results_table_fqn: The fully-qualified (catalog.schema.table) name for the results table.
             warehouse_id: The ID of the SQL warehouse to run the DDL on.
         """
         logger.info(f"Ensuring results table '{results_table_fqn}' exists...")
-        create_table_ddl = textwrap.dedent(f"""
+        create_table_ddl: str = textwrap.dedent(f"""
             CREATE TABLE IF NOT EXISTS {results_table_fqn} (
                 task_key STRING,
                 status STRING,
@@ -114,7 +119,7 @@ class DataPactClient:
         self._execute_sql(create_table_ddl, warehouse_id)
         logger.success(f"Results table '{results_table_fqn}' is ready.")
 
-    def _generate_validation_sql(self, config: Dict[str, Any], results_table: str) -> str:
+    def _generate_validation_sql(self, config: dict[str, any], results_table: str) -> str:
         """
         Generates a complete, idempotent, and dynamic SQL validation script.
 
@@ -133,10 +138,10 @@ class DataPactClient:
         source_fqn = f"`{config['source_catalog']}`.`{config['source_schema']}`.`{config['source_table']}`"
         target_fqn = f"`{config['target_catalog']}`.`{config['target_schema']}`.`{config['target_table']}`"
         task_key = config['task_key']
-        ctes: List[str] = []
-        metric_payload_parts: List[str] = []
-        overall_validation_passed_clauses: List[str] = []
-
+        ctes: list[str] = []
+        metric_payload_parts: list[str] = []
+        overall_validation_passed_clauses: list[str] = []
+        
         # Count Validation
         if 'count_tolerance' in config:
             ctes.append(textwrap.dedent(f"""
@@ -146,14 +151,8 @@ class DataPactClient:
                     (SELECT COUNT(1) FROM {target_fqn}) AS target_count
             )
             """))
-            metric_payload_parts.extend([
-                "'source_count'", "source_count",
-                "'target_count'", "target_count",
-                "'count_relative_diff'", "ABS(target_count - source_count) / NULLIF(CAST(source_count AS DOUBLE), 0)"
-            ])
-            overall_validation_passed_clauses.append(
-                f"(ABS(target_count - source_count) / NULLIF(CAST(source_count AS DOUBLE), 0)) <= {count_tolerance}"
-            )
+            metric_payload_parts.extend(["'source_count'", "source_count","'target_count'", "target_count","'count_relative_diff'", "ABS(target_count - source_count) / NULLIF(CAST(source_count AS DOUBLE), 0)"])
+            overall_validation_passed_clauses.append(f"(ABS(target_count - source_count) / NULLIF(CAST(source_count AS DOUBLE), 0)) <= {config['count_tolerance']}")
         
         # 2. Per-Row Hash Validation
         if config.get('pk_row_hash_check') and config.get('primary_keys'):
@@ -236,7 +235,6 @@ class DataPactClient:
         # --- Build the Final Query ---
         from_clause = "CROSS JOIN ".join([cte.split(" AS ")[0] for cte in ctes]) if ctes else "(SELECT 1)"
         final_sql = f"-- DataPact Validation for task: {task_key}\n"
-        final_sql += f"-- Generated at: {time.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
         if ctes:
             final_sql += "WITH\n" + ", \n".join(ctes) + "\n"
 
@@ -248,24 +246,13 @@ class DataPactClient:
             FROM {from_clause}
         )
         INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload)
-        SELECT
-            '{task_key}',
-            CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
-            :run_id,
-            current_timestamp(),
-            result_payload
-        FROM final_metrics;
+        SELECT '{task_key}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END, :run_id, current_timestamp(), result_payload FROM final_metrics;
         
-        SELECT
-          CASE
-            WHEN (SELECT overall_validation_passed FROM final_metrics)
-            THEN 'Validation PASSED'
-            ELSE RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Payload: ', (SELECT to_json(result_payload) FROM final_metrics)))
-          END;
+        SELECT CASE WHEN (SELECT overall_validation_passed FROM final_metrics) THEN 'Validation PASSED' ELSE RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Payload: ', (SELECT to_json(result_payload) FROM final_metrics))) END;
         """)
         return final_sql
     
-    def _upload_sql_scripts(self, config: Dict[str, Any], results_table: str) -> Dict[str, str]:
+    def _upload_sql_scripts(self, config: dict[str, any], results_table: str) -> dict[str, str]:
         """
         Generates and uploads SQL scripts for all validation tasks to the workspace.
 
@@ -321,15 +308,9 @@ class DataPactClient:
             task_paths['aggregate_results'] = agg_script_path
             logger.info(f"  - Uploaded aggregation SQL FILE to {agg_script_path}")
     
-        return task_paths
+        return {}
 
-    def run_validation(
-        self,
-        config: Dict[str, Any],
-        job_name: str,
-        warehouse_name: str,
-        results_table: Optional[str] = None,
-    ) -> None:
+    def run_validation(self, config: dict[str, any], job_name: str, warehouse_name: str, results_table: str | None = None) -> None:
         """
         The main orchestrator for the entire validation process.
 
@@ -357,7 +338,8 @@ class DataPactClient:
 
         self._ensure_results_table_exists(results_table, warehouse.id)
         
-        task_paths = self._upload_sql_scripts(config, results_table)    
+        task_paths = self._upload_sql_scripts(config, results_table)
+
         from databricks.sdk.service.jobs import (
             JobParameterDefinition,
             JobRunAs,
@@ -487,4 +469,4 @@ class DataPactClient:
             self.w.warehouses.start(warehouse.id).result(timeout=timedelta(seconds=600))
             logger.success(f"Warehouse '{name}' started successfully.")
         
-        return self.w.warehouses.get(warehouse.id)
+        return self.w.warehouses.get(name)
