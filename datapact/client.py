@@ -362,9 +362,4 @@ class DataPactClient:
             logger.success(f"Warehouse '{name}' started successfully.")
         
         # Get the latest state of the warehouse and return it
-        return self.w.warehouses.get(warehouse.id):
-            logger.info(f"Warehouse '{name}' is in state {warehouse.state}. Starting it...")
-            self.w.warehouses.start(warehouse.id).result(timeout=timedelta(seconds=600))
-            logger.success(f"Warehouse '{name}' started successfully.")
-        
-        return self.w.warehouses.get(name)
+        return self.w.warehouses.get(warehouse.id)
