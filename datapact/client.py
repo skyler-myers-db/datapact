@@ -71,70 +71,73 @@ class DataPactClient:
         source_fqn = f"`{config['source_catalog']}`.`{config['source_schema']}`.`{config['source_table']}`"
         target_fqn = f"`{config['target_catalog']}`.`{config['target_schema']}`.`{config['target_table']}`"
         task_key = config['task_key']
-    
-        # --- SQL Generation ---
         ctes = []
-        from_clauses = []
-        select_expressions = []
-        check_booleans = []
-    
+        # --- SQL Generation ---
+        final_checks = []
+        metric_payload_parts = []
+        
+        # --- Overall Validation Logic ---
+        overall_validation_passed_clauses = []
+        
         # 1. Count Validation
         count_tolerance = config.get('count_tolerance')
         if count_tolerance is not None:
             ctes.append(textwrap.dedent(f"""
-            count_calcs AS (
+            count_metrics AS (
                 SELECT
                     (SELECT COUNT(1) FROM {source_fqn}) AS source_count,
                     (SELECT COUNT(1) FROM {target_fqn}) AS target_count
             )
             """))
-            from_clauses.append("count_calcs")
-            select_expressions.extend([
-                "c.source_count",
-                "c.target_count",
-                "ABS(c.target_count - c.source_count) / NULLIF(CAST(c.source_count AS DOUBLE), 0) AS count_relative_diff"
+            metric_payload_parts.extend([
+                "'source_count'", "source_count",
+                "'target_count'", "target_count",
+                "'count_relative_diff'", "ABS(target_count - source_count) / NULLIF(CAST(source_count AS DOUBLE), 0)"
             ])
-            check_booleans.append(f"(ABS(c.target_count - c.source_count) / NULLIF(CAST(c.source_count AS DOUBLE), 0)) <= {count_tolerance}")
-    
-    
+            overall_validation_passed_clauses.append(
+                f"(ABS(target_count - source_count) / NULLIF(CAST(source_count AS DOUBLE), 0)) <= {count_tolerance}"
+            )
+        
         # 2. Per-Row Hash Validation
         if config.get('pk_row_hash_check') and config.get('primary_keys'):
             primary_keys = config['primary_keys']
             pk_hash_threshold = config.get('pk_hash_threshold', 0.0)
             
-            all_source_columns = [c.name for c in self.w.columns.list(table_name=source_fqn)]
-            hash_columns = config.get('hash_columns', all_source_columns)
-            hash_columns_expr_list = [f"`{c}`" for c in hash_columns]
-    
-            hash_expr = f"md5(to_json(struct({', '.join(hash_columns_expr_list)})))"
+            hash_columns = config.get('hash_columns')
+            if hash_columns:
+                hash_expr = f"md5(to_json(struct({', '.join([f'`{c}`' for c in hash_columns])})))"
+            else:
+                # This is the robust way to hash all columns without listing them
+                hash_expr = "md5(to_json(struct(*)))"
+                
             pk_cols_str = ", ".join([f"`{pk}`" for pk in primary_keys])
-            join_expr = " AND ".join([f"s.{pk} = t.{pk}" for pk in primary_keys])
-    
+            join_expr = " AND ".join([f"s.`{pk}` = t.`{pk}`" for pk in primary_keys])
+            
             ctes.append(textwrap.dedent(f"""
-            row_hash_calcs AS (
-              SELECT
-                COUNT(1) AS total_compared_rows,
-                COALESCE(SUM(CASE WHEN s.row_hash <> t.row_hash THEN 1 ELSE 0 END), 0) AS mismatch_count
-              FROM
-                (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {source_fqn}) s
-                INNER JOIN (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {target_fqn}) t ON {join_expr}
+            row_hash_metrics AS (
+                SELECT
+                    COUNT(1) AS total_compared_rows,
+                    COALESCE(SUM(CASE WHEN s.row_hash <> t.row_hash THEN 1 ELSE 0 END), 0) AS mismatch_count
+                FROM
+                    (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {source_fqn}) s
+                INNER JOIN
+                    (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {target_fqn}) t
+                ON {join_expr}
             )
             """))
-            from_clauses.append("row_hash_calcs")
-            select_expressions.extend([
-                "h.total_compared_rows",
-                "h.mismatch_count",
-                "(h.mismatch_count / NULLIF(CAST(h.total_compared_rows AS DOUBLE), 0)) AS mismatch_ratio"
+            metric_payload_parts.extend([
+                "'total_compared_rows'", "total_compared_rows",
+                "'mismatch_count'", "mismatch_count",
+                "'mismatch_ratio'", "mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)"
             ])
-            check_booleans.append(f"(h.mismatch_count / NULLIF(CAST(h.total_compared_rows AS DOUBLE), 0)) <= {pk_hash_threshold}")
-    
+            overall_validation_passed_clauses.append(
+                f"(mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)) <= {pk_hash_threshold}"
+            )
         # 3. Null Count Validation
         if config.get('null_validation_columns'):
             for col in config['null_validation_columns']:
                 null_val_threshold = config.get('null_validation_threshold', 0.0)
-                cte_key = f"null_calcs_{col}"
-                alias = f"n_{col}"
-    
+                cte_key = f"null_metrics_{col}"
                 ctes.append(textwrap.dedent(f"""
                 {cte_key} AS (
                     SELECT
@@ -142,14 +145,14 @@ class DataPactClient:
                         (SELECT COUNT(1) FROM {target_fqn} WHERE `{col}` IS NULL) AS target_nulls
                 )
                 """))
-                from_clauses.append(cte_key)
-                select_expressions.extend([
-                    f"{alias}.source_nulls AS source_nulls_{col}",
-                    f"{alias}.target_nulls AS target_nulls_{col}",
-                    f"ABS({alias}.target_nulls - {alias}.source_nulls) / NULLIF(CAST({alias}.source_nulls AS DOUBLE), 0) AS null_relative_diff_{col}"
+                metric_payload_parts.extend([
+                    f"'source_nulls_{col}'", f"{cte_key}.source_nulls",
+                    f"'target_nulls_{col}'", f"{cte_key}.target_nulls",
+                    f"'null_relative_diff_{col}'", f"ABS({cte_key}.target_nulls - {cte_key}.source_nulls) / NULLIF(CAST({cte_key}.source_nulls AS DOUBLE), 0)"
                 ])
-                check_booleans.append(f"(ABS({alias}.target_nulls - {alias}.source_nulls) / NULLIF(CAST({alias}.source_nulls AS DOUBLE), 0)) <= {null_val_threshold}")
-    
+                overall_validation_passed_clauses.append(
+                    f"(ABS({cte_key}.target_nulls - {cte_key}.source_nulls) / NULLIF(CAST({cte_key}.source_nulls AS DOUBLE), 0)) <= {null_val_threshold}"
+                )
         # 4. Aggregate Validations
         if config.get('agg_validations'):
             for agg_config in config.get('agg_validations', []):
@@ -157,9 +160,7 @@ class DataPactClient:
                 for validation in agg_config['validations']:
                     agg = validation['agg']
                     tolerance = validation['tolerance']
-                    cte_key = f"agg_calcs_{col}_{agg}"
-                    alias = f"a_{col}_{agg}"
-    
+                    cte_key = f"agg_metrics_{col}_{agg}"
                     ctes.append(textwrap.dedent(f"""
                     {cte_key} AS (
                         SELECT
@@ -167,75 +168,38 @@ class DataPactClient:
                             TRY_CAST((SELECT {agg}(`{col}`) FROM {target_fqn}) AS DECIMAL(38, 6)) AS target_agg
                     )
                     """))
-                    from_clauses.append(cte_key)
-                    select_expressions.extend([
-                        f"{alias}.source_agg AS source_agg_{col}_{agg}",
-                        f"{alias}.target_agg AS target_agg_{col}_{agg}",
-                        f"ABS({alias}.target_agg - {alias}.source_agg) / NULLIF(ABS(CAST({alias}.source_agg AS DOUBLE)), 0) AS agg_relative_diff_{col}_{agg}"
+                    metric_payload_parts.extend([
+                        f"'source_agg_{col}_{agg}'", f"{cte_key}.source_agg",
+                        f"'target_agg_{col}_{agg}'", f"{cte_key}.target_agg",
+                        f"'agg_relative_diff_{col}_{agg}'", f"ABS({cte_key}.target_agg - {cte_key}.source_agg) / NULLIF(ABS(CAST({cte_key}.source_agg AS DOUBLE)), 0)"
                     ])
-                    check_booleans.append(f"(ABS({alias}.target_agg - {alias}.source_agg) / NULLIF(ABS(CAST({alias}.source_agg AS DOUBLE)), 0)) <= {tolerance}")
-    
-    
+                    overall_validation_passed_clauses.append(
+                        f"(ABS({cte_key}.target_agg - {cte_key}.source_agg) / NULLIF(ABS(CAST({cte_key}.source_agg AS DOUBLE)), 0)) <= {tolerance}"
+                    )
         # --- Build the Final Query ---
+        from_clause = "CROSS JOIN ".join([cte.split(" AS ")[0] for cte in ctes])
         final_sql = f"-- DataPact Validation for task: {task_key}\n"
         final_sql += f"-- Generated at: {time.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-        
-        # Use aliases for the from clauses
-        from_aliases = {
-            "count_calcs": "c",
-            "row_hash_calcs": "h"
-        }
-        for clause in from_clauses:
-            if clause.startswith("null_calcs_"):
-                from_aliases[clause] = f"n_{clause.replace('null_calcs_', '')}"
-            elif clause.startswith("agg_calcs_"):
-                from_aliases[clause] = f"a_{clause.replace('agg_calcs_', '')}"
-        
-        # Replace aliases in select and check expressions
-        for i in range(len(select_expressions)):
-            for k, v in from_aliases.items():
-                if select_expressions[i].startswith(f"{v}."):
-                    break
-            else:
-                select_expressions[i] = f"{list(from_aliases.values())[0]}.{select_expressions[i]}"
-    
-        for i in range(len(check_booleans)):
-            for k, v in from_aliases.items():
-                if f"{v}." in check_booleans[i]:
-                     break
-            else:
-                 check_booleans[i] = check_booleans[i].replace(list(from_aliases.keys())[0], list(from_aliases.values())[0])
-    
-    
-        final_sql += "WITH\n" + ",\n".join(ctes) + "\n"
-    
-        # --- Final SELECT and INSERT Logic ---
+        final_sql += "WITH\n" + ", \n".join(ctes) + "\n" if ctes else ""
         final_sql += textwrap.dedent(f"""
-        ,
-        final_metrics AS (
-          SELECT
-            struct(
-                '{task_key}' AS task_key,
-                {', '.join(select_expressions)}
-            ) AS result_payload,
-            {' AND '.join(check_booleans)} AS overall_validation_passed
-          FROM
-            { ' CROSS JOIN '.join([f'{k} AS {v}' for k, v in from_aliases.items()]) }
+        , final_metrics AS (
+            SELECT
+                map({', '.join(metric_payload_parts)}) as result_payload,
+                {' AND '.join(overall_validation_passed_clauses) if overall_validation_passed_clauses else 'true'} AS overall_validation_passed
+            FROM {from_clause}
         )
         """)
-    
         if results_table:
             final_sql += textwrap.dedent(f"""
             INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload)
             SELECT
-              '{task_key}',
-              CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
-              :run_id,
-              current_timestamp(),
-              to_json(result_payload)
+                '{task_key}',
+                CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
+                :run_id,
+                current_timestamp(),
+                to_json(result_payload)
             FROM final_metrics;
             """)
-    
         final_sql += textwrap.dedent(f"""
         SELECT
           CASE
@@ -244,7 +208,6 @@ class DataPactClient:
             ELSE RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Payload: ', (SELECT to_json(result_payload) FROM final_metrics)))
           END;
         """)
-    
         return final_sql
     
     def _upload_sql_scripts(self, config: dict[str, any], results_table: str | None) -> dict[str, str]:
