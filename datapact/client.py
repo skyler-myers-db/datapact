@@ -119,13 +119,12 @@ class DataPactClient:
         self._execute_sql(create_table_ddl, warehouse_id)
         logger.success(f"Results table '{results_table_fqn}' is ready.")
 
-    def _generate_validation_sql(self, config: dict[str, any], results_table: str) -> str:
+def _generate_validation_sql(self, config: dict[str, any], results_table: str) -> str:
         """
-        Generates a complete, idempotent, and dynamic SQL validation script.
+        Generates a complete, multi-statement SQL script for the validation task.
 
-        This version uses a TEMP VIEW to solve the SQL statement scoping issue,
-        ensuring the calculated metrics are available to both the INSERT and the
-        final RAISE_ERROR check.
+        This version produces a well-structured, nested VARIANT payload, making
+        the results and error messages much more readable and easier to debug.
 
         Args:
             config: The configuration dictionary for a single validation task.
@@ -138,41 +137,52 @@ class DataPactClient:
         target_fqn: str = f"`{config['target_catalog']}`.`{config['target_schema']}`.`{config['target_table']}`"
         task_key: str = config['task_key']
         ctes: list[str] = []
-        metric_payload_parts: list[str] = []
+        payload_structs: list[str] = []
         overall_validation_passed_clauses: list[str] = []
 
         if 'count_tolerance' in config:
-            # Add count_metrics CTE
+            tolerance: float = config.get('count_tolerance', 0.0)
             ctes.append(textwrap.dedent(f"""
-            count_metrics AS (
-                SELECT
-                    (SELECT COUNT(1) FROM {source_fqn}) AS source_count,
-                    (SELECT COUNT(1) FROM {target_fqn}) AS target_count
-            )
+            count_metrics AS (SELECT
+                (SELECT COUNT(1) FROM {source_fqn}) AS source_count,
+                (SELECT COUNT(1) FROM {target_fqn}) AS target_count)
             """))
-            metric_payload_parts.extend(["'source_count'", "source_count","'target_count'", "target_count","'count_relative_diff'", "ABS(target_count - source_count) / NULLIF(CAST(source_count AS DOUBLE), 0)"])
-            overall_validation_passed_clauses.append(f"COALESCE((ABS(target_count - source_count) / NULLIF(CAST(source_count AS DOUBLE), 0)), 0) <= {config['count_tolerance']}")
+            check: str = f"COALESCE((ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0)), 0) <= {tolerance}"
+            payload_structs.append(textwrap.dedent(f"""
+            struct(
+                CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status,
+                {tolerance} AS tolerance,
+                source_count,
+                target_count,
+                (ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0)) as relative_diff
+            ) AS count_validation
+            """))
+            overall_validation_passed_clauses.append(check)
 
-        if config.get('pk_row_hash_check'):
-            # Add row_hash_metrics CTE
-             primary_keys: list[str] = config.get('primary_keys', [])
-             if primary_keys:
-                pk_hash_threshold: float = config.get('pk_hash_threshold', 0.0)
-                hash_columns: list[str] | None = config.get('hash_columns')
-                if hash_columns:
-                    hash_expr: str = f"md5(to_json(struct({', '.join([f'`{c}`' for c in hash_columns])})))"
-                else:
-                    hash_expr: str = "md5(to_json(struct(*)))"
-                pk_cols_str: str = ", ".join([f"`{pk}`" for pk in primary_keys])
-                join_expr: str = " AND ".join([f"s.`{pk}` = t.`{pk}`" for pk in primary_keys])
-                ctes.append(textwrap.dedent(f"""
-                row_hash_metrics AS (
-                    SELECT COUNT(1) AS total_compared_rows, COALESCE(SUM(CASE WHEN s.row_hash <> t.row_hash THEN 1 ELSE 0 END), 0) AS mismatch_count
-                    FROM (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {source_fqn}) s
-                    INNER JOIN (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {target_fqn}) t ON {join_expr}
-                )"""))
-                metric_payload_parts.extend(["'total_compared_rows'", "total_compared_rows", "'mismatch_count'", "mismatch_count", "'mismatch_ratio'", "mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)"])
-                overall_validation_passed_clauses.append(f"COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= {pk_hash_threshold}")
+        if config.get('pk_row_hash_check') and config.get('primary_keys'):
+            primary_keys: list[str] = config.get('primary_keys', [])
+            pk_hash_threshold: float = config.get('pk_hash_threshold', 0.0)
+            hash_columns: list[str] | None = config.get('hash_columns')
+            hash_expr: str = f"md5(to_json(struct({', '.join([f'`{c}`' for c in hash_columns]) if hash_columns else '*'})))"
+            pk_cols_str: str = ", ".join([f"`{pk}`" for pk in primary_keys])
+            join_expr: str = " AND ".join([f"s.`{pk}` = t.`{pk}`" for pk in primary_keys])
+
+            ctes.append(textwrap.dedent(f"""
+            row_hash_metrics AS (SELECT COUNT(1) AS total_compared_rows, COALESCE(SUM(CASE WHEN s.row_hash <> t.row_hash THEN 1 ELSE 0 END), 0) AS mismatch_count
+                FROM (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {source_fqn}) s
+                INNER JOIN (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {target_fqn}) t ON {join_expr})
+            """))
+            check: str = f"COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= {pk_hash_threshold}"
+            payload_structs.append(textwrap.dedent(f"""
+            struct(
+                CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status,
+                {pk_hash_threshold} AS threshold,
+                mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0) as mismatch_ratio,
+                total_compared_rows,
+                mismatch_count
+            ) AS row_hash_validation
+            """))
+            overall_validation_passed_clauses.append(check)
 
         if config.get('null_validation_columns'):
             for col in config['null_validation_columns']:
@@ -211,8 +221,6 @@ class DataPactClient:
                     overall_validation_passed_clauses.append(f"COALESCE((ABS({cte_key}.target_agg - {cte_key}.source_agg) / NULLIF(ABS(CAST({cte_key}.source_agg AS DOUBLE)), 0)), 0) <= {tolerance}")
         
         sql_statements: list[str] = []
-        
-        # **Step 1: Create a TEMP VIEW using the correct syntax**
         view_creation_sql: str = "CREATE OR REPLACE TEMP VIEW final_metrics_view AS\n"
         if ctes:
             view_creation_sql += "WITH\n" + ", \n".join(ctes) + "\n"
@@ -221,27 +229,24 @@ class DataPactClient:
         
         view_creation_sql += textwrap.dedent(f"""
         SELECT
-            parse_json(to_json(map({', '.join(metric_payload_parts)}))) as result_payload,
+            struct({', '.join(payload_structs)}) as result_payload,
             {' AND '.join(overall_validation_passed_clauses) if overall_validation_passed_clauses else 'true'} AS overall_validation_passed
         FROM {from_clause}
         """)
         sql_statements.append(view_creation_sql)
 
-        # **Step 2: INSERT the results from the TEMP VIEW**
         sql_statements.append(textwrap.dedent(f"""
         INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload)
         SELECT '{task_key}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END, :run_id, current_timestamp(), result_payload FROM final_metrics_view
         """))
 
-        # **Step 3: Conditionally FAIL the task using the TEMP VIEW**
         sql_statements.append(textwrap.dedent(f"""
         SELECT CASE WHEN (SELECT overall_validation_passed FROM final_metrics_view)
         THEN 'Validation PASSED'
-        ELSE RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Payload: ', (SELECT to_json(result_payload) FROM final_metrics_view)))
+        ELSE RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Payload: \\n', to_json( (SELECT result_payload FROM final_metrics_view), map('pretty', 'true') ) ))
         END
         """))
         
-        # Join all separate statements with semicolons for execution
         return ";\n\n".join(sql_statements)
 
     def _upload_sql_scripts(self, config: dict[str, any], results_table: str) -> dict[str, str]:
