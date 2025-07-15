@@ -16,15 +16,14 @@ import textwrap
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import jobs, sql as sql_service, workspace
-from databricks.sdk.service.jobs import RunLifeCycleState
-from loguru import logger
+from databricks.sdk.service.jobs import RunLifeCycleState, Source, JobRunAs, JobSettings, Task, SqlTask, SqlTaskFile, TaskDependency, RunIf, JobParameterDefinition
 
 TERMINAL_STATES: list[RunLifeCycleState] = [
     RunLifeCycleState.TERMINATED, RunLifeCycleState.SKIPPED, RunLifeCycleState.INTERNAL_ERROR
 ]
-DEFAULT_CATALOG = "datapact_main"
-DEFAULT_SCHEMA = "results"
-DEFAULT_TABLE = "run_history"
+DEFAULT_CATALOG: str = "datapact_main"
+DEFAULT_SCHEMA: str = "results"
+DEFAULT_TABLE: str = "run_history"
 
 class DataPactClient:
     """
@@ -73,7 +72,7 @@ class DataPactClient:
             current_state: sql_service.StatementState = status.status.state
 
             if current_state == sql_service.StatementState.SUCCEEDED:
-                return  # Success
+                return
             
             if current_state in [sql_service.StatementState.FAILED, sql_service.StatementState.CANCELED, sql_service.StatementState.CLOSED]:
                 error: sql_service.Error | None = status.status.error
@@ -87,7 +86,6 @@ class DataPactClient:
     def _setup_default_infrastructure(self, warehouse_id: str) -> None:
         """
         Creates the default catalog and schema if they do not already exist.
-        This ensures a zero-config setup is possible for storing results.
 
         Args:
             warehouse_id: The ID of the SQL warehouse to use for creation.
@@ -100,20 +98,16 @@ class DataPactClient:
     def _ensure_results_table_exists(self, results_table_fqn: str, warehouse_id: str) -> None:
         """
         Ensures the results Delta table exists, creating it if necessary.
-        This uses the modern VARIANT data type for storing the JSON payload.
 
         Args:
-            results_table_fqn: The fully-qualified (catalog.schema.table) name for the results table.
+            results_table_fqn: The FQN for the results table.
             warehouse_id: The ID of the SQL warehouse to run the DDL on.
         """
         logger.info(f"Ensuring results table '{results_table_fqn}' exists...")
         create_table_ddl: str = textwrap.dedent(f"""
             CREATE TABLE IF NOT EXISTS {results_table_fqn} (
-                task_key STRING,
-                status STRING,
-                run_id BIGINT,
-                timestamp TIMESTAMP,
-                result_payload VARIANT
+                task_key STRING, status STRING, run_id BIGINT,
+                timestamp TIMESTAMP, result_payload VARIANT
             ) USING DELTA
         """)
         self._execute_sql(create_table_ddl, warehouse_id)
@@ -255,178 +249,90 @@ class DataPactClient:
     def _upload_sql_scripts(self, config: dict[str, any], results_table: str) -> dict[str, str]:
         """
         Generates and uploads SQL scripts for all validation tasks to the workspace.
-
-        Args:
-            config: The full validation configuration dictionary.
-            results_table: The FQN of the results table.
-
-        Returns:
-            A dictionary mapping task keys to their uploaded script paths in the workspace.
         """
         logger.info("Generating and uploading SQL validation scripts...")
         task_paths: dict[str, str] = {}
-        
-        sql_tasks_path = f"{self.root_path}/sql_tasks"
+        sql_tasks_path: str = f"{self.root_path}/sql_tasks"
         self.w.workspace.mkdirs(sql_tasks_path)
-    
+
         for task_config in config['validations']:
-            task_key = task_config['task_key']
-            sql_script = self._generate_validation_sql(task_config, results_table)
-            
-            script_path = f"{sql_tasks_path}/{task_key}.sql"
+            task_key: str = task_config['task_key']
+            sql_script: str = self._generate_validation_sql(task_config, results_table)
+            script_path: str = f"{sql_tasks_path}/{task_key}.sql"
             self.w.workspace.upload(
-                path=script_path,
-                content=sql_script.encode('utf-8'),
-                overwrite=True,
-                format=workspace.ImportFormat.RAW,
+                path=script_path, content=sql_script.encode('utf-8'),
+                overwrite=True, format=workspace.ImportFormat.RAW
             )
             task_paths[task_key] = script_path
             logger.info(f"  - Uploaded SQL FILE for task '{task_key}' to {script_path}")
-    
-        if results_table:
-            agg_script_path = f"{sql_tasks_path}/aggregate_results.sql"
-            agg_sql_script = textwrap.dedent(f"""\
-                -- DataPact Final Aggregation Task
-                -- This task checks the results table for any failures from the current run.
-                SELECT
-                  CASE
-                    WHEN (
-                      SELECT COUNT(1)
-                      FROM {results_table}
-                      WHERE run_id = :run_id AND status = 'FAILURE'
-                    ) > 0
-                    THEN RAISE_ERROR('One or more DataPact validations failed. Check the results table for details.')
-                    ELSE 'All DataPact validations passed successfully!'
-                  END AS overall_status;
-            """)
-            self.w.workspace.upload(
-                path=agg_script_path,
-                content=agg_sql_script.encode('utf-8'),
-                overwrite=True,
-                format=workspace.ImportFormat.RAW,
-            )
-            task_paths['aggregate_results'] = agg_script_path
-            logger.info(f"  - Uploaded aggregation SQL FILE to {agg_script_path}")
-    
-        return {}
+        
+        agg_script_path: str = f"{sql_tasks_path}/aggregate_results.sql"
+        agg_sql_script: str = textwrap.dedent(f"""
+            SELECT CASE WHEN (SELECT COUNT(1) FROM {results_table} WHERE run_id = :run_id AND status = 'FAILURE') > 0
+            THEN RAISE_ERROR('One or more DataPact validations failed.')
+            ELSE 'All DataPact validations passed successfully!' END;
+        """)
+        self.w.workspace.upload(
+            path=agg_script_path, content=agg_sql_script.encode('utf-8'),
+            overwrite=True, format=workspace.ImportFormat.RAW
+        )
+        task_paths['aggregate_results'] = agg_script_path
+        logger.info(f"  - Uploaded aggregation SQL FILE to {agg_script_path}")
+        return task_paths
 
     def run_validation(self, config: dict[str, any], job_name: str, warehouse_name: str, results_table: str | None = None) -> None:
         """
         The main orchestrator for the entire validation process.
-
-        This method executes the end-to-end DataPact workflow:
-        1. Ensures the SQL warehouse is running.
-        2. Sets up the results table infrastructure (default or user-specified).
-        3. Generates and uploads all dynamic SQL scripts to the workspace.
-        4. Creates or updates a multi-task Databricks Job.
-        5. Launches the job and monitors it until completion.
-        6. Reports the final status and raises an exception on failure.
-
-        Args:
-            config: The loaded validation YAML file as a dictionary.
-            job_name: The name to assign to the Databricks Job.
-            warehouse_name: The name of the Serverless SQL Warehouse to use.
-            results_table: Optional FQN of the table to store results. If None,
-                           a default is created.
         """
-        warehouse = self._ensure_sql_warehouse(warehouse_name)
+        warehouse: sql_service.EndpointInfo = self._ensure_sql_warehouse(warehouse_name)
         
         if not results_table:
             self._setup_default_infrastructure(warehouse.id)
-            results_table = f"{DEFAULT_CATALOG}.{DEFAULT_SCHEMA}.{DEFAULT_TABLE}"
+            results_table = f"`{DEFAULT_CATALOG}`.`{DEFAULT_SCHEMA}`.`{DEFAULT_TABLE}`"
             logger.info(f"No results table provided. Using default: {results_table}")
 
         self._ensure_results_table_exists(results_table, warehouse.id)
         
-        task_paths = self._upload_sql_scripts(config, results_table)
-
-        from databricks.sdk.service.jobs import (
-            JobParameterDefinition,
-            JobRunAs,
-            JobSettings,
-            RunIf,
-            Source,
-            SqlTask,
-            SqlTaskFile,
-            Task,
-            TaskDependency,
-        )
-
+        task_paths: dict[str, str] = self._upload_sql_scripts(config, results_table)
+        
         tasks: list[Task] = []
-        validation_task_keys = [v_conf["task_key"] for v_conf in config["validations"]]
+        validation_task_keys: list[str] = [v_conf["task_key"] for v_conf in config["validations"]]
 
         for task_key in validation_task_keys:
-            tasks.append(
-                Task(
-                    task_key=task_key,
-                    sql_task=SqlTask(
-                        file=SqlTaskFile(
-                            path=task_paths[task_key],
-                            source=Source.WORKSPACE
-                        ),
-                        warehouse_id=warehouse.id,
-                    ),
-                )
-            )
+            tasks.append(Task(task_key=task_key, sql_task=SqlTask(file=SqlTaskFile(path=task_paths[task_key], source=Source.WORKSPACE), warehouse_id=warehouse.id)))
 
-        if results_table and 'aggregate_results' in task_paths:
-            tasks.append(
-                Task(
-                    task_key="aggregate_results",
-                    depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys],
-                    run_if=RunIf.ALL_DONE,
-                    sql_task=SqlTask(
-                        file=SqlTaskFile(
-                            path=task_paths['aggregate_results'],
-                            source=Source.WORKSPACE
-                        ),
-                        warehouse_id=warehouse.id,
-                    ),
-                )
-            )
+        tasks.append(Task(task_key="aggregate_results", depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys], run_if=RunIf.ALL_DONE, sql_task=SqlTask(file=SqlTaskFile(path=task_paths['aggregate_results'], source=Source.WORKSPACE), warehouse_id=warehouse.id)))
 
-        # Construct the job definition using the JobSettings dataclass
-        job_settings = JobSettings(
-            name=job_name,
-            tasks=tasks,
-            run_as=JobRunAs(user_name=self.user_name),
-            parameters=[
-                JobParameterDefinition(name="run_id", default="{{job.run_id}}")
-            ],
-        )
+        job_settings: JobSettings = JobSettings(name=job_name, tasks=tasks, run_as=JobRunAs(user_name=self.user_name), parameters=[JobParameterDefinition(name="run_id", default="{{job.run_id}}")])
 
-        existing_job = None
+        existing_job: jobs.Job | None = None
         for j in self.w.jobs.list(name=job_name):
             existing_job = j
             break
         
+        job_id: int
         if existing_job:
             logger.info(f"Updating existing job '{job_name}' (ID: {existing_job.job_id})...")
             self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings)
             job_id = existing_job.job_id
         else:
             logger.info(f"Creating new job '{job_name}'...")
-            new_job = self.w.jobs.create(
-                name=job_settings.name,
-                tasks=job_settings.tasks,
-                run_as=job_settings.run_as,
-                parameters=job_settings.parameters
-            )
+            new_job: jobs.Job = self.w.jobs.create(name=job_settings.name, tasks=job_settings.tasks, run_as=job_settings.run_as, parameters=job_settings.parameters)
             job_id = new_job.job_id
 
         logger.info(f"Launching job {job_id}...")
-        run_info = self.w.jobs.run_now(job_id=job_id)
-        run = self.w.jobs.get_run(run_info.run_id)
+        run_info: jobs.Run = self.w.jobs.run_now(job_id=job_id)
+        run: jobs.Run = self.w.jobs.get_run(run_info.run_id)
         
         logger.info(f"Run started! View progress here: {run.run_page_url}")
         while run.state.life_cycle_state not in TERMINAL_STATES:
             time.sleep(20)
             run = self.w.jobs.get_run(run.run_id)
-            finished_tasks = sum(1 for t in run.tasks if t.state.life_cycle_state in TERMINAL_STATES)
+            finished_tasks: int = sum(1 for t in run.tasks if t.state.life_cycle_state in TERMINAL_STATES)
             logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{len(tasks)}")
 
-        final_state = run.state.result_state
-        final_state_message = run.state.state_message
+        final_state: jobs.RunResultState = run.state.result_state
+        final_state_message: str = run.state.state_message
         logger.info(f"Run finished with state: {final_state}")
         if final_state == jobs.RunResultState.SUCCESS:
             logger.success("✅ DataPact job completed successfully.")
@@ -437,34 +343,26 @@ class DataPactClient:
 
     def _ensure_sql_warehouse(self, name: str) -> sql_service.EndpointInfo:
         """
-        Finds a SQL warehouse by name, starts it if it's stopped, and waits for it to be running.
-
-        Args:
-            name: The name of the Serverless SQL Warehouse.
-
-        Returns:
-            The EndpointInfo object for the running warehouse.
-        
-        Raises:
-            ValueError: If the warehouse cannot be found.
+        Finds a SQL warehouse by name, starts it if it's stopped, and returns its details.
         """
         logger.info(f"Looking for SQL Warehouse '{name}'...")
-        warehouse = None
-        try:
-            for wh in self.w.warehouses.list():
-                if wh.name == name:
-                    warehouse = wh
-                    break
-        except Exception as e:
-            logger.error(f"An error occurred while trying to list warehouses: {e}")
-            raise
+        warehouse: sql_service.EndpointInfo | None = None
+        for wh in self.w.warehouses.list():
+            if wh.name == name:
+                warehouse = wh
+                break
 
         if not warehouse:
-            raise ValueError(f"SQL Warehouse '{name}' not found. Please ensure it exists and you have permissions to view it.")
+            raise ValueError(f"SQL Warehouse '{name}' not found.")
 
         logger.info(f"Found warehouse {warehouse.id}. State: {warehouse.state}")
-
         if warehouse.state not in [sql_service.State.RUNNING, sql_service.State.STARTING]:
+            logger.info(f"Warehouse '{name}' is {warehouse.state}. Starting it...")
+            self.w.warehouses.start(warehouse.id).result(timeout=timedelta(minutes=5))
+            logger.success(f"Warehouse '{name}' started successfully.")
+        
+        # Get the latest state of the warehouse and return it
+        return self.w.warehouses.get(warehouse.id):
             logger.info(f"Warehouse '{name}' is in state {warehouse.state}. Starting it...")
             self.w.warehouses.start(warehouse.id).result(timeout=timedelta(seconds=600))
             logger.success(f"Warehouse '{name}' started successfully.")
