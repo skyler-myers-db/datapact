@@ -119,7 +119,7 @@ class DataPactClient:
         self._execute_sql(create_table_ddl, warehouse_id)
         logger.success(f"Results table '{results_table_fqn}' is ready.")
 
-def _generate_validation_sql(self, config: dict[str, any], results_table: str) -> str:
+    def _generate_validation_sql(self, config: dict[str, any], results_table: str) -> str:
         """
         Generates a complete, multi-statement SQL script for the validation task.
 
