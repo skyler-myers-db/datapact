@@ -19,7 +19,7 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import sql as sql_service
 from loguru import logger
 
-def get_warehouse_by_name(w: WorkspaceClient, name: str) -> Optional[sql_service.EndpointInfo]:
+def get_warehouse_by_name(w: WorkspaceClient, name: str) -> sql_service.EndpointInfo | None:
     """
     Finds a SQL warehouse by its display name.
 
@@ -58,7 +58,7 @@ def run_demo_setup() -> None:
     logger.info(f"Connecting to Databricks with profile '{args.profile}'...")
     w = WorkspaceClient(profile=args.profile)
 
-    warehouse = get_warehouse_by_name(w, args.warehouse)
+    warehouse: sql_service.EndpointInfo = get_warehouse_by_name(w, args.warehouse)
     if not warehouse:
         logger.critical(f"Failed to find warehouse '{args.warehouse}'. Please ensure it exists and you have permissions to view it.")
         return
@@ -73,7 +73,7 @@ def run_demo_setup() -> None:
     # Robustly parse the SQL script into individual statements.
     sql_script = re.sub(r'/\*.*?\*/', '', sql_script, flags=re.DOTALL)
     sql_script = re.sub(r'--.*', '', sql_script)
-    sql_commands = [cmd.strip() for cmd in sql_script.split(';') if cmd.strip()]
+    sql_commands: list[str] = [cmd.strip() for cmd in sql_script.split(';') if cmd.strip()]
 
     logger.info(f"Found {len(sql_commands)} individual SQL statements to execute sequentially.")
 
