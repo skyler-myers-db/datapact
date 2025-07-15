@@ -119,12 +119,14 @@ class DataPactClient:
         self._execute_sql(create_table_ddl, warehouse_id)
         logger.success(f"Results table '{results_table_fqn}' is ready.")
 
-    def _generate_validation_sql(self, config: dict[str, any], results_table: str) -> str:
+def _generate_validation_sql(self, config: dict[str, any], results_table: str) -> str:
         """
         Generates a complete, multi-statement SQL script for the validation task.
 
-        This is the definitive, correct version that uses f-strings for all SQL
-        template generation and produces a readable, nested VARIANT payload.
+        This is the definitive version, resolving the DATATYPE_MISMATCH error by
+        explicitly converting the result struct into a VARIANT using the
+        parse_json(to_json(...)) pattern. This is the robust, correct way to
+        handle complex type to VARIANT conversions in Databricks SQL.
 
         Args:
             config: The configuration dictionary for a single validation task.
@@ -242,7 +244,8 @@ class DataPactClient:
         
         view_creation_sql += textwrap.dedent(f"""
         SELECT
-            struct({', '.join(payload_structs)}) as result_payload,
+            -- *** THIS IS THE CRITICAL FIX: Explicitly convert the struct to VARIANT ***
+            parse_json(to_json(struct({', '.join(payload_structs)}))) as result_payload,
             {' AND '.join(overall_validation_passed_clauses) if overall_validation_passed_clauses else 'true'} AS overall_validation_passed
         FROM {from_clause}
         """)
