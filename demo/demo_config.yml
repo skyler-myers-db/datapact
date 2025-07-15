@@ -1,7 +1,4 @@
-# DataPact Demo Validation Configuration
-# This file validates the tables created by the `demo/setup.py` script.
-# It is designed to produce one PASS (transactions) and one FAIL (users)
-# to demonstrate the tool's reporting capabilities.
+# demo/demo_config.yml
 
 validations:
   - task_key: "validate_demo_users_FAIL"
@@ -13,22 +10,27 @@ validations:
     target_table: "users"
     primary_keys: ["user_id"]
 
-    # Test 1: Count Validation.
-    # Source has 10,000 rows. Target has 10,100. Difference is 1%.
-    # This will FAIL because 0.01 > 0.005.
-    count_tolerance: 0.005
+    # Test 1: Count Validation (will FAIL)
+    # Source: 10,000 | Target: 10,100 (after inserts/deletes)
+    count_tolerance: 0.005 # 0.5% tolerance
 
-    # Test 2: Per-Row Hash Validation.
-    # 9,800 rows are compared. 500 have different emails. Mismatch is ~5.1%.
-    # This will FAIL because 0.051 > 0.05.
+    # Test 2: Per-Row Hash Validation (will FAIL)
+    # ~500 emails updated, causing hash mismatches.
     pk_row_hash_check: true
-    pk_hash_threshold: 0.05
+    pk_hash_threshold: 0.05 # 5% tolerance
 
-    # Test 3: Null Count Validation.
-    # Source signup_date has 0 nulls. Target has 1000. Difference is infinite.
-    # This will FAIL because inf > 0.0.
+    # Test 3: Null Count Validation (will FAIL)
+    # ~1000 signup_dates set to NULL in target.
     null_validation_threshold: 0.0
     null_validation_columns: ["signup_date"]
+
+    # Test 4: Aggregate Validation (will PASS)
+    # The MAX user_id should be 10300 in the target and 10000 in the source.
+    # A high tolerance ensures this passes to demonstrate a passing check.
+    agg_validations:
+      - column: "user_id"
+        validations:
+          - { agg: "MAX", tolerance: 0.1 } # 10% tolerance
 
   - task_key: "validate_demo_transactions_PASS"
     source_catalog: "datapact_demo_catalog"
@@ -43,3 +45,9 @@ validations:
     count_tolerance: 0.0
     pk_row_hash_check: true
     pk_hash_threshold: 0.0
+    # Add a passing aggregate validation
+    agg_validations:
+      - column: "amount"
+        validations:
+          - { agg: "SUM", tolerance: 0.0 }
+          - { agg: "AVG", tolerance: 0.0 }
