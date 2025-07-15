@@ -123,8 +123,9 @@ class DataPactClient:
         """
         Generates a complete, multi-statement SQL script for the validation task.
 
-        This version uses a TEMP VIEW and produces a well-structured, nested VARIANT
-        payload, making the results and error messages readable and easy to debug.
+        This version resolves the critical [AMBIGUOUS_REFERENCE] bug by creating
+        unique aliases for columns within each CTE, ensuring there are no name
+        collisions when multiple aggregate validations are performed.
 
         Args:
             config: The configuration dictionary for a single validation task.
@@ -142,7 +143,7 @@ class DataPactClient:
 
         if 'count_tolerance' in config:
             tolerance: float = config.get('count_tolerance', 0.0)
-            ctes.append(textwrap.dedent(f"""
+            ctes.append(textwrap.dedent("""
             count_metrics AS (SELECT
                 (SELECT COUNT(1) FROM {source_fqn}) AS source_count,
                 (SELECT COUNT(1) FROM {target_fqn}) AS target_count)
@@ -210,20 +211,27 @@ class DataPactClient:
                 for validation in agg_config['validations']:
                     agg: str = validation['agg']
                     tolerance: float = validation['tolerance']
+                    
+                    # *** FIX: Create unique column aliases inside each CTE ***
                     cte_key: str = f"agg_metrics_{col}_{agg}"
+                    src_val_alias: str = f"source_value_{col}_{agg}"
+                    tgt_val_alias: str = f"target_value_{col}_{agg}"
+                    
                     ctes.append(textwrap.dedent(f"""
                     {cte_key} AS (SELECT
-                        TRY_CAST((SELECT {agg}(`{col}`) FROM {source_fqn}) AS DECIMAL(38, 6)) AS source_value,
-                        TRY_CAST((SELECT {agg}(`{col}`) FROM {target_fqn}) AS DECIMAL(38, 6)) AS target_value)
+                        TRY_CAST((SELECT {agg}(`{col}`) FROM {source_fqn}) AS DECIMAL(38, 6)) AS {src_val_alias},
+                        TRY_CAST((SELECT {agg}(`{col}`) FROM {target_fqn}) AS DECIMAL(38, 6)) AS {tgt_val_alias})
                     """))
-                    check: str = f"COALESCE(ABS(source_value - target_value) / NULLIF(ABS(CAST(source_value AS DOUBLE)), 0), 0) <= {tolerance}"
+                    
+                    # *** FIX: Use the unique aliases in the check and payload ***
+                    check: str = f"COALESCE(ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0), 0) <= {tolerance}"
                     payload_structs.append(textwrap.dedent(f"""
                     struct(
                         CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status,
                         {tolerance} AS tolerance,
-                        source_value,
-                        target_value,
-                        ABS(source_value - target_value) / NULLIF(ABS(CAST(source_value AS DOUBLE)), 0) as relative_diff
+                        {src_val_alias} AS source_value,
+                        {tgt_val_alias} AS target_value,
+                        ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0) as relative_diff
                     ) AS agg_validation_{col}_{agg}
                     """))
                     overall_validation_passed_clauses.append(check)
