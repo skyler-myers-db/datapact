@@ -8,15 +8,17 @@ where each task executes one of the generated SQL scripts on a specified
 Serverless SQL Warehouse.
 """
 
-import json
 import time
-from pathlib import Path
-from datetime import timedelta
 import textwrap
+from datetime import timedelta
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import jobs, sql as sql_service, workspace
-from databricks.sdk.service.jobs import RunLifeCycleState, Source, JobRunAs, JobSettings, Task, SqlTask, SqlTaskFile, TaskDependency, RunIf, JobParameterDefinition
+from databricks.sdk.service.jobs import (
+    RunLifeCycleState, Source, JobRunAs, JobSettings, Task, SqlTask,
+    SqlTaskFile, TaskDependency, RunIf, JobParameterDefinition
+)
+from loguru import logger
 
 TERMINAL_STATES: list[RunLifeCycleState] = [
     RunLifeCycleState.TERMINATED, RunLifeCycleState.SKIPPED, RunLifeCycleState.INTERNAL_ERROR
@@ -47,7 +49,7 @@ class DataPactClient:
     def _execute_sql(self, sql: str, warehouse_id: str) -> None:
         """
         A robust, synchronous helper function to execute a SQL statement.
-        
+
         It submits the statement to the Statement Execution API and polls until
         it reaches a terminal state, raising an exception on failure. This is
         used for setting up infrastructure before the main job runs.
@@ -98,16 +100,20 @@ class DataPactClient:
     def _ensure_results_table_exists(self, results_table_fqn: str, warehouse_id: str) -> None:
         """
         Ensures the results Delta table exists, creating it if necessary.
+        This uses the modern VARIANT data type for storing the JSON payload.
 
         Args:
-            results_table_fqn: The FQN for the results table.
+            results_table_fqn: The fully-qualified (catalog.schema.table) name for the results table.
             warehouse_id: The ID of the SQL warehouse to run the DDL on.
         """
         logger.info(f"Ensuring results table '{results_table_fqn}' exists...")
         create_table_ddl: str = textwrap.dedent(f"""
             CREATE TABLE IF NOT EXISTS {results_table_fqn} (
-                task_key STRING, status STRING, run_id BIGINT,
-                timestamp TIMESTAMP, result_payload VARIANT
+                task_key STRING,
+                status STRING,
+                run_id BIGINT,
+                timestamp TIMESTAMP,
+                result_payload VARIANT
             ) USING DELTA
         """)
         self._execute_sql(create_table_ddl, warehouse_id)
@@ -117,11 +123,6 @@ class DataPactClient:
         """
         Generates a complete, idempotent, and dynamic SQL validation script.
 
-        This is the core of the dynamic engine. It constructs a single SQL query
-        with multiple Common Table Expressions (CTEs) to calculate all configured
-        metrics. It then combines these into a single VARIANT payload, inserts
-        it into the results table, and fails the task if any validation check fails.
-
         Args:
             config: The configuration dictionary for a single validation task.
             results_table: The FQN of the results table to insert into.
@@ -129,14 +130,13 @@ class DataPactClient:
         Returns:
             A string containing the complete, executable SQL for one validation task.
         """
-        source_fqn = f"`{config['source_catalog']}`.`{config['source_schema']}`.`{config['source_table']}`"
-        target_fqn = f"`{config['target_catalog']}`.`{config['target_schema']}`.`{config['target_table']}`"
-        task_key = config['task_key']
+        source_fqn: str = f"`{config['source_catalog']}`.`{config['source_schema']}`.`{config['source_table']}`"
+        target_fqn: str = f"`{config['target_catalog']}`.`{config['target_schema']}`.`{config['target_table']}`"
+        task_key: str = config['task_key']
         ctes: list[str] = []
         metric_payload_parts: list[str] = []
         overall_validation_passed_clauses: list[str] = []
-        
-        # Count Validation
+
         if 'count_tolerance' in config:
             ctes.append(textwrap.dedent(f"""
             count_metrics AS (
@@ -227,8 +227,8 @@ class DataPactClient:
                         f"(ABS({cte_key}.target_agg - {cte_key}.source_agg) / NULLIF(ABS(CAST({cte_key}.source_agg AS DOUBLE)), 0)) <= {tolerance}"
                     )
         # --- Build the Final Query ---
-        from_clause = "CROSS JOIN ".join([cte.split(" AS ")[0] for cte in ctes]) if ctes else "(SELECT 1)"
-        final_sql = f"-- DataPact Validation for task: {task_key}\n"
+        from_clause: str = "CROSS JOIN ".join([cte.split(" AS ")[0] for cte in ctes]) if ctes else "(SELECT 1)"
+        final_sql: str = f"-- DataPact Validation for task: {task_key}\n"
         if ctes:
             final_sql += "WITH\n" + ", \n".join(ctes) + "\n"
 
@@ -242,10 +242,13 @@ class DataPactClient:
         INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload)
         SELECT '{task_key}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END, :run_id, current_timestamp(), result_payload FROM final_metrics;
         
-        SELECT CASE WHEN (SELECT overall_validation_passed FROM final_metrics) THEN 'Validation PASSED' ELSE RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Payload: ', (SELECT to_json(result_payload) FROM final_metrics))) END;
+        SELECT CASE WHEN (SELECT overall_validation_passed FROM final_metrics)
+        THEN 'Validation PASSED'
+        ELSE RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Payload: ', (SELECT to_json(result_payload) FROM final_metrics)))
+        END;
         """)
         return final_sql
-    
+
     def _upload_sql_scripts(self, config: dict[str, any], results_table: str) -> dict[str, str]:
         """
         Generates and uploads SQL scripts for all validation tasks to the workspace.
@@ -361,5 +364,4 @@ class DataPactClient:
             self.w.warehouses.start(warehouse.id).result(timeout=timedelta(minutes=5))
             logger.success(f"Warehouse '{name}' started successfully.")
         
-        # Get the latest state of the warehouse and return it
         return self.w.warehouses.get(warehouse.id)
