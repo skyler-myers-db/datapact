@@ -10,17 +10,26 @@ This one-statement-at-a-time, synchronous-wait approach is the most robust
 method for executing a series of DDL commands, ensuring that each step
 completes before the next one begins.
 """
-
 import argparse
 import time
 import re
 from pathlib import Path
+from typing import Optional
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import sql as sql_service
 from loguru import logger
 
-def get_warehouse_by_name(w: WorkspaceClient, name: str) -> sql_service.EndpointInfo | None:
-    """Finds a SQL warehouse by name by listing all warehouses."""
+def get_warehouse_by_name(w: WorkspaceClient, name: str) -> Optional[sql_service.EndpointInfo]:
+    """
+    Finds a SQL warehouse by its display name.
+
+    Args:
+        w: An initialized Databricks WorkspaceClient.
+        name: The name of the SQL warehouse to find.
+
+    Returns:
+        An EndpointInfo object if the warehouse is found, otherwise None.
+    """
     try:
         for wh in w.warehouses.list():
             if wh.name == name:
@@ -30,7 +39,17 @@ def get_warehouse_by_name(w: WorkspaceClient, name: str) -> sql_service.Endpoint
     return None
 
 def run_demo_setup() -> None:
-    """The main function to set up the DataPact demo environment."""
+    """
+    The main function to orchestrate the demo environment setup.
+
+    It performs the following steps:
+    1. Parses command-line arguments for warehouse name and profile.
+    2. Connects to the Databricks workspace.
+    3. Finds the specified SQL warehouse.
+    4. Reads and parses the `setup.sql` script into individual commands.
+    5. Executes each SQL command sequentially, waiting for each to complete.
+    6. Reports success and prints the command to run the main validation.
+    """
     parser = argparse.ArgumentParser(description="Set up the DataPact demo environment.")
     parser.add_argument("--warehouse", required=True, help="Name of the Serverless SQL Warehouse to use.")
     parser.add_argument("--profile", default="DEFAULT", help="Databricks CLI profile to use.")
