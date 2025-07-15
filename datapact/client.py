@@ -123,8 +123,8 @@ class DataPactClient:
         """
         Generates a complete, multi-statement SQL script for the validation task.
 
-        This version produces a well-structured, nested VARIANT payload, making
-        the results and error messages much more readable and easier to debug.
+        This version uses a TEMP VIEW and produces a well-structured, nested VARIANT
+        payload, making the results and error messages readable and easy to debug.
 
         Args:
             config: The configuration dictionary for a single validation task.
@@ -147,7 +147,7 @@ class DataPactClient:
                 (SELECT COUNT(1) FROM {source_fqn}) AS source_count,
                 (SELECT COUNT(1) FROM {target_fqn}) AS target_count)
             """))
-            check: str = f"COALESCE((ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0)), 0) <= {tolerance}"
+            check: str = f"COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= {tolerance}"
             payload_structs.append(textwrap.dedent(f"""
             struct(
                 CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status,
@@ -166,7 +166,6 @@ class DataPactClient:
             hash_expr: str = f"md5(to_json(struct({', '.join([f'`{c}`' for c in hash_columns]) if hash_columns else '*'})))"
             pk_cols_str: str = ", ".join([f"`{pk}`" for pk in primary_keys])
             join_expr: str = " AND ".join([f"s.`{pk}` = t.`{pk}`" for pk in primary_keys])
-
             ctes.append(textwrap.dedent(f"""
             row_hash_metrics AS (SELECT COUNT(1) AS total_compared_rows, COALESCE(SUM(CASE WHEN s.row_hash <> t.row_hash THEN 1 ELSE 0 END), 0) AS mismatch_count
                 FROM (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {source_fqn}) s
@@ -178,7 +177,7 @@ class DataPactClient:
                 CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status,
                 {pk_hash_threshold} AS threshold,
                 mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0) as mismatch_ratio,
-                total_compared_rows,
+                total_compared_rows AS compared_rows,
                 mismatch_count
             ) AS row_hash_validation
             """))
@@ -186,26 +185,26 @@ class DataPactClient:
 
         if config.get('null_validation_columns'):
             for col in config['null_validation_columns']:
-                null_val_threshold = config.get('null_validation_threshold', 0.0)
-                cte_key = f"null_metrics_{col}"
+                threshold: float = config.get('null_validation_threshold', 0.0)
+                cte_key: str = f"null_metrics_{col}"
                 ctes.append(textwrap.dedent(f"""
-                {cte_key} AS (
-                    SELECT
-                        (SELECT COUNT(1) FROM {source_fqn} WHERE `{col}` IS NULL) AS source_nulls,
-                        (SELECT COUNT(1) FROM {target_fqn} WHERE `{col}` IS NULL) AS target_nulls
-                )
+                {cte_key} AS (SELECT
+                    (SELECT COUNT(1) FROM {source_fqn} WHERE `{col}` IS NULL) AS source_nulls,
+                    (SELECT COUNT(1) FROM {target_fqn} WHERE `{col}` IS NULL) AS target_nulls)
                 """))
-                metric_payload_parts.extend([
-                    f"'source_nulls_{col}'", f"{cte_key}.source_nulls",
-                    f"'target_nulls_{col}'", f"{cte_key}.target_nulls",
-                    f"'null_relative_diff_{col}'", f"ABS({cte_key}.target_nulls - {cte_key}.source_nulls) / NULLIF(CAST({cte_key}.source_nulls AS DOUBLE), 0)"
-                ])
-                overall_validation_passed_clauses.append(
-                    f"(ABS({cte_key}.target_nulls - {cte_key}.source_nulls) / NULLIF(CAST({cte_key}.source_nulls AS DOUBLE), 0)) <= {null_val_threshold}"
-                )
+                check: str = f"CASE WHEN source_nulls = 0 THEN target_nulls = 0 ELSE COALESCE(ABS(target_nulls - source_nulls) / NULLIF(CAST(source_nulls AS DOUBLE), 0), 0) <= {threshold} END"
+                payload_structs.append(textwrap.dedent(f"""
+                struct(
+                    CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status,
+                    {threshold} AS threshold,
+                    source_nulls,
+                    target_nulls,
+                    ABS(target_nulls - source_nulls) / NULLIF(CAST(source_nulls AS DOUBLE), 0) as relative_diff
+                ) AS null_validation_{col}
+                """))
+                overall_validation_passed_clauses.append(check)
 
         if config.get('agg_validations'):
-            # Add agg_metrics CTEs
             for agg_config in config.get('agg_validations', []):
                 col: str = agg_config['column']
                 for validation in agg_config['validations']:
@@ -213,13 +212,22 @@ class DataPactClient:
                     tolerance: float = validation['tolerance']
                     cte_key: str = f"agg_metrics_{col}_{agg}"
                     ctes.append(textwrap.dedent(f"""
-                    {cte_key} AS (
-                        SELECT TRY_CAST((SELECT {agg}(`{col}`) FROM {source_fqn}) AS DECIMAL(38, 6)) AS source_agg,
-                               TRY_CAST((SELECT {agg}(`{col}`) FROM {target_fqn}) AS DECIMAL(38, 6)) AS target_agg
-                    )"""))
-                    metric_payload_parts.extend([f"'source_agg_{col}_{agg}'", f"{cte_key}.source_agg", f"'target_agg_{col}_{agg}'", f"{cte_key}.target_agg", f"'agg_relative_diff_{col}_{agg}'", f"ABS({cte_key}.target_agg - {cte_key}.source_agg) / NULLIF(ABS(CAST({cte_key}.source_agg AS DOUBLE)), 0)"])
-                    overall_validation_passed_clauses.append(f"COALESCE((ABS({cte_key}.target_agg - {cte_key}.source_agg) / NULLIF(ABS(CAST({cte_key}.source_agg AS DOUBLE)), 0)), 0) <= {tolerance}")
-        
+                    {cte_key} AS (SELECT
+                        TRY_CAST((SELECT {agg}(`{col}`) FROM {source_fqn}) AS DECIMAL(38, 6)) AS source_value,
+                        TRY_CAST((SELECT {agg}(`{col}`) FROM {target_fqn}) AS DECIMAL(38, 6)) AS target_value)
+                    """))
+                    check: str = f"COALESCE(ABS(source_value - target_value) / NULLIF(ABS(CAST(source_value AS DOUBLE)), 0), 0) <= {tolerance}"
+                    payload_structs.append(textwrap.dedent(f"""
+                    struct(
+                        CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status,
+                        {tolerance} AS tolerance,
+                        source_value,
+                        target_value,
+                        ABS(source_value - target_value) / NULLIF(ABS(CAST(source_value AS DOUBLE)), 0) as relative_diff
+                    ) AS agg_validation_{col}_{agg}
+                    """))
+                    overall_validation_passed_clauses.append(check)
+
         sql_statements: list[str] = []
         view_creation_sql: str = "CREATE OR REPLACE TEMP VIEW final_metrics_view AS\n"
         if ctes:
@@ -271,11 +279,10 @@ class DataPactClient:
         
         agg_script_path: str = f"{sql_tasks_path}/aggregate_results.sql"
         agg_sql_script: str = textwrap.dedent(f"""
-            -- This final task fails if any task failed OR if not all tasks reported success.
             SELECT CASE 
                 WHEN (
                     (SELECT COUNT(1) FROM {results_table} WHERE run_id = :run_id AND status = 'FAILURE') > 0 OR
-                    (SELECT COUNT(1) FROM {results_table} WHERE run_id = :run_id AND status = 'SUCCESS') < :expected_successes
+                    (SELECT COUNT(1) FROM {results_table} WHERE run_id = :run_id AND status = 'SUCCESS') < CAST(:expected_successes AS INT)
                 )
                 THEN RAISE_ERROR('One or more DataPact validations failed or did not complete.')
                 ELSE 'All DataPact validations passed successfully!' 
@@ -311,7 +318,6 @@ class DataPactClient:
         for task_key in validation_task_keys:
             tasks.append(Task(task_key=task_key, sql_task=SqlTask(file=SqlTaskFile(path=task_paths[task_key], source=Source.WORKSPACE), warehouse_id=warehouse.id)))
 
-        # *** PASS THE EXPECTED COUNT TO THE AGGREGATION TASK ***
         agg_task_parameters: dict[str, str] = {'expected_successes': str(num_validation_tasks)}
         tasks.append(
             Task(
@@ -383,8 +389,7 @@ class DataPactClient:
         
         if warehouse.state not in [sql_service.State.RUNNING, sql_service.State.STARTING]:
             logger.info(f"Warehouse '{name}' is {warehouse.state}. Starting it...")
-            self.w.warehouses.start(warehouse.id).result(timeout=timedelta(minutes=5))
+            self.w.warehouses.start(warehouse_id_to_check).result(timeout=timedelta(minutes=5))
             logger.success(f"Warehouse '{name}' started successfully.")
         
-        # Get the latest state of the warehouse by its ID and return it
         return self.w.warehouses.get(warehouse_id_to_check)
