@@ -270,12 +270,12 @@ class DataPactClient:
             warehouse = self._ensure_sql_warehouse(warehouse_name)
             task_paths = self._upload_sql_scripts(config, results_table)
     
-            # import the specific dataclasses from the SDK
             from databricks.sdk.service.jobs import (
                 JobParameterDefinition,
                 JobRunAs,
                 JobSettings,
                 RunIf,
+                Source,
                 SqlTask,
                 SqlTaskFile,
                 Task,
@@ -292,7 +292,7 @@ class DataPactClient:
                         sql_task=SqlTask(
                             file=SqlTaskFile(
                                 path=task_paths[task_key],
-                                source="WORKSPACE"
+                                source=Source.WORKSPACE
                             ),
                             warehouse_id=warehouse.id,
                         ),
@@ -308,7 +308,7 @@ class DataPactClient:
                         sql_task=SqlTask(
                             file=SqlTaskFile(
                                 path=task_paths['aggregate_results'],
-                                source="WORKSPACE"
+                                source=Source.WORKSPACE
                             ),
                             warehouse_id=warehouse.id,
                         ),
