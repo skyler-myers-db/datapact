@@ -260,86 +260,112 @@ class DataPactClient:
         return task_paths
 
     def run_validation(
-        self,
-        config: dict[str, any],
-        job_name: str,
-        warehouse_name: str,
-        results_table: str | None = None,
-    ) -> None:
-        """Constructs, deploys, and runs the DataPact validation workflow."""
-        warehouse = self._ensure_sql_warehouse(warehouse_name)
-        task_paths = self._upload_sql_scripts(config, results_table)
-
-        tasks_list = []
-        validation_task_keys = [v_conf["task_key"] for v_conf in config["validations"]]
-
-        for task_key in validation_task_keys:
-            tasks_list.append({
-                "task_key": task_key,
-                "sql_task": {
-                    "file": {
-                        "path": task_paths[task_key],
-                        "source": "WORKSPACE"
-                    },
-                    "warehouse_id": warehouse.id,
-                }
-            })
-
-        if results_table and 'aggregate_results' in task_paths:
-            tasks_list.append({
-                "task_key": "aggregate_results",
-                "depends_on": [{"task_key": tk} for tk in validation_task_keys],
-                "run_if": "ALL_DONE",
-                "sql_task": {
-                    "file": {
-                        "path": task_paths['aggregate_results'],
-                        "source": "WORKSPACE"
-                    },
-                    "warehouse_id": warehouse.id,
-                }
-            })
-
-        job_settings_dict = {
-            "name": job_name,
-            "tasks": tasks_list,
-            "run_as": {"user_name": self.user_name},
-            "parameters": [
-                {
-                    "name": "run_id",
-                    "default": "{{job.run_id}}",
-                },
-            ],
-        }
-
-        existing_job = None
-        for j in self.w.jobs.list(name=job_name):
-            existing_job = j
-            break
-        
-        if existing_job:
-            logger.info(f"Updating existing job '{job_name}' (ID: {existing_job.job_id})...")
-            job_settings_obj = jobs.JobSettings.from_dict(job_settings_dict)
-            self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings_obj)
-            job_id = existing_job.job_id
-        else:
-            logger.info(f"Creating new job '{job_name}'...")
-            new_job = self.w.jobs.create(**job_settings_dict)
-            job_id = new_job.job_id
-
-        logger.info(f"Launching job {job_id}...")
-        run_info = self.w.jobs.run_now(job_id=job_id)
-        run = self.w.jobs.get_run(run_info.run_id)
-        
-        logger.info(f"Run started! View progress here: {run.run_page_url}")
-        while run.state.life_cycle_state not in TERMINAL_STATES:
-            time.sleep(20)
-            run = self.w.jobs.get_run(run.run_id)
-            finished_tasks = sum(1 for t in run.tasks if t.state.life_cycle_state == RunLifeCycleState.TERMINATED)
-            logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{len(task_list)}")
-
-        final_state = run.state.result_state
-        logger.info(f"Run finished with state: {final_state}")
-        if final_state == jobs.RunResultState.SUCCESS:
-            logger.success("✅ DataPact job completed successfully.")
-        else:
-            raise Exception(f"DataPact job did not succeed. Final state: {final_state}. View details at {run.run_page_url}")
+            self,
+            config: dict[str, any],
+            job_name: str,
+            warehouse_name: str,
+            results_table: str | None = None,
+        ) -> None:
+            """Constructs, deploys, and runs the DataPact validation workflow."""
+            warehouse = self._ensure_sql_warehouse(warehouse_name)
+            task_paths = self._upload_sql_scripts(config, results_table)
+    
+            # Use the SDK's Job-related dataclasses
+            from databricks.sdk.service.jobs import (
+                JobParameter,
+                JobSettings,
+                RunAs,
+                RunIf,
+                SqlTask,
+                Task,
+                TaskDependency,
+                FileSource
+            )
+    
+            tasks: list[Task] = []
+            validation_task_keys = [v_conf["task_key"] for v_conf in config["validations"]]
+    
+            # Build the list of tasks using the Task dataclass
+            for task_key in validation_task_keys:
+                tasks.append(
+                    Task(
+                        task_key=task_key,
+                        sql_task=SqlTask(
+                            file=FileSource(
+                                path=task_paths[task_key],
+                                source="WORKSPACE"
+                            ),
+                            warehouse_id=warehouse.id,
+                        ),
+                    )
+                )
+    
+            # Build the aggregation task, if needed
+            if results_table and 'aggregate_results' in task_paths:
+                tasks.append(
+                    Task(
+                        task_key="aggregate_results",
+                        depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys],
+                        run_if=RunIf.ALL_DONE,
+                        sql_task=SqlTask(
+                            file=FileSource(
+                                path=task_paths['aggregate_results'],
+                                source="WORKSPACE"
+                            ),
+                            warehouse_id=warehouse.id,
+                        ),
+                    )
+                )
+    
+            # Construct the entire job definition using the JobSettings dataclass
+            job_settings = JobSettings(
+                name=job_name,
+                tasks=tasks,
+                run_as=RunAs(user_name=self.user_name),
+                parameters=[
+                    JobParameter(name="run_id", default="{{job.run_id}}")
+                ],
+            )
+    
+            # Check for an existing job
+            existing_job = None
+            for j in self.w.jobs.list(name=job_name):
+                existing_job = j
+                break
+            
+            # Use the job_settings object for both creating and resetting the job
+            if existing_job:
+                logger.info(f"Updating existing job '{job_name}' (ID: {existing_job.job_id})...")
+                self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings)
+                job_id = existing_job.job_id
+            else:
+                logger.info(f"Creating new job '{job_name}'...")
+                # The create method takes the attributes of the JobSettings object as keyword arguments
+                new_job = self.w.jobs.create(
+                    name=job_settings.name,
+                    tasks=job_settings.tasks,
+                    run_as=job_settings.run_as,
+                    parameters=job_settings.parameters,
+                )
+                job_id = new_job.job_id
+    
+            logger.info(f"Launching job {job_id}...")
+            run_info = self.w.jobs.run_now(job_id=job_id)
+            run = self.w.jobs.get_run(run_info.run_id)
+            
+            logger.info(f"Run started! View progress here: {run.run_page_url}")
+            while run.state.life_cycle_state not in TERMINAL_STATES:
+                time.sleep(20)
+                run = self.w.jobs.get_run(run.run_id)
+                finished_tasks = sum(1 for t in run.tasks if t.state.life_cycle_state in TERMINAL_STATES)
+                logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{len(tasks)}")
+    
+            final_state = run.state.result_state
+            final_state_message = run.state.state_message
+            logger.info(f"Run finished with state: {final_state}")
+            if final_state == jobs.RunResultState.SUCCESS:
+                logger.success("✅ DataPact job completed successfully.")
+            else:
+                logger.error(f"DataPact job did not succeed. Final state: {final_state}.")
+                logger.error(f"Message: {final_state_message}")
+                raise Exception(f"DataPact job failed. View details at {run.run_page_url}")
