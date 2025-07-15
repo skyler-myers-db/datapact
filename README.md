@@ -8,12 +8,13 @@ DataPact ensures the integrity of your data by creating a "pact" between your so
 
 ### Why DataPact?
 
+*   **Zero-Config Start:** Run validations without any setup. DataPact automatically creates a default catalog and table to store your results history.
 *   **100% Programmatic:** Define your entire validation suite in a simple YAML file. Create, run, and manage tests from your local CLI or a CI/CD pipeline. No UI clicking required.
 *   **Fully Serverless:** Built for efficiency. DataPact uses lightweight Serverless Notebooks for orchestration and powerful Serverless SQL Warehouses for query execution, minimizing cost and operational overhead.
 *   **Source Agnostic:** Validate data from any source system that can be connected to Unity Catalog through federation (e.g., PostgreSQL, MySQL, Snowflake) against a Databricks target. Also perfect for Databricks-to-Databricks validation (e.g., Bronze vs. Silver).
 *   **Scalable & Parallel:** Each table validation runs as a separate, parallel task in a Databricks Job, allowing you to test dozens or hundreds of tables concurrently.
 *   **Rich Validations:** Go beyond simple row counts. DataPact supports aggregate comparisons (SUM, AVG), per-row hash validation, null count analysis, and more.
-*   **Persistent Reporting:** Automatically log detailed validation results to a Delta table for historical analysis, auditing, and building data quality dashboards.
+*   **Persistent, Queryable Reporting:** Automatically log detailed validation results to a Delta table. The results are stored in a `VARIANT` column, allowing for easy, powerful, and native querying of your data quality history in Databricks SQL.
 
 ### Architecture Overview
 
@@ -76,19 +77,29 @@ datapact run \
 
 ### Using DataPact on Your Own Data
 
-1.  **Create Your Config:** Create a `my_validations.yml` file. Use the `demo/demo_config.yml` as a template.
+1.  **Create Your Config:** Create a `my_validations.yml` file.
 2.  **Run DataPact:**
+
+    To get started quickly without specifying a results table:
+    
     ```bash
     datapact run \
-      --config demo/demo_config.yml \
+      --config my_validations.yml \
+      --warehouse "Your Serverless Warehouse Name"
+    ```
+    
+    This will automatically create and log results to `datapact_main.results.run_history`.
+
+    To specify a custom results table:
+    
+    ```bash
+    datapact run \
+      --config my_validations.yml \
       --warehouse "Your Serverless Warehouse Name" \
-      --job-name "DataPact Demo Run" \
-      --results-table "datapact_demo_catalog.source_data.datapact_run_history" \
-      --profile my-profile
+      --results-table "my_catalog.my_schema.my_history"
     ```
 
 That's it! You will see the validation results streamed to your terminal, and a new history table will be created and populated in your Databricks workspace.
-
 
 ### Configuration Details
 
@@ -111,6 +122,7 @@ Below are all available parameters for each task in your `validation_config.yml`
 | `null_validation_threshold` | float        | No       | Allowed relative difference for null counts in a column.                             |
 | `null_validation_columns` | list[string] | No       | List of columns to perform null count validation on. Requires `null_validation_threshold`. |
 | `agg_validations`         | list[dict]   | No       | A list of aggregate validations to perform. See structure in examples.               |
+| `results-table` | string | No | FQN of the results table. If omitted, `datapact_main.results.run_history` is used. |
 
 ---
 
