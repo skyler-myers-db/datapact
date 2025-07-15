@@ -62,142 +62,239 @@ class DataPactClient:
         
         return self.w.warehouses.get(warehouse.id)
 
-    def _generate_validation_sql(self, config: dict[str, any], results_table: str | None) -> str:
-        """Generates a complete, idempotent SQL validation script for a single task."""
-        source_fqn = f"`{config['source_catalog']}`.`{config['source_schema']}`.`{config['source_table']}`"
-        target_fqn = f"`{config['target_catalog']}`.`{config['target_schema']}`.`{config['target_table']}`"
-        
-        count_tolerance = config.get('count_tolerance', 0.0)
-        
-        sql = textwrap.dedent(f"""\
-            -- DataPact Validation for task: {config['task_key']}
-            -- Step 1: Declare a variable to hold the validation outcome.
-            DECLARE validation_passed BOOLEAN;
+def _generate_validation_sql(self, config: dict[str, any], results_table: str | None) -> str:
+    """
+    Generates a complete, idempotent, and dynamic SQL validation script for a single task
+    based on the provided configuration.
+    """
+    # --- FQNs and Basic Config ---
+    source_fqn = f"`{config['source_catalog']}`.`{config['source_schema']}`.`{config['source_table']}`"
+    target_fqn = f"`{config['target_catalog']}`.`{config['target_schema']}`.`{config['target_table']}`"
+    task_key = config['task_key']
 
-            -- Step 2: Calculate all metrics and insert a detailed JSON payload into the history table.
-            -- This step will ALWAYS run to ensure logging, even on failure.
-            CREATE TABLE IF NOT EXISTS {results_table} (task_key STRING, status STRING, run_id BIGINT, timestamp TIMESTAMP, result_payload STRING);
-            INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload)
-            WITH
-              source_metrics AS (
-                SELECT COUNT(1) AS count FROM {source_fqn}
-              ),
-              target_metrics AS (
-                SELECT COUNT(1) AS count FROM {target_fqn}
-              ),
-              validation_checks AS (
-                SELECT
-                  (SELECT count FROM source_metrics) AS source_count,
-                  (SELECT count FROM target_metrics) AS target_count,
-                  -- Correctly handle division by zero
-                  CASE
-                    WHEN (SELECT count FROM source_metrics) = 0 THEN (SELECT count FROM target_metrics) = 0
-                    ELSE (abs((SELECT count FROM target_metrics) - (SELECT count FROM source_metrics)) / CAST((SELECT count FROM source_metrics) AS DOUBLE)) <= {count_tolerance}
-                  END AS count_check_passed
-              )
+    # --- SQL Generation ---
+    ctes = []
+    from_clauses = []
+    select_expressions = []
+    check_booleans = []
+
+    # 1. Count Validation
+    count_tolerance = config.get('count_tolerance')
+    if count_tolerance is not None:
+        ctes.append(textwrap.dedent(f"""
+        count_calcs AS (
             SELECT
-              '{config['task_key']}',
-              CASE WHEN v.count_check_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
-              :run_id,
-              current_timestamp(),
-              to_json(
-                struct(
-                  '{config['task_key']}' AS `task_key`,
-                  v.source_count,
-                  v.target_count,
-                  v.count_check_passed,
-                  (v.count_check_passed) AS overall_validation_passed -- In a full version, this would be AND of all checks
+                (SELECT COUNT(1) FROM {source_fqn}) AS source_count,
+                (SELECT COUNT(1) FROM {target_fqn}) AS target_count
+        )
+        """))
+        from_clauses.append("count_calcs")
+        select_expressions.extend([
+            "c.source_count",
+            "c.target_count",
+            "ABS(c.target_count - c.source_count) / NULLIF(CAST(c.source_count AS DOUBLE), 0) AS count_relative_diff"
+        ])
+        check_booleans.append(f"(ABS(c.target_count - c.source_count) / NULLIF(CAST(c.source_count AS DOUBLE), 0)) <= {count_tolerance}")
+
+
+    # 2. Per-Row Hash Validation
+    if config.get('pk_row_hash_check') and config.get('primary_keys'):
+        primary_keys = config['primary_keys']
+        pk_hash_threshold = config.get('pk_hash_threshold', 0.0)
+        
+        all_source_columns = [c.name for c in self.w.columns.list(table_name=source_fqn)]
+        hash_columns = config.get('hash_columns', all_source_columns)
+        hash_columns_expr_list = [f"`{c}`" for c in hash_columns]
+
+        hash_expr = f"md5(to_json(struct({', '.join(hash_columns_expr_list)})))"
+        pk_cols_str = ", ".join([f"`{pk}`" for pk in primary_keys])
+        join_expr = " AND ".join([f"s.{pk} = t.{pk}" for pk in primary_keys])
+
+        ctes.append(textwrap.dedent(f"""
+        row_hash_calcs AS (
+          SELECT
+            COUNT(1) AS total_compared_rows,
+            COALESCE(SUM(CASE WHEN s.row_hash <> t.row_hash THEN 1 ELSE 0 END), 0) AS mismatch_count
+          FROM
+            (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {source_fqn}) s
+            INNER JOIN (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {target_fqn}) t ON {join_expr}
+        )
+        """))
+        from_clauses.append("row_hash_calcs")
+        select_expressions.extend([
+            "h.total_compared_rows",
+            "h.mismatch_count",
+            "(h.mismatch_count / NULLIF(CAST(h.total_compared_rows AS DOUBLE), 0)) AS mismatch_ratio"
+        ])
+        check_booleans.append(f"(h.mismatch_count / NULLIF(CAST(h.total_compared_rows AS DOUBLE), 0)) <= {pk_hash_threshold}")
+
+    # 3. Null Count Validation
+    if config.get('null_validation_columns'):
+        for col in config['null_validation_columns']:
+            null_val_threshold = config.get('null_validation_threshold', 0.0)
+            cte_key = f"null_calcs_{col}"
+            alias = f"n_{col}"
+
+            ctes.append(textwrap.dedent(f"""
+            {cte_key} AS (
+                SELECT
+                    (SELECT COUNT(1) FROM {source_fqn} WHERE `{col}` IS NULL) AS source_nulls,
+                    (SELECT COUNT(1) FROM {target_fqn} WHERE `{col}` IS NULL) AS target_nulls
+            )
+            """))
+            from_clauses.append(cte_key)
+            select_expressions.extend([
+                f"{alias}.source_nulls AS source_nulls_{col}",
+                f"{alias}.target_nulls AS target_nulls_{col}",
+                f"ABS({alias}.target_nulls - {alias}.source_nulls) / NULLIF(CAST({alias}.source_nulls AS DOUBLE), 0) AS null_relative_diff_{col}"
+            ])
+            check_booleans.append(f"(ABS({alias}.target_nulls - {alias}.source_nulls) / NULLIF(CAST({alias}.source_nulls AS DOUBLE), 0)) <= {null_val_threshold}")
+
+    # 4. Aggregate Validations
+    if config.get('agg_validations'):
+        for agg_config in config.get('agg_validations', []):
+            col = agg_config['column']
+            for validation in agg_config['validations']:
+                agg = validation['agg']
+                tolerance = validation['tolerance']
+                cte_key = f"agg_calcs_{col}_{agg}"
+                alias = f"a_{col}_{agg}"
+
+                ctes.append(textwrap.dedent(f"""
+                {cte_key} AS (
+                    SELECT
+                        TRY_CAST((SELECT {agg}(`{col}`) FROM {source_fqn}) AS DECIMAL(38, 6)) AS source_agg,
+                        TRY_CAST((SELECT {agg}(`{col}`) FROM {target_fqn}) AS DECIMAL(38, 6)) AS target_agg
                 )
-              )
-            FROM validation_checks v;
+                """))
+                from_clauses.append(cte_key)
+                select_expressions.extend([
+                    f"{alias}.source_agg AS source_agg_{col}_{agg}",
+                    f"{alias}.target_agg AS target_agg_{col}_{agg}",
+                    f"ABS({alias}.target_agg - {alias}.source_agg) / NULLIF(ABS(CAST({alias}.source_agg AS DOUBLE)), 0) AS agg_relative_diff_{col}_{agg}"
+                ])
+                check_booleans.append(f"(ABS({alias}.target_agg - {alias}.source_agg) / NULLIF(ABS(CAST({alias}.source_agg AS DOUBLE)), 0)) <= {tolerance}")
 
-            -- Step 3: Set the variable based on the result that was just inserted.
-            SET VAR validation_passed = (
-                SELECT result_payload:overall_validation_passed
-                FROM {results_table}
-                WHERE run_id = :run_id AND task_key = '{config['task_key']}'
-                ORDER BY timestamp DESC
-                LIMIT 1
-            );
 
-            -- Step 4: After logging, use the variable to conditionally fail the task.
+    # --- Build the Final Query ---
+    final_sql = f"-- DataPact Validation for task: {task_key}\n"
+    final_sql += f"-- Generated at: {time.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+    
+    # Use aliases for the from clauses
+    from_aliases = {
+        "count_calcs": "c",
+        "row_hash_calcs": "h"
+    }
+    for clause in from_clauses:
+        if clause.startswith("null_calcs_"):
+            from_aliases[clause] = f"n_{clause.replace('null_calcs_', '')}"
+        elif clause.startswith("agg_calcs_"):
+            from_aliases[clause] = f"a_{clause.replace('agg_calcs_', '')}"
+    
+    # Replace aliases in select and check expressions
+    for i in range(len(select_expressions)):
+        for k, v in from_aliases.items():
+            if select_expressions[i].startswith(f"{v}."):
+                break
+        else:
+            select_expressions[i] = f"{list(from_aliases.values())[0]}.{select_expressions[i]}"
+
+    for i in range(len(check_booleans)):
+        for k, v in from_aliases.items():
+            if f"{v}." in check_booleans[i]:
+                 break
+        else:
+             check_booleans[i] = check_booleans[i].replace(list(from_aliases.keys())[0], list(from_aliases.values())[0])
+
+
+    final_sql += "WITH\n" + ",\n".join(ctes) + "\n"
+
+    # --- Final SELECT and INSERT Logic ---
+    final_sql += textwrap.dedent(f"""
+    ,
+    final_metrics AS (
+      SELECT
+        struct(
+            '{task_key}' AS task_key,
+            {', '.join(select_expressions)}
+        ) AS result_payload,
+        {' AND '.join(check_booleans)} AS overall_validation_passed
+      FROM
+        { ' CROSS JOIN '.join([f'{k} AS {v}' for k, v in from_aliases.items()]) }
+    )
+    """)
+
+    if results_table:
+        final_sql += textwrap.dedent(f"""
+        INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload)
+        SELECT
+          '{task_key}',
+          CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
+          :run_id,
+          current_timestamp(),
+          to_json(result_payload)
+        FROM final_metrics;
+        """)
+
+    final_sql += textwrap.dedent(f"""
+    SELECT
+      CASE
+        WHEN (SELECT overall_validation_passed FROM final_metrics)
+        THEN 'Validation PASSED'
+        ELSE RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Payload: ', (SELECT to_json(result_payload) FROM final_metrics)))
+      END;
+    """)
+
+    return final_sql
+
+def _upload_sql_scripts(self, config: dict[str, any], results_table: str | None) -> dict[str, str]:
+    """Generates and uploads SQL scripts for all validation tasks."""
+    logger.info("Generating and uploading SQL validation scripts...")
+    task_paths: dict[str, str] = {}
+    
+    sql_tasks_path = f"{self.root_path}/sql_tasks"
+    self.w.workspace.mkdirs(sql_tasks_path)
+
+    for task_config in config['validations']:
+        task_key = task_config['task_key']
+        sql_script = self._generate_validation_sql(task_config, results_table)
+        
+        script_path = f"{sql_tasks_path}/{task_key}.sql"
+        self.w.workspace.upload(
+            path=script_path,
+            content=sql_script.encode('utf-8'),
+            overwrite=True,
+            format=workspace.ImportFormat.RAW,
+        )
+        task_paths[task_key] = script_path
+        logger.info(f"  - Uploaded SQL FILE for task '{task_key}' to {script_path}")
+
+    if results_table:
+        agg_script_path = f"{sql_tasks_path}/aggregate_results.sql"
+        agg_sql_script = textwrap.dedent(f"""\
+            -- DataPact Final Aggregation Task
+            -- This task checks the results table for any failures from the current run.
             SELECT
               CASE
-                WHEN validation_passed THEN TRUE
-                ELSE
-                  RAISE_ERROR(
-                    'One or more validations failed for task {config['task_key']}. Check history table for details.'
-                  )
-              END AS `Validation Passed`;
+                WHEN (
+                  SELECT COUNT(1)
+                  FROM {results_table}
+                  WHERE run_id = :run_id AND status = 'FAILURE'
+                ) > 0
+                THEN RAISE_ERROR('One or more DataPact validations failed. Check the results table for details.')
+                ELSE 'All DataPact validations passed successfully!'
+              END AS overall_status;
         """)
-        return sql
+        self.w.workspace.upload(
+            path=agg_script_path,
+            content=agg_sql_script.encode('utf-8'),
+            overwrite=True,
+            format=workspace.ImportFormat.RAW,
+        )
+        task_paths['aggregate_results'] = agg_script_path
+        logger.info(f"  - Uploaded aggregation SQL FILE to {agg_script_path}")
 
-    def _upload_sql_scripts(self, config: dict[str, any], results_table: str | None) -> dict[str, str]:
-        """Generates and uploads SQL scripts for all validation tasks."""
-        logger.info("Generating and uploading SQL validation scripts...")
-        task_paths: dict[str, str] = {}
-        
-        sql_tasks_path = f"{self.root_path}/sql_tasks"
-        self.w.workspace.mkdirs(sql_tasks_path)
-
-        for task_config in config['validations']:
-            task_key = task_config['task_key']
-            sql_script = self._generate_validation_sql(task_config, results_table)
-            
-            script_path = f"{sql_tasks_path}/{task_key}.sql"
-            self.w.workspace.upload(
-                path=script_path,
-                content=sql_script.encode('utf-8'),
-                overwrite=True,
-                format=workspace.ImportFormat.RAW
-            )
-            task_paths[task_key] = script_path
-            logger.info(f"  - Uploaded SQL FILE for task '{task_key}' to {script_path}")
-
-        if results_table:
-            agg_script_path = f"{sql_tasks_path}/aggregate_results.sql"
-            agg_sql_script = textwrap.dedent(f"""\
-                -- DataPact Aggregation Task
-                -- This task verifies that all upstream tasks have successfully logged their results.
-                DECLARE validations_passed BOOLEAN;
-                
-                SET VAR validations_passed = (
-                  SELECT
-                    CASE
-                      WHEN
-                        (
-                          SELECT
-                            COUNT(*)
-                          FROM
-                            {results_table}
-                          WHERE
-                            run_id = TRY_CAST(:run_id AS BIGINT)
-                            AND result_payload:overall_validation_passed = FALSE
-                        ) = 0
-                      THEN
-                        TRUE
-                      ELSE FALSE
-                    END AS validation_status
-                );
-                
-                SELECT
-                  CASE
-                    WHEN validations_passed THEN TRUE
-                    ELSE RAISE_ERROR(
-                      'One or more table validations failed for the current run. Check history table for details.'
-                    )
-                  END AS `Validations Passed`;
-            """)
-            self.w.workspace.upload(
-                path=agg_script_path,
-                content=agg_sql_script.encode('utf-8'),
-                overwrite=True,
-                format=workspace.ImportFormat.RAW,
-            )
-            task_paths['aggregate_results'] = agg_script_path
-            logger.info(f"  - Uploaded aggregation SQL FILE to {agg_script_path}")
-
-        return task_paths
+    return task_paths
 
     def run_validation(
         self,
