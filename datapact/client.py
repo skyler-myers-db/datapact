@@ -210,36 +210,39 @@ class DataPactClient:
                     metric_payload_parts.extend([f"'source_agg_{col}_{agg}'", f"{cte_key}.source_agg", f"'target_agg_{col}_{agg}'", f"{cte_key}.target_agg", f"'agg_relative_diff_{col}_{agg}'", f"ABS({cte_key}.target_agg - {cte_key}.source_agg) / NULLIF(ABS(CAST({cte_key}.source_agg AS DOUBLE)), 0)"])
                     overall_validation_passed_clauses.append(f"COALESCE((ABS({cte_key}.target_agg - {cte_key}.source_agg) / NULLIF(ABS(CAST({cte_key}.source_agg AS DOUBLE)), 0)), 0) <= {tolerance}")
         
-        # Start the SQL script with the CTE definitions
-        final_sql: str = f"-- DataPact Validation for task: {task_key}\n"
+        sql_statements: list[str] = []
+        
+        # **Step 1: Create a TEMP VIEW using the correct syntax**
+        view_creation_sql: str = "CREATE OR REPLACE TEMP VIEW final_metrics_view AS\n"
         if ctes:
-            final_sql += "WITH\n" + ", \n".join(ctes) + "\n"
-
-        # **Step 1: Create a TEMP VIEW from the CTEs**
-        from_clause: str = " CROSS JOIN ".join([cte.split(" AS ")[0] for cte in ctes]) if ctes else "(SELECT 1 AS placeholder)"
-        final_sql += textwrap.dedent(f"""
-        CREATE OR REPLACE TEMP VIEW final_metrics_view AS
+            view_creation_sql += "WITH\n" + ", \n".join(ctes) + "\n"
+        
+        from_clause: str = " CROSS JOIN ".join([cte.split(" AS ")[0].strip() for cte in ctes]) if ctes else "(SELECT 1 AS placeholder)"
+        
+        view_creation_sql += textwrap.dedent(f"""
         SELECT
             parse_json(to_json(map({', '.join(metric_payload_parts)}))) as result_payload,
             {' AND '.join(overall_validation_passed_clauses) if overall_validation_passed_clauses else 'true'} AS overall_validation_passed
-        FROM {from_clause};
+        FROM {from_clause}
         """)
+        sql_statements.append(view_creation_sql)
 
         # **Step 2: INSERT the results from the TEMP VIEW**
-        final_sql += textwrap.dedent(f"""
+        sql_statements.append(textwrap.dedent(f"""
         INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload)
-        SELECT '{task_key}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END, :run_id, current_timestamp(), result_payload FROM final_metrics_view;
-        """)
+        SELECT '{task_key}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END, :run_id, current_timestamp(), result_payload FROM final_metrics_view
+        """))
 
         # **Step 3: Conditionally FAIL the task using the TEMP VIEW**
-        final_sql += textwrap.dedent(f"""
+        sql_statements.append(textwrap.dedent(f"""
         SELECT CASE WHEN (SELECT overall_validation_passed FROM final_metrics_view)
         THEN 'Validation PASSED'
         ELSE RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Payload: ', (SELECT to_json(result_payload) FROM final_metrics_view)))
-        END;
-        """)
+        END
+        """))
         
-        return final_sql
+        # Join all separate statements with semicolons for execution
+        return ";\n\n".join(sql_statements)
 
     def _upload_sql_scripts(self, config: dict[str, any], results_table: str) -> dict[str, str]:
         """
