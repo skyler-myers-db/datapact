@@ -132,7 +132,9 @@ DataPact needs to know which Serverless SQL Warehouse to run on. It looks for th
 
 1. --warehouse flag (Highest Priority):
 
-`datapact run --config ... --warehouse "my_cli_warehouse"`
+```bash
+datapact run --config ... --warehouse "my_cli_warehouse"`
+```
 
 2. `.databrickscfg` File: Add a `datapact_warehouse` key to your profile in `~/.databrickscfg`. This is the recommended way to set a project-wide default.
 
@@ -145,7 +147,9 @@ datapact_warehouse = "my_default_warehouse"
 
 3. Environment Variable (Lowest Priority):
 
-`export DATAPACT_WAREHOUSE="my_env_var_warehouse"`
+```bash
+export DATAPACT_WAREHOUSE="my_env_var_warehouse"`
+```
 
 ### Results & Reporting
 
