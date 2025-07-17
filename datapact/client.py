@@ -126,7 +126,7 @@ class DataPactClient:
         Generates a complete, multi-statement SQL script for the validation task.
 
         This version produces a well-structured, nested VARIANT payload with
-        fields in a logical order and percentages for readability.
+        logically named fields (including percentages) for maximum readability.
 
         Args:
             config: The configuration dictionary for a single validation task.
@@ -144,19 +144,13 @@ class DataPactClient:
 
         if 'count_tolerance' in config:
             tolerance: float = config.get('count_tolerance', 0.0)
-            ctes.append(textwrap.dedent(f"""
-            count_metrics AS (SELECT
-                (SELECT COUNT(1) FROM {source_fqn}) AS source_count,
-                (SELECT COUNT(1) FROM {target_fqn}) AS target_count)
-            """))
+            ctes.append(f"count_metrics AS (SELECT (SELECT COUNT(1) FROM {source_fqn}) AS source_count, (SELECT COUNT(1) FROM {target_fqn}) AS target_count)")
             check: str = f"COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= {tolerance}"
             payload_structs.append(textwrap.dedent(f"""
             struct(
-                source_count,
-                target_count,
+                source_count, target_count,
                 (ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0)) * 100 as relative_diff_percent,
-                {tolerance} AS tolerance,
-                CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
+                {tolerance} AS tolerance, CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
             ) AS count_validation
             """))
             overall_validation_passed_clauses.append(check)
@@ -168,103 +162,47 @@ class DataPactClient:
             hash_expr: str = f"md5(to_json(struct({', '.join([f'`{c}`' for c in hash_columns]) if hash_columns else '*'})))"
             pk_cols_str: str = ", ".join([f"`{pk}`" for pk in primary_keys])
             join_expr: str = " AND ".join([f"s.`{pk}` = t.`{pk}`" for pk in primary_keys])
-            ctes.append(textwrap.dedent(f"""
-            row_hash_metrics AS (SELECT COUNT(1) AS total_compared_rows, COALESCE(SUM(CASE WHEN s.row_hash <> t.row_hash THEN 1 ELSE 0 END), 0) AS mismatch_count
-                FROM (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {source_fqn}) s
-                INNER JOIN (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {target_fqn}) t ON {join_expr})
-            """))
+            ctes.append(f"""row_hash_metrics AS (SELECT COUNT(1) AS total_compared_rows, COALESCE(SUM(CASE WHEN s.row_hash <> t.row_hash THEN 1 ELSE 0 END), 0) AS mismatch_count FROM (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {source_fqn}) s INNER JOIN (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {target_fqn}) t ON {join_expr})""")
             check: str = f"COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= {pk_hash_threshold}"
             payload_structs.append(textwrap.dedent(f"""
             struct(
-                total_compared_rows AS compared_rows,
-                mismatch_count,
+                total_compared_rows AS compared_rows, mismatch_count,
                 (mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)) * 100 as mismatch_percent,
-                {pk_hash_threshold} AS threshold,
-                CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
+                {pk_hash_threshold} AS threshold, CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
             ) AS row_hash_validation
             """))
             overall_validation_passed_clauses.append(check)
 
-        if config.get('null_validation_columns'):
-            for col in config['null_validation_columns']:
-                threshold: float = config.get('null_validation_threshold', 0.0)
-                cte_key: str = f"null_metrics_{col}"
-                ctes.append(textwrap.dedent(f"""
-                {cte_key} AS (SELECT
-                    (SELECT COUNT(1) FROM {source_fqn} WHERE `{col}` IS NULL) AS source_nulls,
-                    (SELECT COUNT(1) FROM {target_fqn} WHERE `{col}` IS NULL) AS target_nulls)
-                """))
-                check: str = f"CASE WHEN source_nulls = 0 THEN target_nulls = 0 ELSE COALESCE(ABS(target_nulls - source_nulls) / NULLIF(CAST(source_nulls AS DOUBLE), 0), 0) <= {threshold} END"
+        if config.get('agg_validations'):
+            for agg_config in config.get('agg_validations', []):
+                col, agg, tolerance = agg_config['column'], agg_config['validations'][0]['agg'], agg_config['validations'][0]['tolerance']
+                src_val_alias, tgt_val_alias = f"source_value_{col}_{agg}", f"target_value_{col}_{agg}"
+                ctes.append(f"agg_metrics_{col}_{agg} AS (SELECT TRY_CAST((SELECT {agg}(`{col}`) FROM {source_fqn}) AS DECIMAL(38, 6)) AS {src_val_alias}, TRY_CAST((SELECT {agg}(`{col}`) FROM {target_fqn}) AS DECIMAL(38, 6)) AS {tgt_val_alias})")
+                check = f"COALESCE(ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0), 0) <= {tolerance}"
                 payload_structs.append(textwrap.dedent(f"""
                 struct(
-                    source_nulls,
-                    target_nulls,
-                    ABS(target_nulls - source_nulls) / NULLIF(CAST(source_nulls AS DOUBLE), 0) as relative_diff,
-                    {threshold} AS threshold,
-                    CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
-                ) AS null_validation_{col}
+                    {src_val_alias} AS source_value, {tgt_val_alias} AS target_value,
+                    (ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0)) * 100 as relative_diff_percent,
+                    {tolerance} AS tolerance, CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
+                ) AS agg_validation_{col}_{agg}
                 """))
                 overall_validation_passed_clauses.append(check)
 
-        if config.get('agg_validations'):
-            for agg_config in config.get('agg_validations', []):
-                col: str = agg_config['column']
-                for validation in agg_config['validations']:
-                    agg: str = validation['agg']
-                    tolerance: float = validation['tolerance']
-                    
-                    cte_key: str = f"agg_metrics_{col}_{agg}"
-                    src_val_alias: str = f"source_value_{col}_{agg}"
-                    tgt_val_alias: str = f"target_value_{col}_{agg}"
-                    
-                    ctes.append(textwrap.dedent(f"""
-                    {cte_key} AS (SELECT
-                        TRY_CAST((SELECT {agg}(`{col}`) FROM {source_fqn}) AS DECIMAL(38, 6)) AS {src_val_alias},
-                        TRY_CAST((SELECT {agg}(`{col}`) FROM {target_fqn}) AS DECIMAL(38, 6)) AS {tgt_val_alias})
-                    """))
-                    
-                    check: str = f"COALESCE(ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0), 0) <= {tolerance}"
-                    payload_structs.append(textwrap.dedent(f"""
-                    struct(
-                        {src_val_alias} AS source_value,
-                        {tgt_val_alias} AS target_value,
-                        ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0) as relative_diff,
-                        {tolerance} AS tolerance,
-                        CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
-                    ) AS agg_validation_{col}_{agg}
-                    """))
-                    overall_validation_passed_clauses.append(check)
-
         sql_statements: list[str] = []
-        view_creation_sql: str = "CREATE OR REPLACE TEMP VIEW final_metrics_view AS\n"
-        if ctes:
-            view_creation_sql += "WITH\n" + ", \n".join(ctes) + "\n"
+        view_creation_sql: str = f"CREATE OR REPLACE TEMP VIEW final_metrics_view AS\n"
+        if ctes: view_creation_sql += "WITH\n" + ",\n".join(ctes) + "\n"
         from_clause: str = " CROSS JOIN ".join([cte.split(" AS ")[0].strip() for cte in ctes]) if ctes else "(SELECT 1 AS placeholder)"
-        view_creation_sql += textwrap.dedent(f"""
-        SELECT
-            parse_json(to_json(struct({', '.join(payload_structs)}))) as result_payload,
-            {' AND '.join(overall_validation_passed_clauses) if overall_validation_passed_clauses else 'true'} AS overall_validation_passed
-        FROM {from_clause}
-        """)
+        view_creation_sql += f"SELECT parse_json(to_json(struct({', '.join(payload_structs)}))) as result_payload, {' AND '.join(overall_validation_passed_clauses) if overall_validation_passed_clauses else 'true'} AS overall_validation_passed FROM {from_clause}"
         sql_statements.append(view_creation_sql)
 
-        sql_statements.append(textwrap.dedent(f"""
-        INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload)
-        SELECT '{task_key}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END, :run_id, current_timestamp(), result_payload FROM final_metrics_view
-        """))
-
-        sql_statements.append(textwrap.dedent(f"""
-        SELECT CASE WHEN (SELECT overall_validation_passed FROM final_metrics_view)
-        THEN 'Validation PASSED'
-        ELSE RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Payload: \\n', to_json( (SELECT result_payload FROM final_metrics_view), map('pretty', 'true') ) ))
-        END
-        """))
+        sql_statements.append(f"INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload) SELECT '{task_key}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END, :run_id, current_timestamp(), result_payload FROM final_metrics_view")
+        sql_statements.append(f"SELECT CASE WHEN (SELECT overall_validation_passed FROM final_metrics_view) THEN 'Validation PASSED' ELSE RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Payload: \\n', to_json((SELECT result_payload FROM final_metrics_view), map('pretty', 'true')))) END")
         
         return ";\n\n".join(sql_statements)
 
     def _upload_sql_scripts(self, config: dict[str, any], results_table: str) -> dict[str, str]:
         """
-        Generates and uploads SQL scripts, including an informative aggregation script.
+        Generates and uploads SQL scripts, including a more informative aggregation script.
         """
         logger.info("Generating and uploading SQL validation scripts...")
         task_paths: dict[str, str] = {}
@@ -275,32 +213,27 @@ class DataPactClient:
             task_key: str = task_config['task_key']
             sql_script: str = self._generate_validation_sql(task_config, results_table)
             script_path: str = f"{sql_tasks_path}/{task_key}.sql"
-            self.w.workspace.upload(
-                path=script_path, content=sql_script.encode('utf-8'),
-                overwrite=True, format=workspace.ImportFormat.RAW
-            )
+            self.w.workspace.upload(path=script_path, content=sql_script.encode('utf-8'), overwrite=True, format=workspace.ImportFormat.RAW)
             task_paths[task_key] = script_path
             logger.info(f"  - Uploaded SQL FILE for task '{task_key}' to {script_path}")
         
-        agg_script_path: str = f"{self.root_path}/sql_tasks/aggregate_results.sql"
+        agg_script_path: str = f"{sql_tasks_path}/aggregate_results.sql"
         agg_sql_script: str = textwrap.dedent(f"""
-            CREATE OR REPLACE TEMP VIEW failures AS
-            SELECT COLLECT_LIST(task_key) as failed_tasks
-            FROM {results_table}
-            WHERE run_id = :run_id AND status = 'FAILURE';
+            CREATE OR REPLACE TEMP VIEW agg_metrics AS
+            SELECT
+              (SELECT COUNT(1) FROM {results_table} WHERE run_id = :run_id AND status = 'FAILURE') AS failure_count,
+              (SELECT COUNT(1) FROM {results_table} WHERE run_id = :run_id AND status = 'SUCCESS') AS success_count,
+              (SELECT COLLECT_LIST(task_key) FROM {results_table} WHERE run_id = :run_id AND status = 'FAILURE') as failed_tasks;
 
             SELECT CASE 
-                WHEN (SELECT COUNT(1) FROM failures) > 0 
-                THEN RAISE_ERROR(CONCAT('The following tasks failed: ', (SELECT to_json(failed_tasks) FROM failures)))
-                WHEN (SELECT COUNT(1) FROM {results_table} WHERE run_id = :run_id AND status = 'SUCCESS') < CAST(:expected_successes AS INT)
-                THEN RAISE_ERROR('One or more validation tasks did not complete successfully.')
+                WHEN (SELECT failure_count FROM agg_metrics) > 0 
+                THEN RAISE_ERROR(CONCAT('The following tasks failed: ', (SELECT to_json(failed_tasks) FROM agg_metrics)))
+                WHEN (SELECT success_count FROM agg_metrics) < CAST(:expected_successes AS INT)
+                THEN RAISE_ERROR(CONCAT('Expected ', :expected_successes, ' successful tasks, but only ', (SELECT success_count FROM agg_metrics), ' reported success. Check for silent failures.'))
                 ELSE 'All DataPact validations passed successfully!' 
             END;
         """)
-        self.w.workspace.upload(
-            path=agg_script_path, content=agg_sql_script.encode('utf-8'),
-            overwrite=True, format=workspace.ImportFormat.RAW
-        )
+        self.w.workspace.upload(path=agg_script_path, content=agg_sql_script.encode('utf-8'), overwrite=True, format=workspace.ImportFormat.RAW)
         task_paths['aggregate_results'] = agg_script_path
         logger.info(f"  - Uploaded informative aggregation SQL FILE to {agg_script_path}")
         return task_paths
@@ -324,13 +257,10 @@ class DataPactClient:
 
         warehouse: sql_service.EndpointInfo = self._ensure_sql_warehouse(final_warehouse_name)
         
-        final_results_table: str
+        final_results_table: str = results_table if results_table else f"`{DEFAULT_CATALOG}`.`{DEFAULT_SCHEMA}`.`{DEFAULT_TABLE}`"
         if not results_table:
             self._setup_default_infrastructure(warehouse.id)
-            final_results_table = f"`{DEFAULT_CATALOG}`.`{DEFAULT_SCHEMA}`.`{DEFAULT_TABLE}`"
             logger.info(f"No results table provided. Using default: {final_results_table}")
-        else:
-            final_results_table = results_table
 
         self._ensure_results_table_exists(final_results_table, warehouse.id)
         
@@ -344,25 +274,11 @@ class DataPactClient:
             tasks.append(Task(task_key=task_key, sql_task=SqlTask(file=SqlTaskFile(path=task_paths[task_key], source=Source.WORKSPACE), warehouse_id=warehouse.id)))
 
         agg_task_parameters: dict[str, str] = {'expected_successes': str(num_validation_tasks)}
-        tasks.append(
-            Task(
-                task_key="aggregate_results",
-                depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys],
-                run_if=RunIf.ALL_DONE,
-                sql_task=SqlTask(
-                    file=SqlTaskFile(path=task_paths['aggregate_results'], source=Source.WORKSPACE),
-                    warehouse_id=warehouse.id,
-                    parameters=agg_task_parameters
-                )
-            )
-        )
+        tasks.append(Task(task_key="aggregate_results", depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys], run_if=RunIf.ALL_DONE, sql_task=SqlTask(file=SqlTaskFile(path=task_paths['aggregate_results'], source=Source.WORKSPACE), warehouse_id=warehouse.id, parameters=agg_task_parameters)))
 
         job_settings: JobSettings = JobSettings(name=job_name, tasks=tasks, run_as=JobRunAs(user_name=self.user_name), parameters=[JobParameterDefinition(name="run_id", default="{{job.run_id}}")])
-
-        existing_job: jobs.Job | None = None
-        for j in self.w.jobs.list(name=job_name):
-            existing_job = j
-            break
+        
+        existing_job: jobs.Job | None = next(iter(self.w.jobs.list(name=job_name)), None)
         
         job_id: int
         if existing_job:
@@ -386,14 +302,12 @@ class DataPactClient:
             logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{len(tasks)}")
 
         final_state: jobs.RunResultState = run.state.result_state
-        final_state_message: str = run.state.state_message
         logger.info(f"Run finished with state: {final_state}")
         if final_state == jobs.RunResultState.SUCCESS:
             logger.success("✅ DataPact job completed successfully.")
         else:
-            logger.error(f"DataPact job did not succeed. Final state: {final_state}.")
-            logger.error(f"Message: {final_state_message}")
-            raise Exception(f"DataPact job failed. View details at {run.run_page_url}")
+            logger.error(f"DataPact job did not succeed. Final state: {final_state}. View details at {run.run_page_url}")
+            raise Exception(f"DataPact job failed.")
 
     def _ensure_sql_warehouse(self, name: str) -> sql_service.EndpointInfo:
         """
