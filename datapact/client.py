@@ -8,6 +8,7 @@ where each task executes one of the generated SQL scripts on a specified
 Serverless SQL Warehouse.
 """
 
+import os
 import time
 import textwrap
 from datetime import timedelta
@@ -35,7 +36,8 @@ class DataPactClient:
 
     def __init__(self, profile: str = "DEFAULT") -> None:
         """
-        Initializes the client with Databricks workspace credentials.
+        Initializes the client with Databricks workspace credentials and
+        determines the warehouse to use based on a defined hierarchy.
 
         Args:
             profile: The Databricks CLI profile to use for authentication.
@@ -123,10 +125,8 @@ class DataPactClient:
         """
         Generates a complete, multi-statement SQL script for the validation task.
 
-        This is the definitive version, resolving the DATATYPE_MISMATCH error by
-        explicitly converting the result struct into a VARIANT using the
-        parse_json(to_json(...)) pattern. This is the robust, correct way to
-        handle complex type to VARIANT conversions in Databricks SQL.
+        This version produces a well-structured, nested VARIANT payload with
+        fields in a logical order and percentages for readability.
 
         Args:
             config: The configuration dictionary for a single validation task.
@@ -152,11 +152,11 @@ class DataPactClient:
             check: str = f"COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= {tolerance}"
             payload_structs.append(textwrap.dedent(f"""
             struct(
-                CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status,
-                {tolerance} AS tolerance,
                 source_count,
                 target_count,
-                (ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0)) as relative_diff
+                (ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0)) * 100 as relative_diff_percent,
+                {tolerance} AS tolerance,
+                CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
             ) AS count_validation
             """))
             overall_validation_passed_clauses.append(check)
@@ -176,11 +176,11 @@ class DataPactClient:
             check: str = f"COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= {pk_hash_threshold}"
             payload_structs.append(textwrap.dedent(f"""
             struct(
-                CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status,
-                {pk_hash_threshold} AS threshold,
-                mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0) as mismatch_ratio,
                 total_compared_rows AS compared_rows,
-                mismatch_count
+                mismatch_count,
+                (mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)) * 100 as mismatch_percent,
+                {pk_hash_threshold} AS threshold,
+                CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
             ) AS row_hash_validation
             """))
             overall_validation_passed_clauses.append(check)
@@ -197,11 +197,11 @@ class DataPactClient:
                 check: str = f"CASE WHEN source_nulls = 0 THEN target_nulls = 0 ELSE COALESCE(ABS(target_nulls - source_nulls) / NULLIF(CAST(source_nulls AS DOUBLE), 0), 0) <= {threshold} END"
                 payload_structs.append(textwrap.dedent(f"""
                 struct(
-                    CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status,
-                    {threshold} AS threshold,
                     source_nulls,
                     target_nulls,
                     ABS(target_nulls - source_nulls) / NULLIF(CAST(source_nulls AS DOUBLE), 0) as relative_diff
+                    {threshold} AS threshold,
+                    CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status,
                 ) AS null_validation_{col}
                 """))
                 overall_validation_passed_clauses.append(check)
@@ -226,11 +226,11 @@ class DataPactClient:
                     check: str = f"COALESCE(ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0), 0) <= {tolerance}"
                     payload_structs.append(textwrap.dedent(f"""
                     struct(
-                        CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status,
-                        {tolerance} AS tolerance,
                         {src_val_alias} AS source_value,
                         {tgt_val_alias} AS target_value,
                         ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0) as relative_diff
+                        {tolerance} AS tolerance,
+                        CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status,
                     ) AS agg_validation_{col}_{agg}
                     """))
                     overall_validation_passed_clauses.append(check)
@@ -239,12 +239,9 @@ class DataPactClient:
         view_creation_sql: str = "CREATE OR REPLACE TEMP VIEW final_metrics_view AS\n"
         if ctes:
             view_creation_sql += "WITH\n" + ", \n".join(ctes) + "\n"
-        
         from_clause: str = " CROSS JOIN ".join([cte.split(" AS ")[0].strip() for cte in ctes]) if ctes else "(SELECT 1 AS placeholder)"
-        
         view_creation_sql += textwrap.dedent(f"""
         SELECT
-            -- *** THIS IS THE CRITICAL FIX: Explicitly convert the struct to VARIANT ***
             parse_json(to_json(struct({', '.join(payload_structs)}))) as result_payload,
             {' AND '.join(overall_validation_passed_clauses) if overall_validation_passed_clauses else 'true'} AS overall_validation_passed
         FROM {from_clause}
@@ -267,7 +264,7 @@ class DataPactClient:
 
     def _upload_sql_scripts(self, config: dict[str, any], results_table: str) -> dict[str, str]:
         """
-        Generates and uploads SQL scripts for all validation tasks to the workspace.
+        Generates and uploads SQL scripts, including an informative aggregation script.
         """
         logger.info("Generating and uploading SQL validation scripts...")
         task_paths: dict[str, str] = {}
@@ -285,14 +282,18 @@ class DataPactClient:
             task_paths[task_key] = script_path
             logger.info(f"  - Uploaded SQL FILE for task '{task_key}' to {script_path}")
         
-        agg_script_path: str = f"{sql_tasks_path}/aggregate_results.sql"
+        agg_script_path: str = f"{self.root_path}/sql_tasks/aggregate_results.sql"
         agg_sql_script: str = textwrap.dedent(f"""
+            CREATE OR REPLACE TEMP VIEW failures AS
+            SELECT COLLECT_LIST(task_key) as failed_tasks
+            FROM {results_table}
+            WHERE run_id = :run_id AND status = 'FAILURE';
+
             SELECT CASE 
-                WHEN (
-                    (SELECT COUNT(1) FROM {results_table} WHERE run_id = :run_id AND status = 'FAILURE') > 0 OR
-                    (SELECT COUNT(1) FROM {results_table} WHERE run_id = :run_id AND status = 'SUCCESS') < CAST(:expected_successes AS INT)
-                )
-                THEN RAISE_ERROR('One or more DataPact validations failed or did not complete.')
+                WHEN (SELECT COUNT(1) FROM failures) > 0 
+                THEN RAISE_ERROR(CONCAT('The following tasks failed: ', (SELECT to_json(failed_tasks) FROM failures)))
+                WHEN (SELECT COUNT(1) FROM {results_table} WHERE run_id = :run_id AND status = 'SUCCESS') < CAST(:expected_successes AS INT)
+                THEN RAISE_ERROR('One or more validation tasks did not complete successfully.')
                 ELSE 'All DataPact validations passed successfully!' 
             END;
         """)
@@ -301,14 +302,27 @@ class DataPactClient:
             overwrite=True, format=workspace.ImportFormat.RAW
         )
         task_paths['aggregate_results'] = agg_script_path
-        logger.info(f"  - Uploaded aggregation SQL FILE to {agg_script_path}")
+        logger.info(f"  - Uploaded informative aggregation SQL FILE to {agg_script_path}")
         return task_paths
 
-    def run_validation(self, config: dict[str, any], job_name: str, warehouse_name: str, results_table: str | None = None) -> None:
+    def run_validation(self, config: dict[str, any], job_name: str, warehouse_name: str | None = None, results_table: str | None = None) -> None:
         """
-        The main orchestrator for the entire validation process.
+        The main orchestrator, now with an improved warehouse configuration hierarchy.
         """
-        warehouse: sql_service.EndpointInfo = self._ensure_sql_warehouse(warehouse_name)
+        final_warehouse_name: str
+        if warehouse_name:
+            final_warehouse_name = warehouse_name
+            logger.info(f"Using warehouse provided via --warehouse flag: '{final_warehouse_name}'")
+        elif self.w.config.get('datapact_warehouse'):
+            final_warehouse_name = self.w.config.get('datapact_warehouse')
+            logger.info(f"Using warehouse from .databrickscfg [datapact_warehouse]: '{final_warehouse_name}'")
+        elif os.getenv("DATAPACT_WAREHOUSE"):
+            final_warehouse_name = os.getenv("DATAPACT_WAREHOUSE")
+            logger.info(f"Using warehouse from DATAPACT_WAREHOUSE env var: '{final_warehouse_name}'")
+        else:
+            raise ValueError("No warehouse specified. Provide one via --warehouse flag, a 'datapact_warehouse' entry in .databrickscfg, or the DATAPACT_WAREHOUSE env var.")
+
+        warehouse: sql_service.EndpointInfo = self._ensure_sql_warehouse(final_warehouse_name)
         
         final_results_table: str
         if not results_table:
