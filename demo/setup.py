@@ -16,7 +16,7 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import sql as sql_service
 from loguru import logger
 
-def get_warehouse_by_name(w: WorkspaceClient, name: str) -> Optional[sql_service.EndpointInfo]:
+def get_warehouse_by_name(w: WorkspaceClient, name: str) -> sql_service.EndpointInfo | None:
     """
     Finds a SQL warehouse by its display name.
 
@@ -27,29 +27,28 @@ def get_warehouse_by_name(w: WorkspaceClient, name: str) -> Optional[sql_service
     Returns:
         An EndpointInfo object if the warehouse is found, otherwise None.
     """
-    try:
-        for wh in w.warehouses.list():
-            if wh.name == name:
-                return wh
-    except Exception as e:
-        logger.error(f"An error occurred while trying to list warehouses: {e}")
+    for wh in w.warehouses.list():
+        if wh.name == name:
+            return wh
     return None
 
 def run_demo_setup() -> None:
-    """
-    The main function to orchestrate the comprehensive demo environment setup.
-    """
-    parser: argparse.ArgumentParser = argparse.ArgumentParser(description="Set up the DataPact demo environment.")
-    parser.add_argument("--warehouse", required=True, help="Name of the Serverless SQL Warehouse to use.")
+    """The main function to orchestrate the demo environment setup."""
+    parser = argparse.ArgumentParser(description="Set up the DataPact demo environment.")
+    parser.add_argument("--warehouse", help="Name of the Serverless SQL Warehouse. Overrides DATAPACT_WAREHOUSE env var.")
     parser.add_argument("--profile", default="DEFAULT", help="Databricks CLI profile to use.")
-    args: argparse.Namespace = parser.parse_args()
+    args = parser.parse_args()
+
+    warehouse_name: str | None = args.warehouse or os.getenv("DATAPACT_WAREHOUSE")
+    if not warehouse_name:
+        raise ValueError("A warehouse must be provided via the --warehouse flag or DATAPACT_WAREHOUSE environment variable.")
 
     logger.info(f"Connecting to Databricks with profile '{args.profile}'...")
-    w: WorkspaceClient = WorkspaceClient(profile=args.profile)
+    w = WorkspaceClient(profile=args.profile)
 
-    warehouse: Optional[sql_service.EndpointInfo] = get_warehouse_by_name(w, args.warehouse)
+    warehouse = get_warehouse_by_name(w, warehouse_name)
     if not warehouse:
-        logger.critical(f"Failed to find warehouse '{args.warehouse}'. Please ensure it exists and you have permissions to view it.")
+        logger.critical(f"Failed to find warehouse '{warehouse_name}'. Please ensure it exists.")
         return
 
     logger.info(f"Found warehouse '{args.warehouse}' (ID: {warehouse.id}).")
