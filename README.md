@@ -45,9 +45,22 @@ pip install -e .
 
 #### Step 2: Set Up the Demo Environment
 
+Set the environment variable (recommended):
+
 ```bash
-# The script uses the warehouse from your --profile argument
+export DATAPACT_WAREHOUSE="Your Serverless Warehouse Name"
+```
+
+Run the included setup script from your terminal. This will connect to your Databricks workspace and create the demo data. **The script will use the warehouse defined in your `DATAPACT_WAREHOUSE` environment variable if the `--warehouse` parameter is not provided
+
+```bash
 python demo/setup.py --profile my-profile
+```
+
+Alternatively, you can provide the warehouse directly:
+
+```bash
+python demo/setup.py --warehouse "Your Serverless Warehouse Name" --profile your-profile
 ```
 
 #### Step 3: Run the Validation
