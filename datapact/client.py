@@ -121,12 +121,9 @@ class DataPactClient:
         self._execute_sql(create_table_ddl, warehouse_id)
         logger.success(f"Results table '{results_table_fqn}' is ready.")
 
-    def _generate_validation_sql(self, config: dict[str, any], results_table: str) -> str:
+def _generate_validation_sql(self, config: dict[str, any], results_table: str) -> str:
         """
         Generates a complete, multi-statement SQL script for the validation task.
-
-        This definitive version resolves the FORMAT_STRING data type mismatch by
-        explicitly casting all values to DOUBLE before formatting them as percentages.
 
         Args:
             config: The configuration dictionary for a single validation task.
@@ -150,7 +147,7 @@ class DataPactClient:
             struct(
                 source_count,
                 target_count,
-                FORMAT_STRING('%.2f%%', CAST((ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0)) * 100 AS DOUBLE)) as relative_diff_percent,
+                FORMAT_STRING('%.2f%%', CAST(COALESCE((ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0)), 0) * 100 AS DOUBLE)) as relative_diff_percent,
                 FORMAT_STRING('%.2f%%', CAST({tolerance} * 100 AS DOUBLE)) AS tolerance_percent,
                 CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
             ) AS count_validation
@@ -170,7 +167,7 @@ class DataPactClient:
             struct(
                 total_compared_rows AS compared_rows,
                 mismatch_count,
-                FORMAT_STRING('%.2f%%', CAST((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)) * 100 AS DOUBLE)) as mismatch_percent,
+                FORMAT_STRING('%.2f%%', CAST(COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) * 100 AS DOUBLE)) as mismatch_percent,
                 FORMAT_STRING('%.2f%%', CAST({pk_hash_threshold} * 100 AS DOUBLE)) AS threshold_percent,
                 CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
             ) AS row_hash_validation
@@ -187,7 +184,7 @@ class DataPactClient:
                 struct(
                     {src_val_alias} AS source_value,
                     {tgt_val_alias} AS target_value,
-                    FORMAT_STRING('%.2f%%', CAST((ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0)) * 100 AS DOUBLE)) as relative_diff_percent,
+                    FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
                     FORMAT_STRING('%.2f%%', CAST({tolerance} * 100 AS DOUBLE)) AS tolerance_percent,
                     CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
                 ) AS agg_validation_{col}_{agg}
@@ -202,11 +199,10 @@ class DataPactClient:
         sql_statements.append(view_creation_sql)
 
         sql_statements.append(f"INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload) SELECT '{task_key}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END, :run_id, current_timestamp(), result_payload FROM final_metrics_view")
-        sql_statements.append("SELECT result_payload FROM final_metrics_view")
-        sql_statements.append(f"SELECT IF((SELECT overall_validation_passed FROM final_metrics_view), 'Validation PASSED', RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. See payload in the output above.')))")
+        sql_statements.append(f"SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Payload: \\n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false")
+        sql_statements.append(f"SELECT to_json(result_payload, map('pretty', 'true')) AS result FROM final_metrics_view WHERE overall_validation_passed = true")
         
         return ";\n\n".join(sql_statements)
-
     def _upload_sql_scripts(self, config: dict[str, any], results_table: str) -> dict[str, str]:
         """
         Generates and uploads SQL scripts, including a more robust and informative aggregation script.
