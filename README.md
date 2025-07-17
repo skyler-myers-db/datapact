@@ -126,6 +126,27 @@ Below are all available parameters for each task in your `validation_config.yml`
 
 ---
 
+#### Warehouse Configuration (Required)
+
+DataPact needs to know which Serverless SQL Warehouse to run on. It looks for the warehouse name in the following order:
+
+1. --warehouse flag (Highest Priority):
+
+`datapact run --config ... --warehouse "my_cli_warehouse"`
+
+2. `.databrickscfg` File: Add a `datapact_warehouse` key to your profile in `~/.databrickscfg`. This is the recommended way to set a project-wide default.
+
+```bash
+[my-profile]
+host = ...
+token = ...
+datapact_warehouse = "my_default_warehouse"
+```
+
+3. Environment Variable (Lowest Priority):
+
+`export DATAPACT_WAREHOUSE="my_env_var_warehouse"`
+
 ### Results & Reporting
 
 If you provide the `--results-table` argument, DataPact will write a detailed summary of every validation task to the specified Delta table. This allows you to build dashboards in Databricks SQL to monitor data quality trends over time.
