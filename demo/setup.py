@@ -1,25 +1,22 @@
 """
 A local utility script to set up the DataPact demo environment.
 
-This script acts as a local client to prepare the necessary resources for
-running the DataPact demo. It reads a pure SQL file (`setup.sql`), parses it
-into individual statements, and executes them sequentially against a specified
-Serverless SQL Warehouse.
-
-This one-statement-at-a-time, synchronous-wait approach is the most robust
-method for executing a series of DDL commands, ensuring that each step
-completes before the next one begins.
+This script acts as a local client to prepare a comprehensive and realistic
+demo environment. It executes a pure SQL file (`setup.sql`) to create millions
+of rows across several tables, each designed to showcase a specific feature or
+edge case that DataPact handles.
 """
 import argparse
 import time
 import re
 from pathlib import Path
 from typing import Optional
+
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import sql as sql_service
 from loguru import logger
 
-def get_warehouse_by_name(w: WorkspaceClient, name: str) -> sql_service.EndpointInfo | None:
+def get_warehouse_by_name(w: WorkspaceClient, name: str) -> Optional[sql_service.EndpointInfo]:
     """
     Finds a SQL warehouse by its display name.
 
@@ -40,94 +37,82 @@ def get_warehouse_by_name(w: WorkspaceClient, name: str) -> sql_service.Endpoint
 
 def run_demo_setup() -> None:
     """
-    The main function to orchestrate the demo environment setup.
-
-    It performs the following steps:
-    1. Parses command-line arguments for warehouse name and profile.
-    2. Connects to the Databricks workspace.
-    3. Finds the specified SQL warehouse.
-    4. Reads and parses the `setup.sql` script into individual commands.
-    5. Executes each SQL command sequentially, waiting for each to complete.
-    6. Reports success and prints the command to run the main validation.
+    The main function to orchestrate the comprehensive demo environment setup.
     """
-    parser = argparse.ArgumentParser(description="Set up the DataPact demo environment.")
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(description="Set up the DataPact demo environment.")
     parser.add_argument("--warehouse", required=True, help="Name of the Serverless SQL Warehouse to use.")
     parser.add_argument("--profile", default="DEFAULT", help="Databricks CLI profile to use.")
-    args = parser.parse_args()
+    args: argparse.Namespace = parser.parse_args()
 
     logger.info(f"Connecting to Databricks with profile '{args.profile}'...")
-    w = WorkspaceClient(profile=args.profile)
+    w: WorkspaceClient = WorkspaceClient(profile=args.profile)
 
-    warehouse: sql_service.EndpointInfo = get_warehouse_by_name(w, args.warehouse)
+    warehouse: Optional[sql_service.EndpointInfo] = get_warehouse_by_name(w, args.warehouse)
     if not warehouse:
         logger.critical(f"Failed to find warehouse '{args.warehouse}'. Please ensure it exists and you have permissions to view it.")
         return
 
     logger.info(f"Found warehouse '{args.warehouse}' (ID: {warehouse.id}).")
 
-    sql_file_path = Path(__file__).parent / "setup.sql"
+    sql_file_path: Path = Path(__file__).parent / "setup.sql"
     logger.info(f"Reading and parsing setup script from: {sql_file_path}")
     with open(sql_file_path, 'r') as f:
-        sql_script = f.read()
+        sql_script: str = f.read()
 
-    # Robustly parse the SQL script into individual statements.
     sql_script = re.sub(r'/\*.*?\*/', '', sql_script, flags=re.DOTALL)
     sql_script = re.sub(r'--.*', '', sql_script)
     sql_commands: list[str] = [cmd.strip() for cmd in sql_script.split(';') if cmd.strip()]
 
     logger.info(f"Found {len(sql_commands)} individual SQL statements to execute sequentially.")
 
-    # Execute each statement one-by-one and wait for completion.
     for i, command in enumerate(sql_commands):
         logger.info(f"Executing statement {i+1}/{len(sql_commands)}...")
         logger.debug(f"SQL: {command}")
         try:
-            resp = w.statement_execution.execute_statement(
+            resp: sql_service.ExecuteStatementResponse = w.statement_execution.execute_statement(
                 statement=command,
                 warehouse_id=warehouse.id,
-                wait_timeout='0s'  # Submit and poll.
+                wait_timeout='0s'
             )
-            statement_id = resp.statement_id
-
-            timeout_seconds = 300  # 5-minute timeout per statement.
-            start_time = time.time()
+            statement_id: str = resp.statement_id
+            timeout_seconds: int = 600
+            start_time: float = time.time()
             while time.time() - start_time < timeout_seconds:
-                status = w.statement_execution.get_statement(statement_id=statement_id)
-                current_state = status.status.state
-
+                status: sql_service.StatementStatus = w.statement_execution.get_statement(statement_id=statement_id)
+                current_state: sql_service.StatementState = status.status.state
                 if current_state == sql_service.StatementState.SUCCEEDED:
                     logger.success(f"Statement {i+1} succeeded.")
                     break
-
                 if current_state in [sql_service.StatementState.FAILED, sql_service.StatementState.CANCELED, sql_service.StatementState.CLOSED]:
-                    error = status.status.error
+                    error: Optional[sql_service.Error] = status.status.error
                     logger.critical(f"Statement {i+1} failed with state: {current_state}")
                     if error:
                         logger.critical(f"Error: {error.message}")
                     raise Exception(f"Setup script failed at statement {i+1}.")
-
                 time.sleep(5)
             else:
                 raise TimeoutError(f"Statement {i+1} timed out after {timeout_seconds} seconds.")
-
         except Exception as e:
             logger.critical(f"An error occurred during execution. Halting setup.")
             raise e
 
-    # If the script reaches this point, all statements have succeeded.
-    logger.success("✅ SQL script executed successfully!")
-    logger.success("✅ Demo environment setup complete!")
-    logger.info("You can now run the demo validation with the following command:")
+    logger.success("✅ Comprehensive demo environment setup complete!")
+    logger.info("\nYou have just set up a realistic, multi-faceted data environment. The upcoming validation run will showcase:")
+    logger.info("  - Handling of large tables (millions of rows).")
+    logger.info("  - A mix of PASSING and FAILING tasks.")
+    logger.info("  - Advanced features like accepted thresholds and selective column hashing.")
+    logger.info("  - Graceful handling of edge cases like empty tables and tables without primary keys.")
+    logger.info("\nRun the demo validation with the following command (ensure your .databrickscfg has 'datapact_warehouse' set):")
 
-    run_command = (
+    # Corrected CLI guidance
+    run_command: str = (
         "datapact run \\\n"
         "  --config demo/demo_config.yml \\\n"
-        f"  --warehouse \"{args.warehouse}\" \\\n"
-        "  --job-name \"DataPact Demo Run\" \\\n"
+        "  --job-name \"DataPact Comprehensive Demo\" \\\n"
         "  --results-table \"datapact_demo_catalog.source_data.datapact_run_history\" \\\n"
         f"  --profile {args.profile}"
     )
-    logger.info("\n\n" + "="*50 + f"\n{run_command}\n" + "="*50 + "\n")
+    logger.info("\n\n" + "="*60 + f"\n{run_command}\n" + "="*60 + "\n")
 
 if __name__ == "__main__":
     run_demo_setup()
