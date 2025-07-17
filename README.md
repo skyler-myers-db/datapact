@@ -8,43 +8,35 @@ DataPact ensures the integrity of your data by creating a "pact" between your so
 
 ### Why DataPact?
 
-*   **Zero-Config Start:** Run validations without any setup. DataPact automatically creates a default catalog and table to store your results history.
+*   **Zero-Config Start:** Run validations without any setup. DataPact automatically creates a default catalog and table (`datapact_main.results.run_history`) to store your results history.
 *   **100% Programmatic:** Define your entire validation suite in a simple YAML file. Create, run, and manage tests from your local CLI or a CI/CD pipeline. No UI clicking required.
-*   **Fully Serverless:** Built for efficiency. DataPact uses lightweight Serverless Notebooks for orchestration and powerful Serverless SQL Warehouses for query execution, minimizing cost and operational overhead.
-*   **Source Agnostic:** Validate data from any source system that can be connected to Unity Catalog through federation (e.g., PostgreSQL, MySQL, Snowflake) against a Databricks target. Also perfect for Databricks-to-Databricks validation (e.g., Bronze vs. Silver).
+*   **Fully Serverless:** Built for efficiency. DataPact uses a local client for orchestration and powerful Serverless SQL Warehouses for all query execution, minimizing cost and operational overhead.
+*   **Source Agnostic:** Validate data from any source system connected to Unity Catalog through federation (e.g., PostgreSQL, MySQL, Snowflake) against a Databricks target. Perfect for Databricks-to-Databricks validation (e.g., Bronze vs. Silver).
 *   **Scalable & Parallel:** Each table validation runs as a separate, parallel task in a Databricks Job, allowing you to test dozens or hundreds of tables concurrently.
-*   **Rich Validations:** Go beyond simple row counts. DataPact supports aggregate comparisons (SUM, AVG), per-row hash validation, null count analysis, and more.
-*   **Persistent, Queryable Reporting:** Automatically log detailed validation results to a Delta table. The results are stored in a `VARIANT` column, allowing for easy, powerful, and native querying of your data quality history in Databricks SQL.
-
-### Architecture Overview
-
-DataPact operates on a simple but powerful three-layer model:
-
-1.  **Remote Control (CLI):** The `datapact` command-line tool, running on your local machine or in a CI/CD pipeline. It reads your configuration and instructs the Databricks workspace.
-2.  **Control Plane (Serverless Notebooks):** The CLI dynamically generates a multi-task Databricks Job. Each task is a Python script that runs on ephemeral, serverless compute. This layer orchestrates the tests and builds the necessary SQL queries.
-3.  **Execution Engine (Serverless SQL Warehouse):** The Python control plane sends all data-intensive SQL queries to a specified Serverless SQL Warehouse. This is where the high-performance comparison of your source and target data occurs.
+*   **Rich Validations & Reporting:** Go beyond simple row counts. DataPact supports aggregate comparisons, per-row hash validation, and null count analysis. It logs detailed, structured `VARIANT` results to a Delta table for historical analysis, auditing, and building data quality dashboards.
 
 ---
 
-### Live Demo in 5 Minutes
+### See DataPact in Action: The Comprehensive Demo
 
-See DataPact in action with a realistic, high volume dataset without using your own data.
+See DataPact's full potential with a realistic, large scale demo that showcases all advanced features and edge cases without using your own data.
 
 #### Prerequisites
 
 1.  **Databricks Workspace:** A Databricks workspace with Unity Catalog enabled.
 2.  **Permissions:** Permissions to create catalogs, schemas, tables, and run jobs.
 3.  **Python >= 3.10:** A local Python environment.
-4.  **Databricks CLI:** [Download the Databricks CLI](https://docs.databricks.com/aws/en/dev-tools/cli/install) and authenticate your local machine with your workspace using token authentication:
-
-    ```bash
-    databricks configure --profile my-profile
+4.  **Databricks CLI:** [Install the Databricks CLI](https://docs.databricks.com/en/dev-tools/cli/install.html) and configure it. For a seamless experience, we recommend adding a `datapact_warehouse` key to your profile in `~/.databrickscfg`:
+    ```ini
+    [my-profile]
+    host = ...
+    token = ...
+    datapact_warehouse = "Your Serverless Warehouse Name"
     ```
 
 #### Step 1: Install DataPact
 
 Clone this repository and install the package in editable mode.
-
 ```bash
 git clone git@github.com:skyler-myers-db/datapact.git
 cd datapact
@@ -53,25 +45,29 @@ pip install -e .
 
 #### Step 2: Set Up the Demo Environment
 
-Run the included setup script from your terminal. This will connect to your Databricks workspace and run a pure SQL script to create a new catalog (`datapact_demo_catalog`) with 10,000 users and 50,000 transactions, including several intentional discrepancies for DataPact to find.
-
 ```bash
-python demo/setup.py --warehouse "Your Serverless Warehouse Name" --profile my-profile
+# The script uses the warehouse from your --profile argument
+python demo/setup.py --profile my-profile
 ```
 
-#### Step 3: Run the Demo Validation
+#### Step 3: Run the Validation
 
-Execute DataPact using the pre-made demo configuration file. This run will intentionally show both passing (`transactions`) and failing (`users`) tests, giving you a real sense of the tool's output.
+Execute DataPact using the pre-made comprehensive demo configuration. This run will showcase:
+
+✅ Performance on millions of rows.
+✅ A mix of PASSING and FAILING tasks.
+✅ Advanced features like accepted thresholds (pk_hash_threshold) and performance tuning (hash_columns).
+✅ Graceful handling of edge cases like empty tables and tables without primary keys.
 
 ```bash
+# Assumes 'datapact_warehouse' is set in your profile
 datapact run \
   --config demo/demo_config.yml \
-  --warehouse "Your Serverless Warehouse Name" \
-  --job-name "DataPact Demo Run" \
+  --job-name "DataPact Comprehensive Demo" \
   --profile my-profile
 ```
 
- That's it! You will see the validation results streamed to your terminal.
+That's it! You will see the validation results streamed to your terminal, including beautifully formatted payloads for every task, and the final aggregation task will report exactly which validations failed.
 
  ---
 
