@@ -18,17 +18,13 @@ def main() -> None:
     parser.add_argument("command", choices=["run"], help="The command to execute.")
     parser.add_argument("--config", required=True, help="Path to the validation_config.yml file.")
     parser.add_argument("--job-name", default="datapact-validation-run", help="Name for the created Databricks job.")
-    parser.add_argument("--warehouse", help="Name of the Serverless SQL Warehouse. Overrides DATAPACT_WAREHOUSE.")
+    parser.add_argument("--warehouse", help="Name of the Serverless SQL Warehouse. Overrides all other settings.")
     parser.add_argument("--profile", help="Databricks CLI profile. Overrides DATABRICKS_PROFILE.")
     parser.add_argument("--results-table", help="Optional: A 3-level (catalog.schema.table) Delta table name to store results. If not provided, a default is created.")
     
     args: argparse.Namespace = parser.parse_args()
 
-    warehouse_name: str | None = args.warehouse or os.getenv("DATAPACT_WAREHOUSE")
     profile_name: str = args.profile or os.getenv("DATABRICKS_PROFILE", "DEFAULT")
-
-    if not warehouse_name:
-        raise ValueError("A warehouse must be provided via the --warehouse flag or DATAPACT_WAREHOUSE environment variable.")
 
     if args.command == "run":
         logger.info(f"Loading configuration from {args.config}...")
@@ -37,10 +33,11 @@ def main() -> None:
         
         try:
             client: DataPactClient = DataPactClient(profile=profile_name)
+
             client.run_validation(
                 config=config,
                 job_name=args.job_name,
-                warehouse_name=warehouse_name,
+                warehouse_name=args.warehouse,
                 results_table=args.results_table,
             )
         except Exception as e:
