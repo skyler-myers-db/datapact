@@ -121,7 +121,7 @@ class DataPactClient:
         self._execute_sql(create_table_ddl, warehouse_id)
         logger.success(f"Results table '{results_table_fqn}' is ready.")
 
-def _generate_validation_sql(self, config: dict[str, any], results_table: str) -> str:
+    def _generate_validation_sql(self, config: dict[str, any], results_table: str) -> str:
         """
         Generates a complete, multi-statement SQL script for the validation task.
 
@@ -173,6 +173,37 @@ def _generate_validation_sql(self, config: dict[str, any], results_table: str) -
             ) AS row_hash_validation
             """))
             overall_validation_passed_clauses.append(check)
+
+        null_check_cols: list[str] | None = config.get('null_validation_columns')
+        if 'null_validation_threshold' in config:
+            if not null_check_cols:
+                logger.info(f"No null_validation_columns specified for task '{task_key}'. Defaulting to all columns.")
+                try:
+                    all_source_columns: list[sql_service.ColumnInfo] = self.w.columns.list(table_name=source_fqn)
+                    null_check_cols = [c.name for c in all_source_columns]
+                    logger.info(f"Found {len(null_check_cols)} columns to validate for nulls.")
+                except Exception as e:
+                    logger.warning(f"Could not fetch all columns for null validation on task '{task_key}': {e}. Skipping all-column null check.")
+                    null_check_cols = []
+
+            for col in null_check_cols:
+                threshold: float = config.get('null_validation_threshold', 0.0)
+                cte_key: str = f"null_metrics_{col}"
+                ctes.append(textwrap.dedent(f"""
+                {cte_key} AS (SELECT
+                    (SELECT COUNT(1) FROM {source_fqn} WHERE `{col}` IS NULL) AS source_nulls,
+                    (SELECT COUNT(1) FROM {target_fqn} WHERE `{col}` IS NULL) AS target_nulls)
+                """))
+                check: str = f"CASE WHEN source_nulls = 0 THEN target_nulls = 0 ELSE COALESCE(ABS(target_nulls - source_nulls) / NULLIF(CAST(source_nulls AS DOUBLE), 0), 0) <= {threshold} END"
+                payload_structs.append(textwrap.dedent(f"""
+                struct(
+                    FORMAT_NUMBER(source_nulls, 0) AS source_nulls,
+                    FORMAT_NUMBER(target_nulls, 0) AS target_nulls,
+                    FORMAT_STRING('%.2f%%', CAST({threshold} * 100 AS DOUBLE)) AS threshold_percent,
+                    CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
+                ) AS null_validation_{col}
+                """))
+                overall_validation_passed_clauses.append(check)
 
         if config.get('agg_validations'):
             for agg_config in config.get('agg_validations', []):
