@@ -132,7 +132,7 @@ class DataPactClient:
         Returns:
             A string containing the complete, executable SQL for one validation task.
         """
-         task_key: str = config['task_key']
+        task_key: str = config['task_key']
         
         # --- Pre-computation and validation checks ---
         if config.get('pk_row_hash_check') and not config.get('primary_keys'):
