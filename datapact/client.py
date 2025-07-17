@@ -281,29 +281,25 @@ class DataPactClient:
         logger.info(f"  - Uploaded informative aggregation SQL FILE to {agg_script_path}")
         return task_paths
 
-    def run_validation(self, config: dict[str, any], job_name: str, warehouse_name: str | None = None, results_table: str | None = None) -> None:
+    def run_validation(self, config: dict[str, any], job_name: str, warehouse_name: str, results_table: str | None = None) -> None:
         """
-        The main orchestrator, now with an improved warehouse configuration hierarchy.
-        """
-        final_warehouse_name: str
-        if warehouse_name:
-            final_warehouse_name = warehouse_name
-            logger.info(f"Using warehouse provided via --warehouse flag: '{final_warehouse_name}'")
-        elif self.w.config.get('datapact_warehouse'):
-            final_warehouse_name = self.w.config.get('datapact_warehouse')
-            logger.info(f"Using warehouse from .databrickscfg [datapact_warehouse]: '{final_warehouse_name}'")
-        elif os.getenv("DATAPACT_WAREHOUSE"):
-            final_warehouse_name = os.getenv("DATAPACT_WAREHOUSE")
-            logger.info(f"Using warehouse from DATAPACT_WAREHOUSE env var: '{final_warehouse_name}'")
-        else:
-            raise ValueError("No warehouse specified. Provide one via --warehouse flag, a 'datapact_warehouse' entry in .databrickscfg, or the DATAPACT_WAREHOUSE env var.")
-
-        warehouse: sql_service.EndpointInfo = self._ensure_sql_warehouse(final_warehouse_name)
+        The main orchestrator for the entire validation process.
         
-        final_results_table: str = results_table if results_table else f"`{DEFAULT_CATALOG}`.`{DEFAULT_SCHEMA}`.`{DEFAULT_TABLE}`"
+        Args:
+            config: The loaded validation YAML file as a dictionary.
+            job_name: The name to assign to the Databricks Job.
+            warehouse_name: The name of the Serverless SQL Warehouse to use.
+            results_table: Optional FQN of the table to store results.
+        """
+        warehouse: sql_service.EndpointInfo = self._ensure_sql_warehouse(warehouse_name)
+        
+        final_results_table: str
         if not results_table:
             self._setup_default_infrastructure(warehouse.id)
+            final_results_table = f"`{DEFAULT_CATALOG}`.`{DEFAULT_SCHEMA}`.`{DEFAULT_TABLE}`"
             logger.info(f"No results table provided. Using default: {final_results_table}")
+        else:
+            final_results_table = results_table
 
         self._ensure_results_table_exists(final_results_table, warehouse.id)
         
