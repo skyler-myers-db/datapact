@@ -132,9 +132,15 @@ class DataPactClient:
         Returns:
             A string containing the complete, executable SQL for one validation task.
         """
+         task_key: str = config['task_key']
+        
+        # --- Pre-computation and validation checks ---
+        if config.get('pk_row_hash_check') and not config.get('primary_keys'):
+            raise ValueError(f"Task '{task_key}' requested a row hash check ('pk_row_hash_check: true') but did not provide a `primary_keys` list. Row level hashing requires primary keys to join the tables.")
+
         source_fqn: str = f"`{config['source_catalog']}`.`{config['source_schema']}`.`{config['source_table']}`"
         target_fqn: str = f"`{config['target_catalog']}`.`{config['target_schema']}`.`{config['target_table']}`"
-        task_key: str = config['task_key']
+        
         ctes: list[str] = []
         payload_structs: list[str] = []
         overall_validation_passed_clauses: list[str] = []
