@@ -125,8 +125,9 @@ class DataPactClient:
         """
         Generates a complete, multi-statement SQL script for the validation task.
 
-        This version produces a well-structured, nested VARIANT payload with
-        logically named fields (including percentages) for maximum readability.
+        This definitive version produces a highly readable, nested VARIANT payload
+        with all ratios formatted as percentage strings for immediate clarity. It also
+        ensures the payload is always printed to the task output, regardless of status.
 
         Args:
             config: The configuration dictionary for a single validation task.
@@ -148,9 +149,11 @@ class DataPactClient:
             check: str = f"COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= {tolerance}"
             payload_structs.append(textwrap.dedent(f"""
             struct(
-                source_count, target_count,
-                (ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0)) * 100 as relative_diff_percent,
-                {tolerance} AS tolerance, CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
+                source_count,
+                target_count,
+                FORMAT_STRING('%.2f%%', (ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0)) * 100) as relative_diff_percent,
+                FORMAT_STRING('%.2f%%', {tolerance} * 100) AS tolerance_percent,
+                CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
             ) AS count_validation
             """))
             overall_validation_passed_clauses.append(check)
@@ -162,13 +165,15 @@ class DataPactClient:
             hash_expr: str = f"md5(to_json(struct({', '.join([f'`{c}`' for c in hash_columns]) if hash_columns else '*'})))"
             pk_cols_str: str = ", ".join([f"`{pk}`" for pk in primary_keys])
             join_expr: str = " AND ".join([f"s.`{pk}` = t.`{pk}`" for pk in primary_keys])
-            ctes.append(f"""row_hash_metrics AS (SELECT COUNT(1) AS total_compared_rows, COALESCE(SUM(CASE WHEN s.row_hash <> t.row_hash THEN 1 ELSE 0 END), 0) AS mismatch_count FROM (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {source_fqn}) s INNER JOIN (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {target_fqn}) t ON {join_expr})""")
+            ctes.append(f"row_hash_metrics AS (SELECT COUNT(1) AS total_compared_rows, COALESCE(SUM(CASE WHEN s.row_hash <> t.row_hash THEN 1 ELSE 0 END), 0) AS mismatch_count FROM (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {source_fqn}) s INNER JOIN (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {target_fqn}) t ON {join_expr})")
             check: str = f"COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= {pk_hash_threshold}"
             payload_structs.append(textwrap.dedent(f"""
             struct(
-                total_compared_rows AS compared_rows, mismatch_count,
-                (mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)) * 100 as mismatch_percent,
-                {pk_hash_threshold} AS threshold, CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
+                total_compared_rows AS compared_rows,
+                mismatch_count,
+                FORMAT_STRING('%.2f%%', (mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)) * 100) as mismatch_percent,
+                FORMAT_STRING('%.2f%%', {pk_hash_threshold} * 100) AS threshold_percent,
+                CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
             ) AS row_hash_validation
             """))
             overall_validation_passed_clauses.append(check)
@@ -181,9 +186,11 @@ class DataPactClient:
                 check = f"COALESCE(ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0), 0) <= {tolerance}"
                 payload_structs.append(textwrap.dedent(f"""
                 struct(
-                    {src_val_alias} AS source_value, {tgt_val_alias} AS target_value,
-                    (ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0)) * 100 as relative_diff_percent,
-                    {tolerance} AS tolerance, CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
+                    {src_val_alias} AS source_value,
+                    {tgt_val_alias} AS target_value,
+                    FORMAT_STRING('%.2f%%', (ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0)) * 100) as relative_diff_percent,
+                    FORMAT_STRING('%.2f%%', {tolerance} * 100) AS tolerance_percent,
+                    CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
                 ) AS agg_validation_{col}_{agg}
                 """))
                 overall_validation_passed_clauses.append(check)
@@ -196,13 +203,15 @@ class DataPactClient:
         sql_statements.append(view_creation_sql)
 
         sql_statements.append(f"INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload) SELECT '{task_key}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END, :run_id, current_timestamp(), result_payload FROM final_metrics_view")
-        sql_statements.append(f"SELECT CASE WHEN (SELECT overall_validation_passed FROM final_metrics_view) THEN 'Validation PASSED' ELSE RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Payload: \\n', to_json((SELECT result_payload FROM final_metrics_view), map('pretty', 'true')))) END")
+        
+        sql_statements.append("SELECT result_payload FROM final_metrics_view")
+        sql_statements.append(f"SELECT IF((SELECT overall_validation_passed FROM final_metrics_view), 'Validation PASSED', RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. See payload in the output above.')))")
         
         return ";\n\n".join(sql_statements)
 
     def _upload_sql_scripts(self, config: dict[str, any], results_table: str) -> dict[str, str]:
         """
-        Generates and uploads SQL scripts, including a more informative aggregation script.
+        Generates and uploads SQL scripts, including a more robust and informative aggregation script.
         """
         logger.info("Generating and uploading SQL validation scripts...")
         task_paths: dict[str, str] = {}
@@ -219,15 +228,18 @@ class DataPactClient:
         
         agg_script_path: str = f"{sql_tasks_path}/aggregate_results.sql"
         agg_sql_script: str = textwrap.dedent(f"""
+            CREATE OR REPLACE TEMP VIEW latest_run_id AS 
+            SELECT run_id FROM {results_table} ORDER BY timestamp DESC LIMIT 1;
+
             CREATE OR REPLACE TEMP VIEW agg_metrics AS
             SELECT
-              (SELECT COUNT(1) FROM {results_table} WHERE run_id = :run_id AND status = 'FAILURE') AS failure_count,
-              (SELECT COUNT(1) FROM {results_table} WHERE run_id = :run_id AND status = 'SUCCESS') AS success_count,
-              (SELECT COLLECT_LIST(task_key) FROM {results_table} WHERE run_id = :run_id AND status = 'FAILURE') as failed_tasks;
+              (SELECT COUNT(1) FROM {results_table} WHERE run_id = (SELECT run_id FROM latest_run_id) AND status = 'FAILURE') AS failure_count,
+              (SELECT COUNT(1) FROM {results_table} WHERE run_id = (SELECT run_id FROM latest_run_id) AND status = 'SUCCESS') AS success_count,
+              (SELECT COLLECT_LIST(task_key) FROM {results_table} WHERE run_id = (SELECT run_id FROM latest_run_id) AND status = 'FAILURE') as failed_tasks;
 
             SELECT CASE 
                 WHEN (SELECT failure_count FROM agg_metrics) > 0 
-                THEN RAISE_ERROR(CONCAT('The following tasks failed: ', (SELECT to_json(failed_tasks) FROM agg_metrics)))
+                THEN RAISE_ERROR(CONCAT('The following DataPact tasks failed: ', (SELECT to_json(failed_tasks) FROM agg_metrics)))
                 WHEN (SELECT success_count FROM agg_metrics) < CAST(:expected_successes AS INT)
                 THEN RAISE_ERROR(CONCAT('Expected ', :expected_successes, ' successful tasks, but only ', (SELECT success_count FROM agg_metrics), ' reported success. Check for silent failures.'))
                 ELSE 'All DataPact validations passed successfully!' 
