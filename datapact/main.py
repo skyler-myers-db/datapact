@@ -22,19 +22,25 @@ def main() -> None:
     parser.add_argument("--profile", help="Databricks CLI profile. Overrides DATABRICKS_PROFILE.")
     parser.add_argument("--results-table", help="Optional: A 3-level (catalog.schema.table) Delta table to store results.")
     
-    args: argparse.Namespace = parser.parse_args()
-    profile_name: str = args.profile or os.getenv("DATABRICKS_PROFILE", "DEFAULT")
+    args = parser.parse_args()
+    warehouse_name = args.warehouse or os.getenv("DATAPACT_WAREHOUSE")
+    profile_name = args.profile or os.getenv("DATABRICKS_PROFILE", "DEFAULT")
+
+    if not warehouse_name:
+        raise ValueError("A warehouse must be provided via the --warehouse flag or DATAPACT_WAREHOUSE environment variable.")
 
     if args.command == "run":
         logger.info(f"Loading configuration from {args.config}...")
         with open(args.config, 'r') as f:
-            config: dict[str, any] = yaml.safe_load(f)
+            validation_config: dict[str, any] = yaml.safe_load(f)
         
         try:
-            client: DataPactClient = DataPactClient(profile=profile_name)
+            client = DataPactClient(profile=profile_name)
             client.run_validation(
-                config=config, job_name=args.job_name,
-                warehouse_name=args.warehouse, results_table=args.results_table
+                config=validation_config,
+                job_name=args.job_name,
+                warehouse_name=warehouse_name,
+                results_table=args.results_table,
             )
         except Exception as e:
             logger.critical(f"A critical error occurred during the DataPact run: {e}")
