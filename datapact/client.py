@@ -125,9 +125,8 @@ class DataPactClient:
         """
         Generates a complete, multi-statement SQL script for the validation task.
 
-        This definitive version produces a highly readable, nested VARIANT payload
-        with all ratios formatted as percentage strings for immediate clarity. It also
-        ensures the payload is always printed to the task output, regardless of status.
+        This definitive version resolves the FORMAT_STRING data type mismatch by
+        explicitly casting all values to DOUBLE before formatting them as percentages.
 
         Args:
             config: The configuration dictionary for a single validation task.
@@ -151,8 +150,8 @@ class DataPactClient:
             struct(
                 source_count,
                 target_count,
-                FORMAT_STRING('%.2f%%', (ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0)) * 100) as relative_diff_percent,
-                FORMAT_STRING('%.2f%%', {tolerance} * 100) AS tolerance_percent,
+                FORMAT_STRING('%.2f%%', CAST((ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0)) * 100 AS DOUBLE)) as relative_diff_percent,
+                FORMAT_STRING('%.2f%%', CAST({tolerance} * 100 AS DOUBLE)) AS tolerance_percent,
                 CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
             ) AS count_validation
             """))
@@ -171,8 +170,8 @@ class DataPactClient:
             struct(
                 total_compared_rows AS compared_rows,
                 mismatch_count,
-                FORMAT_STRING('%.2f%%', (mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)) * 100) as mismatch_percent,
-                FORMAT_STRING('%.2f%%', {pk_hash_threshold} * 100) AS threshold_percent,
+                FORMAT_STRING('%.2f%%', CAST((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)) * 100 AS DOUBLE)) as mismatch_percent,
+                FORMAT_STRING('%.2f%%', CAST({pk_hash_threshold} * 100 AS DOUBLE)) AS threshold_percent,
                 CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
             ) AS row_hash_validation
             """))
@@ -188,8 +187,8 @@ class DataPactClient:
                 struct(
                     {src_val_alias} AS source_value,
                     {tgt_val_alias} AS target_value,
-                    FORMAT_STRING('%.2f%%', (ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0)) * 100) as relative_diff_percent,
-                    FORMAT_STRING('%.2f%%', {tolerance} * 100) AS tolerance_percent,
+                    FORMAT_STRING('%.2f%%', CAST((ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0)) * 100 AS DOUBLE)) as relative_diff_percent,
+                    FORMAT_STRING('%.2f%%', CAST({tolerance} * 100 AS DOUBLE)) AS tolerance_percent,
                     CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
                 ) AS agg_validation_{col}_{agg}
                 """))
@@ -203,7 +202,6 @@ class DataPactClient:
         sql_statements.append(view_creation_sql)
 
         sql_statements.append(f"INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload) SELECT '{task_key}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END, :run_id, current_timestamp(), result_payload FROM final_metrics_view")
-        
         sql_statements.append("SELECT result_payload FROM final_metrics_view")
         sql_statements.append(f"SELECT IF((SELECT overall_validation_passed FROM final_metrics_view), 'Validation PASSED', RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. See payload in the output above.')))")
         
