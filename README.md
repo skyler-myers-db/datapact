@@ -29,8 +29,8 @@ See DataPact's full potential with a realistic, large scale demo that showcases 
 4.  **Databricks CLI:** [Install the Databricks CLI](https://docs.databricks.com/en/dev-tools/cli/install.html) and configure it. For a seamless experience, we recommend adding a `datapact_warehouse` key to your profile in `~/.databrickscfg`:
     ```ini
     [my-profile]
-    host = ...
-    token = ...
+    host = https://dbc-....cloud.databricks.com
+    token = dap...
     datapact_warehouse = "Your Serverless Warehouse Name"
     ```
 
@@ -54,10 +54,10 @@ python demo/setup.py --profile my-profile
 
 Execute DataPact using the pre-made comprehensive demo configuration. This run will showcase:
 
-✅ Performance on millions of rows.
-✅ A mix of PASSING and FAILING tasks.
-✅ Advanced features like accepted thresholds (pk_hash_threshold) and performance tuning (hash_columns).
-✅ Graceful handling of edge cases like empty tables and tables without primary keys.
+* ✅ Performance on millions of rows.
+* ✅ A mix of PASSING and FAILING tasks.
+* ✅ Advanced features like accepted thresholds (pk_hash_threshold) and performance tuning (hash_columns).
+* ✅ Graceful handling of edge cases like empty tables and tables without primary keys.
 
 ```bash
 # Assumes 'datapact_warehouse' is set in your profile
