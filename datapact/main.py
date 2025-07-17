@@ -20,10 +20,9 @@ def main() -> None:
     parser.add_argument("--job-name", default="datapact-validation-run", help="Name for the created Databricks job.")
     parser.add_argument("--warehouse", help="Name of the Serverless SQL Warehouse. Overrides all other settings.")
     parser.add_argument("--profile", help="Databricks CLI profile. Overrides DATABRICKS_PROFILE.")
-    parser.add_argument("--results-table", help="Optional: A 3-level (catalog.schema.table) Delta table name to store results. If not provided, a default is created.")
+    parser.add_argument("--results-table", help="Optional: A 3-level (catalog.schema.table) Delta table to store results.")
     
     args: argparse.Namespace = parser.parse_args()
-
     profile_name: str = args.profile or os.getenv("DATABRICKS_PROFILE", "DEFAULT")
 
     if args.command == "run":
@@ -33,12 +32,9 @@ def main() -> None:
         
         try:
             client: DataPactClient = DataPactClient(profile=profile_name)
-
             client.run_validation(
-                config=config,
-                job_name=args.job_name,
-                warehouse_name=args.warehouse,
-                results_table=args.results_table,
+                config=config, job_name=args.job_name,
+                warehouse_name=args.warehouse, results_table=args.results_table
             )
         except Exception as e:
             logger.critical(f"A critical error occurred during the DataPact run: {e}")
