@@ -7,11 +7,10 @@ of rows across several tables, each designed to showcase a specific feature or
 edge case that DataPact handles.
 """
 import argparse
-import time
+import os
 import re
+import time
 from pathlib import Path
-from typing import Optional
-
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import sql as sql_service
 from loguru import logger
@@ -34,23 +33,33 @@ def get_warehouse_by_name(w: WorkspaceClient, name: str) -> sql_service.Endpoint
 
 def run_demo_setup() -> None:
     """The main function to orchestrate the demo environment setup."""
-    parser = argparse.ArgumentParser(description="Set up the DataPact demo environment.")
-    parser.add_argument("--warehouse", help="Name of the Serverless SQL Warehouse. Overrides DATAPACT_WAREHOUSE env var.")
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(description="Set up the DataPact demo environment.")
+    parser.add_argument("--warehouse", help="Name of the Serverless SQL Warehouse. Overrides all other settings.")
     parser.add_argument("--profile", default="DEFAULT", help="Databricks CLI profile to use.")
-    args = parser.parse_args()
+    args: argparse.Namespace = parser.parse_args()
 
-    warehouse_name: str | None = args.warehouse or os.getenv("DATAPACT_WAREHOUSE")
+    profile_name: str = args.profile or os.getenv("DATABRICKS_PROFILE", "DEFAULT")
+    
+    logger.info(f"Connecting to Databricks with profile '{profile_name}'...")
+    w: WorkspaceClient = WorkspaceClient(profile=profile_name)
+    
+    warehouse_name: str | None = args.warehouse
     if not warehouse_name:
-        raise ValueError("A warehouse must be provided via the --warehouse flag or DATAPACT_WAREHOUSE environment variable.")
+        warehouse_name = os.getenv("DATAPACT_WAREHOUSE")
+        if not warehouse_name:
+            warehouse_name = w.config.config.get('datapact_warehouse')
 
-    logger.info(f"Connecting to Databricks with profile '{args.profile}'...")
-    w = WorkspaceClient(profile=args.profile)
+    if not warehouse_name:
+        raise ValueError(
+            "A warehouse must be provided via the --warehouse flag, the DATAPACT_WAREHOUSE "
+            "environment variable, or a 'datapact_warehouse' key in your Databricks config profile."
+        )
 
-    warehouse = get_warehouse_by_name(w, warehouse_name)
+    logger.info(f"Using warehouse: {warehouse_name}")
+    warehouse: sql_service.EndpointInfo | None = get_warehouse_by_name(w, warehouse_name)
     if not warehouse:
         logger.critical(f"Failed to find warehouse '{warehouse_name}'. Please ensure it exists.")
         return
-
     logger.info(f"Found warehouse '{args.warehouse}' (ID: {warehouse.id}).")
 
     sql_file_path: Path = Path(__file__).parent / "setup.sql"
