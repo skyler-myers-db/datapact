@@ -199,9 +199,9 @@ class DataPactClient:
                 struct(
                     source_nulls,
                     target_nulls,
-                    ABS(target_nulls - source_nulls) / NULLIF(CAST(source_nulls AS DOUBLE), 0) as relative_diff
+                    ABS(target_nulls - source_nulls) / NULLIF(CAST(source_nulls AS DOUBLE), 0) as relative_diff,
                     {threshold} AS threshold,
-                    CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status,
+                    CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
                 ) AS null_validation_{col}
                 """))
                 overall_validation_passed_clauses.append(check)
@@ -228,9 +228,9 @@ class DataPactClient:
                     struct(
                         {src_val_alias} AS source_value,
                         {tgt_val_alias} AS target_value,
-                        ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0) as relative_diff
+                        ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0) as relative_diff,
                         {tolerance} AS tolerance,
-                        CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status,
+                        CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
                     ) AS agg_validation_{col}_{agg}
                     """))
                     overall_validation_passed_clauses.append(check)
