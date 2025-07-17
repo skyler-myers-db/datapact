@@ -121,7 +121,7 @@ class DataPactClient:
         self._execute_sql(create_table_ddl, warehouse_id)
         logger.success(f"Results table '{results_table_fqn}' is ready.")
 
-    def _generate_validation_sql(self, config: dict[str, any], results_table: str) -> str:
+def _generate_validation_sql(self, config: dict[str, any], results_table: str) -> str:
         """
         Generates a complete, multi-statement SQL script for the validation task.
 
@@ -145,8 +145,8 @@ class DataPactClient:
             check: str = f"COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= {tolerance}"
             payload_structs.append(textwrap.dedent(f"""
             struct(
-                source_count,
-                target_count,
+                FORMAT_NUMBER(source_count, 0) AS source_count,
+                FORMAT_NUMBER(target_count, 0) AS target_count,
                 FORMAT_STRING('%.2f%%', CAST(COALESCE((ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0)), 0) * 100 AS DOUBLE)) as relative_diff_percent,
                 FORMAT_STRING('%.2f%%', CAST({tolerance} * 100 AS DOUBLE)) AS tolerance_percent,
                 CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
@@ -165,8 +165,8 @@ class DataPactClient:
             check: str = f"COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= {pk_hash_threshold}"
             payload_structs.append(textwrap.dedent(f"""
             struct(
-                total_compared_rows AS compared_rows,
-                mismatch_count,
+                FORMAT_NUMBER(total_compared_rows, 0) AS compared_rows,
+                FORMAT_NUMBER(mismatch_count, 0) AS mismatch_count,
                 FORMAT_STRING('%.2f%%', CAST(COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) * 100 AS DOUBLE)) as mismatch_percent,
                 FORMAT_STRING('%.2f%%', CAST({pk_hash_threshold} * 100 AS DOUBLE)) AS threshold_percent,
                 CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
