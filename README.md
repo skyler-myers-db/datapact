@@ -2,18 +2,18 @@
 
 **An enterprise grade, programmatic data validation accelerator for Databricks.**
 
-DataPact ensures the integrity of your data by creating a "pact" between your source and target tables. It programmatically generates, runs, and reports on a suite of validation tests directly within your Databricks workspace, enabling reliable and scalable data quality assurance.
+DataPact ensures the integrity of your data by creating a 'pact' between your source and target tables. It programmatically generates, runs, and reports on a suite of validation tests directly within your Databricks workspace, enabling reliable and scalable data quality assurance.
 
 ---
 
 ### Why DataPact?
 
-*   **Zero-Config Start:** Run validations without any setup. DataPact automatically creates a default catalog and table (`datapact_main.results.run_history`) to store your results history.
-*   **100% Programmatic:** Define your entire validation suite in a simple YAML file. Create, run, and manage tests from your local CLI or a CI/CD pipeline. No UI clicking required.
-*   **Fully Serverless:** Built for efficiency. DataPact uses a local client for orchestration and powerful Serverless SQL Warehouses for all query execution, minimizing cost and operational overhead.
-*   **Source Agnostic:** Validate data from any source system connected to Unity Catalog through federation (e.g., PostgreSQL, MySQL, Snowflake) against a Databricks target. Perfect for Databricks-to-Databricks validation (e.g., Bronze vs. Silver).
-*   **Scalable & Parallel:** Each table validation runs as a separate, parallel task in a Databricks Job, allowing you to test dozens or hundreds of tables concurrently.
-*   **Rich Validations & Reporting:** Go beyond simple row counts. DataPact supports aggregate comparisons, per-row hash validation, and null count analysis. It logs detailed, structured `VARIANT` results to a Delta table for historical analysis, auditing, and building data quality dashboards.
+*   **Zero-Config Start:** Run validations instantly. DataPact automatically creates a default catalog and table to store your results history.
+*   **100% Programmatic:** Define your entire validation suite in a simple `YAML` file. Create, run, and manage tests from your local CLI or a CI/CD pipeline. No UI clicking required.
+*   **Built-in Analytics Dashboard:** Automatically generate a rich Databricks SQL Dashboard, visualizing data quality trends, failure rates, and the most common issues.
+*   **Fully Serverless:** Built for efficiency. DataPact uses powerful Serverless SQL Warehouses for all operations, minimizing cost and operational overhead.
+*   **Rich Validations:** Go beyond simple row counts. DataPact supports aggregate comparisons (SUM, AVG, MAX), per-row hash validation, and multi-column null count analysis.
+*   **Persistent, Queryable Reporting:** Automatically log detailed validation results to a Delta table. The results are stored in a `VARIANT` column, allowing for easy, powerful, and native querying of your data quality history in Databricks SQL.
 
 ---
 
@@ -65,24 +65,38 @@ See DataPact's full potential with a realistic, large scale demo that showcases 
     datapact_warehouse = "Your Serverless Warehouse Name"
     ```
 
-#### Step 1: Install DataPact
+#### Step 1: Clone the Repository
 
-Clone this repository and install the package in editable mode.
 ```bash
-git clone git@github.com:skyler-myers-db/datapact.git
+git clone https://github.com/skyler-myers-db/datapact.git
 cd datapact
-pip install -e .
 ```
 
-#### Step 2: Set Up the Demo Environment
+#### Step 2: Create and Activate a Virtual Environment (Recommended)
 
-Set the environment variable (recommended):
+This creates a self-contained environment to avoid conflicts with other Python projects.
 
 ```bash
-export DATAPACT_WAREHOUSE="Your Serverless Warehouse Name"
+# For macOS/Linux
+python3 -m venv .venv
+source .venv/bin/activate
+
+# For Windows
+python -m venv .venv
+.venv\Scripts\activate
 ```
 
-Run the included setup script from your terminal. This will connect to your Databricks workspace and create the demo data. **The script will use the warehouse defined in your `DATAPACT_WAREHOUSE` environment variable if the `--warehouse` parameter is not provided
+#### Step 3: Install DataPact
+
+Install the package and its dependencies in editable mode.
+
+```bash
+pip install -e
+```
+
+#### Step 4: Set Up the Demo Environment
+
+Run the included setup script from your terminal. This will connect to your Databricks workspace and create the demo data. The script will use the warehouse defined in your `.databrickscfg` or `DATAPACT_WAREHOUSE` environment variable if the `--warehouse` parameter is not provided.
 
 ```bash
 python demo/setup.py --profile my-profile
@@ -94,7 +108,7 @@ Alternatively, you can provide the warehouse directly:
 python demo/setup.py --warehouse "Your Serverless Warehouse Name" --profile your-profile
 ```
 
-#### Step 3: Run the Validation
+#### Step 5: Run the Demo and Create the Dashboard
 
 Execute DataPact using the pre-made comprehensive demo configuration. This run will showcase:
 
@@ -125,6 +139,7 @@ That's it! You will see the validation results streamed to your terminal, includ
     ```bash
     datapact run \
       --config my_validations.yml \
+      --results-table "main.reporting.datapact_results" \
       --warehouse "Your Serverless Warehouse Name"
     ```
     
