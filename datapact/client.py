@@ -293,9 +293,19 @@ class DataPactClient:
         tasks: list[Task] = []
         validation_task_keys: list[str] = [v_conf["task_key"] for v_conf in config["validations"]]
         for task_key in validation_task_keys:
-            tasks.append(Task(task_key=task_key, sql_task=SqlTask(file=SqlTaskFile(path=task_paths[task_key]), warehouse_id=warehouse.id)))
+            sql_task_file = SqlTaskFile(path=task_paths[task_key], source=Source.WORKSPACE)
+            tasks.append(Task(
+                task_key=task_key,
+                sql_task=SqlTask(file=sql_task_file, warehouse_id=warehouse.id)
+            ))
 
-        tasks.append(Task(task_key="aggregate_results", depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys], run_if=RunIf.ALL_DONE, sql_task=SqlTask(file=SqlTaskFile(path=task_paths['aggregate_results']), warehouse_id=warehouse.id)))
+        agg_sql_task_file = SqlTaskFile(path=task_paths['aggregate_results'], source=Source.WORKSPACE)
+        tasks.append(Task(
+            task_key="aggregate_results",
+            depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys],
+            run_if=RunIf.ALL_DONE,
+            sql_task=SqlTask(file=agg_sql_task_file, warehouse_id=warehouse.id)
+        ))
 
         job_settings = JobSettings(name=job_name, tasks=tasks, run_as=JobRunAs(user_name=self.user_name))
         
@@ -315,24 +325,38 @@ class DataPactClient:
             job_id = new_job.job_id
 
         logger.info(f"Launching job {job_id}...")
-        run_info = self.w.jobs.run_now(job_id=job_id).result()
+        run_info = self.w.jobs.run_now(job_id=job_id)
         run = self.w.jobs.get_run(run_info.run_id)
         
         logger.info(f"Run started! View progress here: {run.run_page_url}")
         
-        final_run_state = run.result(timeout=timedelta(hours=1))
+        timeout = timedelta(hours=1)
+        deadline = datetime.now() + timeout
+        while datetime.now() < deadline:
+            run = self.w.jobs.get_run(run.run_id)
+            if run.state.life_cycle_state in TERMINAL_STATES:
+                break
+            finished_tasks = sum(1 for t in run.tasks if t.state.life_cycle_state in TERMINAL_STATES)
+            logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{len(tasks)}")
+            time.sleep(30)
+        else:
+            raise TimeoutError(f"Job run timed out after {timeout.total_seconds()} seconds.")
 
-        logger.info(f"Run finished with state: {final_run_state.state.result_state}")
+        final_state = run.state
+        logger.info(f"Run finished with state: {final_state.result_state}")
         
+        if final_state.life_cycle_state == RunLifeCycleState.INTERNAL_ERROR:
+            raise Exception(f"Job run failed with INTERNAL_ERROR: {final_state.state_message}")
+
         try:
             self._create_or_update_dashboard(job_name, final_results_table, warehouse.id)
         except Exception as e:
             logger.error(f"Failed to create or update the dashboard. Please check permissions. Error: {e}")
 
-        if final_run_state.state.result_state == jobs.RunResultState.SUCCESS:
+        if final_state.result_state == jobs.RunResultState.SUCCESS:
             logger.success("✅ DataPact job completed successfully.")
         else:
-            logger.error(f"DataPact job did not succeed. Final state: {final_run_state.state.result_state}. View details at {run.run_page_url}")
+            logger.error(f"DataPact job did not succeed. Final state: {final_state.result_state}. View details at {run.run_page_url}")
             raise Exception("DataPact job failed.")
 
     def _create_or_update_dashboard(self, job_name: str, results_table_fqn: str, warehouse_id: str) -> None:
