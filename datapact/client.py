@@ -50,10 +50,8 @@ class DataPactClient:
 
     def _execute_sql(self, sql: str, warehouse_id: str) -> None:
         """
-        A robust, synchronous helper function to execute a SQL statement.
-        
-        It submits the statement to the Statement Execution API and polls until
-        it reaches a terminal state, raising an exception on failure.
+        A robust, synchronous helper function to execute a SQL statement using a polling loop.
+        This is used for setting up infrastructure before the main job runs.
 
         Args:
             sql: The SQL string to execute.
@@ -64,14 +62,33 @@ class DataPactClient:
             TimeoutError: If the execution takes longer than the defined timeout.
         """
         try:
-            resp: sql_service.ExecuteStatementResponse = self.w.statement_execution.execute_statement(
-                statement=sql, warehouse_id=warehouse_id, wait_timeout='0s', disposition='SYNC'
+            resp = self.w.statement_execution.execute_statement(
+                statement=sql,
+                warehouse_id=warehouse_id,
+                wait_timeout='0s'
             )
-            status: sql_service.StatementStatus = resp.status
-            if status.state in [sql_service.StatementState.FAILED, sql_service.StatementState.CANCELED, sql_service.StatementState.CLOSED]:
-                error: sql_service.Error | None = status.error
-                error_message: str = error.message if error else "Unknown execution error."
-                raise Exception(f"SQL execution failed with state {status.state}: {error_message}")
+            
+            statement_id = resp.statement_id
+            timeout = timedelta(minutes=5)
+            deadline = datetime.now() + timeout
+
+            while datetime.now() < deadline:
+                status = self.w.statement_execution.get_statement(statement_id)
+                current_state = status.status.state
+                
+                if current_state == sql_service.StatementState.SUCCEEDED:
+                    logger.debug(f"SQL statement succeeded: {sql}")
+                    return
+                
+                if current_state in [sql_service.StatementState.FAILED, sql_service.StatementState.CANCELED, sql_service.StatementState.CLOSED]:
+                    error = status.status.error
+                    error_message = error.message if error else "No error message provided."
+                    raise Exception(f"SQL execution failed with state {current_state}. Reason: {error_message}")
+                
+                time.sleep(5)
+            
+            raise TimeoutError(f"SQL statement timed out after {timeout.total_seconds()} seconds.")
+
         except Exception as e:
             logger.critical(f"Failed to execute SQL: {sql}")
             raise e
