@@ -9,7 +9,6 @@ edge case that DataPact handles.
 import argparse
 import os
 import re
-import time
 from pathlib import Path
 from typing import Optional
 from databricks.sdk import WorkspaceClient
@@ -28,9 +27,7 @@ def get_warehouse_by_name(w: WorkspaceClient, name: str) -> Optional[sql_service
         An EndpointInfo object if the warehouse is found, otherwise None.
     """
     try:
-        for wh in w.warehouses.list():
-            if wh.name == name:
-                return wh
+        return next((wh for wh in w.warehouses.list() if wh.name == name), None)
     except Exception as e:
         logger.error(f"An error occurred while trying to list warehouses: {e}")
     return None
@@ -51,7 +48,8 @@ def run_demo_setup() -> None:
     if not warehouse_name:
         warehouse_name = os.getenv("DATAPACT_WAREHOUSE")
         if not warehouse_name:
-            warehouse_name = w.config.get('datapact_warehouse')
+            if hasattr(w.config, 'datapact_warehouse'):
+                warehouse_name = w.config.datapact_warehouse
 
     if not warehouse_name:
         raise ValueError(
@@ -82,8 +80,8 @@ def run_demo_setup() -> None:
         logger.info(f"Executing statement {i+1}/{len(sql_commands)}...")
         logger.debug(f"SQL: {command}")
         try:
-            # Use synchronous execution for setup simplicity
-            self.w.statement_execution.execute_statement(
+            # Use synchronous execution for setup simplicity.
+            w.statement_execution.execute_statement(
                 statement=command,
                 warehouse_id=warehouse.id,
                 wait_timeout='10m' # Generous timeout for large table creation
@@ -105,8 +103,7 @@ def run_demo_setup() -> None:
     run_command: str = (
         "datapact run \\\n"
         "  --config demo/demo_config.yml \\\n"
-        "  --job-name \"DataPact Comprehensive Demo\" \\\n"
-        "  --results-table \"datapact_demo_catalog.source_data.datapact_run_history\" \\\n"
+        "  --job-name \"DataPact Enterprise Demo\" \\\n"
         f"  --profile {args.profile}"
     )
     logger.info("\n\n" + "="*60 + f"\n{run_command}\n" + "="*60 + "\n")
