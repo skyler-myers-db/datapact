@@ -319,41 +319,37 @@ class DataPactClient:
         warehouse_id: str,
     ) -> str:
         """
-        Idempotently create (or fetch) a Lakeview dashboard for <job_name>.
-        Returns the **draft dashboard_id** for later refreshes.
+        Idempotently create *or* fetch the Lakeview draft for <job_name>.
+        Returns the draft dashboard_id (needed by the dashboard task).
         """
-        # ---- stable names + paths ------------------------------------------------
         display_name = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
         parent_path  = f"{self.root_path}/dashboards"
         self.w.workspace.mkdirs(parent_path)
     
-        # ---- look for an existing draft -----------------------------------------
         existing = next(
-            (
-                d for d in self.w.lakeview.list(view=DashboardView.DASHBOARD_VIEW_BASIC)
-                if d.display_name == display_name and d.parent_path == parent_path
-            ),
-            None,
+            (d for d in self.w.lakeview.list(view=DashboardView.DASHBOARD_VIEW_BASIC)
+             if d.display_name == display_name and d.parent_path == parent_path),
+            None
         )
-        if existing:                                     # nothing to create
+        if existing:
+            logger.info(f"Using existing dashboard {existing.dashboard_id}")
             return existing.dashboard_id
     
-        # ---- build the minimal JSON payload -------------------------------------
-        q = lambda s: s.replace("{table}", results_table_fqn).replace("{job}", job_name)
+        q = lambda sql: sql.format(table=results_table_fqn, job=job_name)
         queries = {
             "Run Summary": q(
-                "SELECT status, COUNT(*) AS task_count FROM {table}"
+                "SELECT status, COUNT(*) task_count FROM {table}"
                 " WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')"
                 " GROUP BY status"),
             "Failure Rate %": q(
-                "SELECT to_date(timestamp) AS run_date,"
-                " COUNT(IF(status='FAILURE',1,NULL))*100.0/COUNT(*) AS failure_rate"
+                "SELECT date(timestamp) run_date,"
+                " COUNT(IF(status='FAILURE',1,NULL))*100.0/COUNT(*) failure_rate"
                 " FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1"),
             "Top Failures": q(
-                "SELECT task_key, COUNT(*) AS failure_count FROM {table}"
+                "SELECT task_key, COUNT(*) failure_count FROM {table}"
                 " WHERE status='FAILURE' AND job_name='{job}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10"),
             "History": q(
-                "SELECT task_key,status,timestamp,to_json(result_payload) AS payload_json"
+                "SELECT task_key,status,timestamp,to_json(result_payload) payload_json"
                 " FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"),
         }
     
@@ -374,19 +370,15 @@ class DataPactClient:
             warehouse_id        = warehouse_id,
             serialized_dashboard= json.dumps({
                 "version": "1.0",
-                "datasets":       ds,
+                "datasets": ds,
                 "visualizations": vz,
-                "pages": [{
-                    "id": "p_1", "name": "main", "displayName": "DataPact",
-                    "widgets": wd
-                }],
+                "pages": [{"id": "p_1", "name": "main", "displayName": "DataPact", "widgets": wd}],
             }),
-        ))                                              # will fail only _once_
+        ))
     
-        # ---- publish so users can open it ---------------------------------------
         self.w.lakeview.publish(
             dashboard_id      = draft.dashboard_id,
-            embed_credentials = True,                   # viewers inherit publisher’s creds
+            embed_credentials = True,
             warehouse_id      = warehouse_id,
         )
         link = f"{self.w.config.host}/dashboardsv3/{draft.dashboard_id}/published"
@@ -395,46 +387,65 @@ class DataPactClient:
 
     def run_validation(
         self,
-        config: dict[str, any],
+        config: dict[str, Any],
         job_name: str,
         warehouse_name: str,
-        results_table: str | None = None
+        results_table: str | None = None,
     ) -> None:
         warehouse = self._ensure_sql_warehouse(warehouse_name)
-        final_results_table = f"`{results_table}`" if results_table else f"`{DEFAULT_CATALOG}`.`{DEFAULT_SCHEMA}`.`{DEFAULT_TABLE}`"
-        if not results_table: self._setup_default_infrastructure(warehouse.id)
+        final_results_table = (
+            f"`{results_table}`"
+            if results_table
+            else f"`{DEFAULT_CATALOG}`.`{DEFAULT_SCHEMA}`.`{DEFAULT_TABLE}`"
+        )
+        if not results_table:
+            self._setup_default_infrastructure(warehouse.id)
         self._ensure_results_table_exists(final_results_table, warehouse.id)
-        asset_paths = self._upload_sql_scripts(config, final_results_table, job_name)
-        
-        tasks: list[Task] = []
-        validation_task_keys: list[str] = [v_conf["task_key"] for v_conf in config["validations"]]
-        sql_parameters = {'run_id': '{{job.run_id}}', 'job_id': '{{job.id}}'}
-        
-        for task_key in validation_task_keys:
-            tasks.append(Task(task_key=task_key, sql_task=SqlTask(file=SqlTaskFile(path=asset_paths[task_key], source=Source.WORKSPACE), warehouse_id=warehouse.id, parameters=sql_parameters)))
-        
-        tasks.append(Task(
-            task_key="aggregate_results",
-            depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys],
-            run_if=RunIf.ALL_DONE,
-            sql_task=SqlTask(file=SqlTaskFile(path=asset_paths['aggregate_results'], source=Source.WORKSPACE), warehouse_id=warehouse.id, parameters=sql_parameters)
-        ))
-
+    
         dashboard_id = self.ensure_dashboard_exists(
-        job_name, final_results_table, warehouse.id)
-        
+            job_name, final_results_table, warehouse.id)
+    
+        asset_paths = self._upload_sql_scripts(config, final_results_table, job_name)
+        validation_task_keys = [v["task_key"] for v in config["validations"]]
+        sql_params = {"run_id": "{{job.run_id}}", "job_id": "{{job.id}}"}
+
+        tasks = [
+            Task(
+                task_key=tk,
+                sql_task=SqlTask(
+                    file=SqlTaskFile(path=asset_paths[tk], source=Source.WORKSPACE),
+                    warehouse_id=warehouse.id,
+                    parameters=sql_params,
+                ),
+            )
+            for tk in validation_task_keys
+        ]
+
         tasks.append(
             Task(
-                task_key   = "refresh_dashboard",
-                depends_on = [TaskDependency(task_key="aggregate_results")],
-                run_if     = RunIf.ALL_DONE,               # always run after aggregation
-                dashboard_task = DashboardTask(
-                    dashboard_id = dashboard_id,
-                    warehouse_id = warehouse.id
+                task_key="aggregate_results",
+                depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys],
+                run_if=RunIf.ALL_DONE,
+                sql_task=SqlTask(
+                    file=SqlTaskFile(path=asset_paths["aggregate_results"], source=Source.WORKSPACE),
+                    warehouse_id=warehouse.id,
+                    parameters=sql_params,
                 ),
             )
         )
-        
+
+        tasks.append(
+            Task(
+                task_key="refresh_dashboard",
+                depends_on=[TaskDependency(task_key="aggregate_results")],
+                run_if=RunIf.ALL_DONE,
+                dashboard_task=DashboardTask(
+                    dashboard_id=dashboard_id,
+                    warehouse_id=warehouse.id,
+                ),
+            )
+        )
+    
         job_settings = JobSettings(name=job_name, tasks=tasks, run_as=JobRunAs(user_name=self.user_name))
         existing_job = next(iter(self.w.jobs.list(name=job_name)), None)
         job_id = existing_job.job_id if existing_job else self.w.jobs.create(name=job_settings.name, tasks=job_settings.tasks, run_as=job_settings.run_as).job_id
@@ -457,11 +468,6 @@ class DataPactClient:
             raise TimeoutError("Job run timed out.")
         
         logger.info(f"Run finished with state: {run.state.result_state}")
-        
-        try:
-            self._create_or_update_dashboard(job_name, final_results_table, warehouse.id)
-        except Exception as e:
-            logger.warning(f"Dashboard creation/update failed, but this does not affect the validation run result. Error: {e}")
 
         if run.state.result_state == jobs.RunResultState.SUCCESS:
             logger.success("✅ DataPact job completed successfully.")
