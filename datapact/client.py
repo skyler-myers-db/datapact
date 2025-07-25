@@ -371,58 +371,61 @@ class DataPactClient:
                 " FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"),
         }
     
-        ds, vz, wd, y = [], [], [], 0
-        for i, (title, sql) in enumerate(queries.items(), 1):
-            ds_id, vz_id, wd_id = f"d_{i}", f"v_{i}", f"w_{i}"
+        layout = []
         
-            ds.append({
-                "id":          ds_id,
-                "name":        ds_id,
+        for i, (title, sql) in enumerate(queries.items(), 1):
+            ds_id, vz_id = f"d_{i}", f"v_{i}"
+        
+            datasets.append({
+                "id": ds_id,
+                "name": ds_id,
                 "displayName": title,
-                "query":       sql
+                "query": sql
             })
         
             if title == "Run Summary":
-                v_type  = "COUNTER"
-                v_opts  = {"counterLabel": "tasks", "counterColName": "task_count"}
+                v_type, v_opts = "COUNTER", {"counterColName": "task_count"}
             elif title == "Failure Rate %":
-                v_type  = "CHART"
-                v_opts  = {"globalSeriesType": "line"}
+                v_type, v_opts = "CHART",   {"globalSeriesType": "line"}
             elif title == "Top Failures":
-                v_type  = "CHART"
-                v_opts  = {"globalSeriesType": "bar"}
+                v_type, v_opts = "CHART",   {"globalSeriesType": "bar"}
             else:
-                v_type, v_opts = "TABLE", {}
+                v_type, v_opts = "TABLE",   {}
         
-            vz.append({
-                "id":         vz_id,
-                "name":       title,
-                "type":       v_type,
-                "datasetId":  ds_id,
-                "options":    v_opts
+            visualizations.append({
+                "id": vz_id,
+                "name": title,
+                "type": v_type,
+                "datasetId": ds_id,
+                "options": v_opts
             })
         
-            wd.append({
-                "id":    wd_id,
-                "name":  title.replace(' ', '_'),
-                "title": title,                # << what users see on the card header
-                "visualization": {"id": vz_id, "datasetId": ds_id},
-                "position": {"x": 0, "y": y, "width": 6, "height": 8}
+            layout.append({
+                "widget": {
+                    "id":   f"w_{i}",
+                    "name": title.replace(' ', '_'),
+                    "visualization": {"id": vz_id, "datasetId": ds_id},
+                    "frame": {"showTitle": True, "title": title}
+                },
+                "position": {"x": 0, "y": (i-1)*8, "width": 6, "height": 8}
             })
-            y += 8
+        
+        serialized = 
 
         draft = self.w.lakeview.create(Dashboard(
-            display_name        = display_name,
-            parent_path         = parent_path,
-            warehouse_id        = warehouse_id,
-            serialized_dashboard= json.dumps({
+            display_name         = display_name,
+            parent_path          = parent_path,
+            warehouse_id         = warehouse_id,
+            serialized_dashboard = json.dumps({
                 "version": "1.0",
-                "datasets": ds,
-                "visualizations": vz,
+                "datasets":       datasets,
+                "visualizations": visualizations,
                 "pages": [{
-                    "id": "p_1", "name": "main",
-                    "displayName": "DataPact Validation Results", "widgets": wd
-                }],
+                    "id": "p_1",
+                    "name": "main",
+                    "displayName": "DataPact Validation Results",
+                    "layout": layout
+                }]
             }),
         ))
     
