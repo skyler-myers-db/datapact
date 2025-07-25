@@ -367,13 +367,12 @@ class DataPactClient:
         
         serialized_dashboard_str = json.dumps(dashboard_dict)
 
-        dashboard_payload = Dashboard(
+        draft = self.w.lakeview.create(
             display_name=dashboard_name,
             warehouse_id=warehouse_id,
             serialized_dashboard=serialized_dashboard_str
         )
-
-        draft = self.w.lakeview.create(dashboard_payload)
+        
         pub = self.w.lakeview.publish(dashboard_id=draft.dashboard_id)
 
         dashboard_url = f"{self.w.config.host}{pub.path}"
