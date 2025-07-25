@@ -212,7 +212,7 @@ class DataPactClient:
                       f":run_id, :job_id, '{job_name}', current_timestamp(), result_payload FROM final_metrics_view;")
         fail_sql = f"SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Details: \\n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false"
         pass_sql = "SELECT to_json(result_payload, map('pretty', 'true')) AS result FROM final_metrics_view WHERE overall_validation_passed = true"
-        return ";\n\n".join([view_creation_sql, insert_sql, fail_sql, pass_sql])```
+        return ";\n\n".join([view_creation_sql, insert_sql, fail_sql, pass_sql])
 
     def _generate_dashboard_notebook_content(self) -> str:
         """Generates the Python code for the dashboard-creation notebook."""
