@@ -11,11 +11,12 @@ import os
 import re
 import time
 from pathlib import Path
+from typing import Optional
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import sql as sql_service
 from loguru import logger
 
-def get_warehouse_by_name(w: WorkspaceClient, name: str) -> sql_service.EndpointInfo | None:
+def get_warehouse_by_name(w: WorkspaceClient, name: str) -> Optional[sql_service.EndpointInfo]:
     """
     Finds a SQL warehouse by its display name.
 
@@ -50,7 +51,7 @@ def run_demo_setup() -> None:
     if not warehouse_name:
         warehouse_name = os.getenv("DATAPACT_WAREHOUSE")
         if not warehouse_name:
-            warehouse_name = w.config.config.get('datapact_warehouse')
+            warehouse_name = w.config.get('datapact_warehouse')
 
     if not warehouse_name:
         raise ValueError(
@@ -59,17 +60,18 @@ def run_demo_setup() -> None:
         )
 
     logger.info(f"Using warehouse: {warehouse_name}")
-    warehouse: sql_service.EndpointInfo | None = get_warehouse_by_name(w, warehouse_name)
+    warehouse: Optional[sql_service.EndpointInfo] = get_warehouse_by_name(w, warehouse_name)
     if not warehouse:
         logger.critical(f"Failed to find warehouse '{warehouse_name}'. Please ensure it exists.")
         return
-    logger.info(f"Found warehouse '{args.warehouse}' (ID: {warehouse.id}).")
+    logger.info(f"Found warehouse '{warehouse_name}' (ID: {warehouse.id}).")
 
     sql_file_path: Path = Path(__file__).parent / "setup.sql"
     logger.info(f"Reading and parsing setup script from: {sql_file_path}")
     with open(sql_file_path, 'r') as f:
         sql_script: str = f.read()
 
+    # Remove comments to allow for clean splitting by semicolon
     sql_script = re.sub(r'/\*.*?\*/', '', sql_script, flags=re.DOTALL)
     sql_script = re.sub(r'--.*', '', sql_script)
     sql_commands: list[str] = [cmd.strip() for cmd in sql_script.split(';') if cmd.strip()]
@@ -80,42 +82,26 @@ def run_demo_setup() -> None:
         logger.info(f"Executing statement {i+1}/{len(sql_commands)}...")
         logger.debug(f"SQL: {command}")
         try:
-            resp: sql_service.ExecuteStatementResponse = w.statement_execution.execute_statement(
+            # Use synchronous execution for setup simplicity
+            self.w.statement_execution.execute_statement(
                 statement=command,
                 warehouse_id=warehouse.id,
-                wait_timeout='0s'
-            )
-            statement_id: str = resp.statement_id
-            timeout_seconds: int = 600
-            start_time: float = time.time()
-            while time.time() - start_time < timeout_seconds:
-                status: sql_service.StatementStatus = w.statement_execution.get_statement(statement_id=statement_id)
-                current_state: sql_service.StatementState = status.status.state
-                if current_state == sql_service.StatementState.SUCCEEDED:
-                    logger.success(f"Statement {i+1} succeeded.")
-                    break
-                if current_state in [sql_service.StatementState.FAILED, sql_service.StatementState.CANCELED, sql_service.StatementState.CLOSED]:
-                    error: Optional[sql_service.Error] = status.status.error
-                    logger.critical(f"Statement {i+1} failed with state: {current_state}")
-                    if error:
-                        logger.critical(f"Error: {error.message}")
-                    raise Exception(f"Setup script failed at statement {i+1}.")
-                time.sleep(5)
-            else:
-                raise TimeoutError(f"Statement {i+1} timed out after {timeout_seconds} seconds.")
+                wait_timeout='10m' # Generous timeout for large table creation
+            ).result()
+            logger.success(f"Statement {i+1} succeeded.")
         except Exception as e:
-            logger.critical(f"An error occurred during execution. Halting setup.")
+            logger.critical(f"An error occurred during execution of statement {i+1}. Halting setup.")
+            logger.critical(f"Failed SQL: {command}")
             raise e
 
     logger.success("✅ Comprehensive demo environment setup complete!")
     logger.info("\nYou have just set up a realistic, multi-faceted data environment. The upcoming validation run will showcase:")
-    logger.info("  - Handling of large tables (millions of rows).")
-    logger.info("  - A mix of PASSING and FAILING tasks.")
+    logger.info("  - Validation across a 12-table enterprise model (Sales, HR, Marketing, Finance).")
+    logger.info("  - A mix of PASSING and FAILING tasks to demonstrate rich reporting.")
     logger.info("  - Advanced features like accepted thresholds and selective column hashing.")
     logger.info("  - Graceful handling of edge cases like empty tables and tables without primary keys.")
     logger.info("\nRun the demo validation with the following command (ensure your .databrickscfg has 'datapact_warehouse' set):")
 
-    # Corrected CLI guidance
     run_command: str = (
         "datapact run \\\n"
         "  --config demo/demo_config.yml \\\n"
