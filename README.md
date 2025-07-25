@@ -117,6 +117,7 @@ Execute DataPact using the pre-made comprehensive demo configuration. This run w
 ✅ Advanced features like accepted change thresholds (pk_hash_threshold).
 ✅ Performance tuning with selective column hashing (hash_columns).
 ✅ Detailed aggregate validations (SUM, MAX).
+
 ✅ In-depth null-count validation (null_validation_columns).
 ✅ Graceful handling of edge cases like empty tables and tables without primary keys.
 
