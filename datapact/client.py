@@ -318,11 +318,15 @@ class DataPactClient:
         logger.info("Creating or updating results Lakeview dashboard...")
         dashboard_name = f"DataPact Results: {job_name}"
 
-        for d in self.w.lakeview.list(q=dashboard_name):
-            if d.display_name == dashboard_name:
-                logger.warning(f"Deleting existing Lakeview dashboard (ID: {d.dashboard_id}) to recreate.")
-                self.w.lakeview.delete(dashboard_id=d.dashboard_id)
-        
+        try:
+            for d in self.w.lakeview.list():
+                if d.display_name == dashboard_name:
+                    logger.warning(f"Deleting existing Lakeview dashboard (ID: {d.dashboard_id}) to recreate.")
+                    self.w.lakeview.delete(dashboard_id=d.dashboard_id)
+                    break
+        except Exception as e:
+            logger.error(f"Could not list or delete existing dashboards. Please check permissions. Error: {e}")
+
         queries = {
             "Run Summary (Latest)": f"SELECT status, COUNT(1) as task_count FROM {results_table_fqn} WHERE run_id = (SELECT MAX(run_id) FROM {results_table_fqn} WHERE job_name = '{job_name}') GROUP BY status",
             "Failure Rate Over Time (%)": f"SELECT to_date(timestamp) as run_date, COUNT(CASE WHEN status = 'FAILURE' THEN 1 END) * 100.0 / COUNT(1) as failure_rate_percent FROM {results_table_fqn} WHERE job_name = '{job_name}' GROUP BY 1 ORDER BY 1",
@@ -366,7 +370,6 @@ class DataPactClient:
         )
 
         draft = self.w.lakeview.create(dashboard_payload)
-        
         pub = self.w.lakeview.publish(dashboard_id=draft.dashboard_id)
 
         dashboard_url = f"{self.w.config.host}{pub.path}"
