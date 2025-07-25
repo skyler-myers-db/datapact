@@ -316,17 +316,16 @@ class DataPactClient:
         Creates or updates a modern Databricks Lakeview Dashboard using the local client.
         """
         logger.info("Creating or updating results Lakeview dashboard...")
-        dashboard_name = f"DataPact Results: {job_name}"
+        
+        sanitized_job_name = job_name.replace(" ", "_").replace(":", "")
+        dashboard_name = f"DataPact_Results_{sanitized_job_name}"
 
-        try:
-            for d in self.w.lakeview.list():
-                if d.display_name == dashboard_name:
-                    logger.warning(f"Deleting existing Lakeview dashboard (ID: {d.dashboard_id}) to recreate.")
-                    self.w.lakeview.delete(dashboard_id=d.dashboard_id)
-                    break
-        except Exception as e:
-            logger.error(f"Could not list or delete existing dashboards. Please check permissions. Error: {e}")
-
+        for d in self.w.lakeview.list():
+            if d.display_name == dashboard_name:
+                logger.warning(f"Deleting existing Lakeview dashboard (ID: {d.dashboard_id}) to recreate.")
+                self.w.lakeview.delete(dashboard_id=d.dashboard_id)
+                break
+        
         queries = {
             "Run Summary (Latest)": f"SELECT status, COUNT(1) as task_count FROM {results_table_fqn} WHERE run_id = (SELECT MAX(run_id) FROM {results_table_fqn} WHERE job_name = '{job_name}') GROUP BY status",
             "Failure Rate Over Time (%)": f"SELECT to_date(timestamp) as run_date, COUNT(CASE WHEN status = 'FAILURE' THEN 1 END) * 100.0 / COUNT(1) as failure_rate_percent FROM {results_table_fqn} WHERE job_name = '{job_name}' GROUP BY 1 ORDER BY 1",
@@ -335,30 +334,35 @@ class DataPactClient:
         }
 
         widgets_list = []
+        datasets_list = []
         y_pos = 0
         for i, (title, sql) in enumerate(queries.items()):
-            dataset_id = f"d_{i+1}"
-            widget_id = f"w_{i+1}"
+            dataset_name = f"dataset_{i+1}"
+            widget_id = f"widget_{i+1}"
             
-            widget_dict = {
+            datasets_list.append({
+                "id": dataset_name,
+                "name": dataset_name,
+                "displayName": title,
+                "sql": { "query": { "text": sql } }
+            })
+            
+            widgets_list.append({
                 "id": widget_id,
-                "visualization": { "id": f"v_{i+1}", "datasetId": dataset_id },
+                "visualization": { "id": f"viz_{i+1}", "datasetId": dataset_name },
                 "position": { "x": 0, "y": y_pos, "width": 6, "height": 8 },
                 "title": title
-            }
-            widgets_list.append(widget_dict)
+            })
             y_pos += 8
 
         dashboard_dict = {
             "pages": [{
-                "id": "p_1",
-                "name": "DataPact Results",
+                "id": "page_1",
+                "name": "page_1_name",
+                "displayName": "DataPact Results",
                 "widgets": widgets_list
             }],
-            "datasets": [{
-                "id": f"d_{i+1}",
-                "sql": { "query": { "text": sql } }
-            } for i, sql in enumerate(queries.values())]
+            "datasets": datasets_list
         }
         
         serialized_dashboard_str = json.dumps(dashboard_dict)
