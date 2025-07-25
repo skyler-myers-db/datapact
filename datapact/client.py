@@ -410,8 +410,6 @@ class DataPactClient:
                 "position": {"x": 0, "y": (i-1)*8, "width": 6, "height": 8}
             })
         
-        serialized = 
-
         draft = self.w.lakeview.create(Dashboard(
             display_name         = display_name,
             parent_path          = parent_path,
