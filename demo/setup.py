@@ -9,9 +9,10 @@ edge case that DataPact handles.
 import argparse
 import os
 import re
+import time
 from pathlib import Path
 from typing import Optional
-from datetime import timedelta
+from datetime import timedelta, datetime
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import sql as sql_service
 from loguru import logger
@@ -80,13 +81,33 @@ def run_demo_setup() -> None:
         logger.info(f"Executing statement {i+1}/{len(sql_commands)}...")
         logger.debug(f"SQL: {command}")
         try:
-            w.statement_execution.execute_statement(
+            resp = w.statement_execution.execute_statement(
                 statement=command,
                 warehouse_id=warehouse.id,
-                wait_timeout='0s' 
-            ).result(timeout=timedelta(minutes=10))
+                wait_timeout='0s'
+            )
             
-            logger.success(f"Statement {i+1} succeeded.")
+            statement_id = resp.statement_id
+            timeout = timedelta(minutes=10)
+            deadline = datetime.now() + timeout
+
+            while datetime.now() < deadline:
+                status = w.statement_execution.get_statement(statement_id)
+                current_state = status.status.state
+                
+                if current_state == sql_service.StatementState.SUCCEEDED:
+                    logger.success(f"Statement {i+1} succeeded.")
+                    break
+                
+                if current_state in [sql_service.StatementState.FAILED, sql_service.StatementState.CANCELED, sql_service.StatementState.CLOSED]:
+                    error = status.status.error
+                    error_message = error.message if error else "No error message provided."
+                    raise Exception(f"Statement {i+1} failed with state {current_state}. Reason: {error_message}")
+                
+                time.sleep(5)
+            else:
+                raise TimeoutError(f"Statement {i+1} timed out after {timeout.total_seconds()} seconds.")
+
         except Exception as e:
             logger.critical(f"An error occurred during execution of statement {i+1}. Halting setup.")
             logger.critical(f"Failed SQL: {command}")
