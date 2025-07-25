@@ -374,14 +374,43 @@ class DataPactClient:
         ds, vz, wd, y = [], [], [], 0
         for i, (title, sql) in enumerate(queries.items(), 1):
             ds_id, vz_id, wd_id = f"d_{i}", f"v_{i}", f"w_{i}"
-            ds.append({"id": ds_id, "name": ds_id, "displayName": title, "query": sql})
-            vz.append({"id": vz_id, "type": "TABLE" if title == "History" else "CHART",
-                       "datasetId": ds_id})
-            wd.append({"id": wd_id, "name": title.replace(' ', '_'),
-                       "visualization": {"id": vz_id, "datasetId": ds_id},
-                       "position": {"x": 0, "y": y, "width": 6, "height": 8}})
+        
+            ds.append({
+                "id":          ds_id,
+                "name":        ds_id,
+                "displayName": title,
+                "query":       sql
+            })
+        
+            if title == "Run Summary":
+                v_type  = "COUNTER"
+                v_opts  = {"counterLabel": "tasks", "counterColName": "task_count"}
+            elif title == "Failure Rate %":
+                v_type  = "CHART"
+                v_opts  = {"globalSeriesType": "line"}
+            elif title == "Top Failures":
+                v_type  = "CHART"
+                v_opts  = {"globalSeriesType": "bar"}
+            else:
+                v_type, v_opts = "TABLE", {}
+        
+            vz.append({
+                "id":         vz_id,
+                "name":       title,
+                "type":       v_type,
+                "datasetId":  ds_id,
+                "options":    v_opts
+            })
+        
+            wd.append({
+                "id":    wd_id,
+                "name":  title.replace(' ', '_'),
+                "title": title,                # << what users see on the card header
+                "visualization": {"id": vz_id, "datasetId": ds_id},
+                "position": {"x": 0, "y": y, "width": 6, "height": 8}
+            })
             y += 8
-    
+
         draft = self.w.lakeview.create(Dashboard(
             display_name        = display_name,
             parent_path         = parent_path,
@@ -392,7 +421,7 @@ class DataPactClient:
                 "visualizations": vz,
                 "pages": [{
                     "id": "p_1", "name": "main",
-                    "displayName": "DataPact", "widgets": wd
+                    "displayName": "DataPact Validation Results", "widgets": wd
                 }],
             }),
         ))
