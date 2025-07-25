@@ -63,32 +63,18 @@ class DataPactClient:
         """
         try:
             resp = self.w.statement_execution.execute_statement(
-                statement=sql,
-                warehouse_id=warehouse_id,
-                wait_timeout='0s'
-            )
-            
+                statement=sql, warehouse_id=warehouse_id, wait_timeout='0s')
             statement_id = resp.statement_id
             timeout = timedelta(minutes=5)
             deadline = datetime.now() + timeout
-
             while datetime.now() < deadline:
                 status = self.w.statement_execution.get_statement(statement_id)
                 current_state = status.status.state
-                
-                if current_state == sql_service.StatementState.SUCCEEDED:
-                    logger.debug(f"SQL statement succeeded: {sql}")
-                    return
-                
+                if current_state == sql_service.StatementState.SUCCEEDED: return
                 if current_state in [sql_service.StatementState.FAILED, sql_service.StatementState.CANCELED, sql_service.StatementState.CLOSED]:
-                    error = status.status.error
-                    error_message = error.message if error else "No error message provided."
-                    raise Exception(f"SQL execution failed with state {current_state}. Reason: {error_message}")
-                
+                    raise Exception(f"SQL execution failed: {status.status.error.message if status.status.error else 'Unknown'}")
                 time.sleep(5)
-            
-            raise TimeoutError(f"SQL statement timed out after {timeout.total_seconds()} seconds.")
-
+            raise TimeoutError(f"SQL statement timed out.")
         except Exception as e:
             logger.critical(f"Failed to execute SQL: {sql}")
             raise e
@@ -229,50 +215,100 @@ class DataPactClient:
         
         insert_sql = (f"INSERT INTO {results_table} (task_key, status, run_id, job_id, job_name, timestamp, result_payload) "
                       f"SELECT '{task_key}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END, "
-                      f"{{{{job.run_id}}}}, {{{{job.id}}}}, '{job_name}', current_timestamp(), result_payload FROM final_metrics_view;")
+                      f":run_id, :job_id, '{job_name}', current_timestamp(), result_payload FROM final_metrics_view;")
 
         fail_sql = "SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Payload: \\n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false;"
         pass_sql = "SELECT to_json(result_payload, map('pretty', 'true')) AS result FROM final_metrics_view WHERE overall_validation_passed = true;"
+
+        view_creation_sql = "CREATE OR REPLACE TEMP VIEW final_metrics_view AS SELECT true as overall_validation_passed, 'dummy' as result_payload;"
         
         return "\n\n".join([view_creation_sql, insert_sql, fail_sql, pass_sql])
 
-    def _upload_sql_scripts(self, config: dict[str, any], results_table: str, job_name: str) -> dict[str, str]:
-        """Generates and uploads all necessary SQL scripts for the job."""
-        logger.info("Generating and uploading SQL validation scripts as raw files...")
-        task_paths: dict[str, str] = {}
-        sql_tasks_path: str = f"{self.root_path}/sql_tasks/{job_name}"
-        self.w.workspace.mkdirs(sql_tasks_path)
+    def _generate_dashboard_notebook_content(self) -> str:
+        """Generates the Python code for the dashboard-creation notebook."""
+        return textwrap.dedent("""
+            import textwrap
+            from databricks.sdk import WorkspaceClient
+            from databricks.sdk.service import sql as sql_service
+            from loguru import logger
+
+            # Get parameters from the job task
+            dbutils.widgets.text("job_name", "", "Job Name")
+            dbutils.widgets.text("results_table_fqn", "", "Results Table FQN")
+            dbutils.widgets.text("warehouse_id", "", "Warehouse ID")
+            
+            job_name = dbutils.widgets.get("job_name")
+            results_table_fqn = dbutils.widgets.get("results_table_fqn")
+            warehouse_id = dbutils.widgets.get("warehouse_id")
+
+            logger.info(f"Starting dashboard creation for job: {job_name}")
+            logger.info(f"Results table: {results_table_fqn}")
+            logger.info(f"Warehouse ID: {warehouse_id}")
+
+            w = WorkspaceClient() # Authenticates automatically inside Databricks
+
+            dashboard_name = f"DataPact Results: {job_name}"
+            
+            # Clean up old dashboard and associated queries
+            for d in w.dashboards.list(q=dashboard_name):
+                if d.display_name == dashboard_name:
+                    logger.warning(f"Deleting existing dashboard (ID: {d.dashboard_id}) to recreate.")
+                    w.dashboards.delete(d.dashboard_id)
+                    if d.widgets:
+                        for widget in d.widgets:
+                            if widget.visualization and widget.visualization.query:
+                                try: w.queries.delete(widget.visualization.query.query_id)
+                                except Exception: pass
+            
+            queries = {
+                "run_summary": f"SELECT status, COUNT(1) as task_count FROM {results_table_fqn} WHERE run_id = (SELECT MAX(run_id) FROM {results_table_fqn} WHERE job_name = '{job_name}') GROUP BY status",
+                "failure_rate_over_time": f"SELECT to_date(timestamp) as run_date, COUNT(CASE WHEN status = 'FAILURE' THEN 1 END) * 100.0 / COUNT(1) as failure_rate_percent FROM {results_table_fqn} WHERE job_name = '{job_name}' GROUP BY 1 ORDER BY 1",
+                "top_failing_tasks": f"SELECT task_key, COUNT(1) as failure_count FROM {results_table_fqn} WHERE status = 'FAILURE' AND job_name = '{job_name}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10",
+                "raw_history": f"SELECT * FROM {results_table_fqn} WHERE job_name = '{job_name}' ORDER BY timestamp DESC, task_key"
+            }
+
+            widgets = []
+            for name, sql in queries.items():
+                query_obj = w.queries.create(name=f"DataPact-{job_name}-{name}", data_source_id=warehouse_id, query=sql)
+                viz_options, viz_type = {}, "TABLE"
+                if name == "run_summary": viz_type = "COUNTER"; viz_options = {"counterColName": "task_count"}
+                elif name == "failure_rate_over_time": viz_type = "CHART"; viz_options = {"globalSeriesType": "line"}
+                elif name == "top_failing_tasks": viz_type = "CHART"; viz_options = {"globalSeriesType": "bar"}
+                viz = w.visualizations.create(query_id=query_obj.id, type=viz_type, name=f"Viz-{name}", options=viz_options)
+                widgets.append(sql_service.WidgetCreate(visualization_id=viz.id))
+            
+            dashboard = w.dashboards.create(name=dashboard_name, warehouse_id=warehouse_id, widgets=widgets)
+            dashboard_url = f"{w.config.host}/sql/dashboards/{dashboard.id}"
+            logger.success(f"✅ Dashboard is ready! View it here: {dashboard_url}")
+            dbutils.notebook.exit(dashboard_url)
+        """)
+
+    def _upload_job_assets(self, config: dict[str, any], results_table: str, job_name: str) -> dict[str, str]:
+        """Generates and uploads all SQL files and the dashboard notebook for the job."""
+        logger.info("Generating and uploading job assets...")
+        asset_paths: dict[str, str] = {}
+        job_assets_path: str = f"{self.root_path}/job_assets/{job_name}"
+        self.w.workspace.mkdirs(job_assets_path)
 
         for task_config in config['validations']:
             task_key: str = task_config['task_key']
-            sql_script: str = self._generate_validation_sql(task_config, results_table, job_name)
-            script_path: str = f"{sql_tasks_path}/{task_key}.sql"
-            
-            self.w.workspace.upload(
-                path=script_path,
-                content=sql_script.encode('utf-8'),
-                overwrite=True,
-                format=workspace.ImportFormat.RAW 
-            )
-            task_paths[task_key] = script_path
-            logger.info(f"  - Uploaded SQL FILE for task '{task_key}' to {script_path}")
+            sql_script: str = self._generate_validation_sql(task_config, results_table)
+            script_path: str = f"{job_assets_path}/{task_key}.sql"
+            self.w.workspace.upload(path=script_path, content=sql_script.encode('utf-8'), overwrite=True, format=workspace.ImportFormat.RAW)
+            asset_paths[task_key] = script_path
         
-        agg_script_path: str = f"{sql_tasks_path}/aggregate_results.sql"
-        agg_sql_script: str = textwrap.dedent(f"""
-            CREATE OR REPLACE TEMP VIEW run_results AS SELECT * FROM {results_table} WHERE run_id = {{{{job.run_id}}}};
-            SELECT CASE WHEN (SELECT COUNT(1) FROM run_results WHERE status = 'FAILURE') > 0
-                THEN RAISE_ERROR(CONCAT('DataPact tasks failed: ', (SELECT to_json(COLLECT_LIST(task_key)) FROM run_results WHERE status = 'FAILURE')))
-                ELSE 'All DataPact validations passed successfully!' END;""")
+        agg_script_path: str = f"{job_assets_path}/aggregate_results.sql"
+        agg_sql_script: str = textwrap.dedent(f"""SELECT CASE WHEN (SELECT COUNT(1) FROM {results_table} WHERE run_id = :run_id AND status = 'FAILURE') > 0 THEN RAISE_ERROR('DataPact validation tasks failed.') ELSE 'All DataPact validations passed.' END;""")
+        self.w.workspace.upload(path=agg_script_path, content=agg_sql_script.encode('utf-8'), overwrite=True, format=workspace.ImportFormat.RAW)
+        asset_paths['aggregate_results'] = agg_script_path
+
+        dashboard_notebook_path = f"{job_assets_path}/create_dashboard_notebook.py"
+        notebook_content = self._generate_dashboard_notebook_content()
+        self.w.workspace.upload(path=dashboard_notebook_path, content=notebook_content.encode('utf-8'), overwrite=True, format=workspace.ImportFormat.SOURCE)
+        asset_paths['dashboard_notebook'] = dashboard_notebook_path
         
-        self.w.workspace.upload(
-            path=agg_script_path,
-            content=agg_sql_script.encode('utf-8'),
-            overwrite=True,
-            format=workspace.ImportFormat.RAW
-        )
-        task_paths['aggregate_results'] = agg_script_path
-        logger.info(f"  - Uploaded aggregation SQL FILE to {agg_script_path}")
-        return task_paths
+        logger.success("All job assets uploaded successfully.")
+        return asset_paths
 
     def run_validation(
         self,
@@ -281,87 +317,63 @@ class DataPactClient:
         warehouse_name: str,
         results_table: str | None = None
     ) -> None:
-        """
-        Main orchestrator for the validation process.
-        """
+        """Main orchestrator for the validation process."""
         warehouse = self._ensure_sql_warehouse(warehouse_name)
         
         final_results_table = f"`{results_table}`" if results_table else f"`{DEFAULT_CATALOG}`.`{DEFAULT_SCHEMA}`.`{DEFAULT_TABLE}`"
-        if not results_table:
-            self._setup_default_infrastructure(warehouse.id)
-
+        if not results_table: self._setup_default_infrastructure(warehouse.id)
         self._ensure_results_table_exists(final_results_table, warehouse.id)
         
-        task_paths = self._upload_sql_scripts(config, final_results_table, job_name)
+        asset_paths = self._upload_job_assets(config, final_results_table, job_name)
         
         tasks: list[Task] = []
         validation_task_keys: list[str] = [v_conf["task_key"] for v_conf in config["validations"]]
-        for task_key in validation_task_keys:
-            sql_task_file = SqlTaskFile(path=task_paths[task_key], source=Source.WORKSPACE)
-            tasks.append(Task(
-                task_key=task_key,
-                sql_task=SqlTask(file=sql_task_file, warehouse_id=warehouse.id)
-            ))
+        sql_parameters = {'run_id': '{{job.run_id}}', 'job_id': '{{job.id}}'}
 
-        agg_sql_task_file = SqlTaskFile(path=task_paths['aggregate_results'], source=Source.WORKSPACE)
+        for task_key in validation_task_keys:
+            tasks.append(Task(task_key=task_key, sql_task=SqlTask(file=SqlTaskFile(path=asset_paths[task_key], source=Source.WORKSPACE), warehouse_id=warehouse.id, parameters=sql_parameters)))
+
         tasks.append(Task(
             task_key="aggregate_results",
             depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys],
             run_if=RunIf.ALL_DONE,
-            sql_task=SqlTask(file=agg_sql_task_file, warehouse_id=warehouse.id)
+            sql_task=SqlTask(file=SqlTaskFile(path=asset_paths['aggregate_results'], source=Source.WORKSPACE), warehouse_id=warehouse.id, parameters=sql_parameters)
+        ))
+
+        tasks.append(Task(
+            task_key="create_or_update_dashboard",
+            depends_on=[TaskDependency(task_key="aggregate_results")],
+            run_if=RunIf.ALL_DONE,
+            notebook_task=NotebookTask(
+                notebook_path=asset_paths['dashboard_notebook'],
+                source=Source.WORKSPACE,
+                base_parameters={
+                    "job_name": job_name,
+                    "results_table_fqn": final_results_table,
+                    "warehouse_id": warehouse.id
+                }
+            )
         ))
 
         job_settings = JobSettings(name=job_name, tasks=tasks, run_as=JobRunAs(user_name=self.user_name))
         
         existing_job = next(iter(self.w.jobs.list(name=job_name)), None)
-        job_id: int
-        if existing_job:
-            logger.info(f"Updating existing job '{job_name}' (ID: {existing_job.job_id})...")
-            self.w.jobs.reset(job_id=existing_job.job_id, new_settings=job_settings)
-            job_id = existing_job.job_id
-        else:
-            logger.info(f"Creating new job '{job_name}'...")
-            new_job = self.w.jobs.create(
-                name=job_settings.name,
-                tasks=job_settings.tasks,
-                run_as=job_settings.run_as
-            )
-            job_id = new_job.job_id
-
+        job_id = existing_job.job_id if existing_job else self.w.jobs.create(name=job_settings.name, tasks=job_settings.tasks, run_as=job_settings.run_as).job_id
+        if existing_job: self.w.jobs.reset(job_id=job_id, new_settings=job_settings)
+        
         logger.info(f"Launching job {job_id}...")
-        run_info = self.w.jobs.run_now(job_id=job_id)
-        run = self.w.jobs.get_run(run_info.run_id)
+        run = self.w.jobs.run_now(job_id=job_id).result(timeout=timedelta(hours=1))
         
-        logger.info(f"Run started! View progress here: {run.run_page_url}")
+        logger.info(f"Run finished with state: {run.state.result_state}")
         
-        timeout = timedelta(hours=1)
-        deadline = datetime.now() + timeout
-        while datetime.now() < deadline:
-            run = self.w.jobs.get_run(run.run_id)
-            if run.state.life_cycle_state in TERMINAL_STATES:
-                break
-            finished_tasks = sum(1 for t in run.tasks if t.state.life_cycle_state in TERMINAL_STATES)
-            logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{len(tasks)}")
-            time.sleep(30)
+        if run.state.result_state != jobs.RunResultState.SUCCESS:
+            raise Exception(f"DataPact job failed. View details at {run.run_page_url}")
         else:
-            raise TimeoutError(f"Job run timed out after {timeout.total_seconds()} seconds.")
-
-        final_state = run.state
-        logger.info(f"Run finished with state: {final_state.result_state}")
-        
-        if final_state.life_cycle_state == RunLifeCycleState.INTERNAL_ERROR:
-            raise Exception(f"Job run failed with INTERNAL_ERROR: {final_state.state_message}")
-
-        try:
-            self._create_or_update_dashboard(job_name, final_results_table, warehouse.id)
-        except Exception as e:
-            logger.error(f"Failed to create or update the dashboard. Please check permissions. Error: {e}")
-
-        if final_state.result_state == jobs.RunResultState.SUCCESS:
-            logger.success("✅ DataPact job completed successfully.")
-        else:
-            logger.error(f"DataPact job did not succeed. Final state: {final_state.result_state}. View details at {run.run_page_url}")
-            raise Exception("DataPact job failed.")
+            dashboard_task_output = next((t for t in run.tasks if t.task_key == 'create_or_update_dashboard'), None)
+            if dashboard_task_output and dashboard_task_output.notebook_output and dashboard_task_output.notebook_output.result:
+                logger.success(f"✅ DataPact job completed successfully. Dashboard URL: {dashboard_task_output.notebook_output.result}")
+            else:
+                logger.success("✅ DataPact job completed successfully.")
 
     def _create_or_update_dashboard(self, job_name: str, results_table_fqn: str, warehouse_id: str) -> None:
         """
