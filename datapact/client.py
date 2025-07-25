@@ -292,13 +292,20 @@ class DataPactClient:
 
         for task_config in config['validations']:
             task_key: str = task_config['task_key']
-            sql_script: str = self._generate_validation_sql(task_config, results_table)
+            sql_script: str = self._generate_validation_sql(task_config, results_table, job_name)
             script_path: str = f"{job_assets_path}/{task_key}.sql"
             self.w.workspace.upload(path=script_path, content=sql_script.encode('utf-8'), overwrite=True, format=workspace.ImportFormat.RAW)
             asset_paths[task_key] = script_path
         
         agg_script_path: str = f"{job_assets_path}/aggregate_results.sql"
-        agg_sql_script: str = textwrap.dedent(f"""SELECT CASE WHEN (SELECT COUNT(1) FROM {results_table} WHERE run_id = :run_id AND status = 'FAILURE') > 0 THEN RAISE_ERROR('DataPact validation tasks failed.') ELSE 'All DataPact validations passed.' END;""")
+        agg_sql_script: str = textwrap.dedent(f"""
+            CREATE OR REPLACE TEMP VIEW run_results AS SELECT * FROM {results_table} WHERE run_id = :run_id;
+            CREATE OR REPLACE TEMP VIEW agg_metrics AS
+            SELECT (SELECT COUNT(1) FROM run_results WHERE status = 'FAILURE') AS failure_count,
+                   (SELECT COLLECT_LIST(task_key) FROM run_results WHERE status = 'FAILURE') as failed_tasks;
+            SELECT CASE WHEN (SELECT failure_count FROM agg_metrics) > 0
+                THEN RAISE_ERROR(CONCAT('DataPact tasks failed: ', to_json(failed_tasks)))
+                ELSE 'All DataPact validations passed successfully!' END;""")
         self.w.workspace.upload(path=agg_script_path, content=agg_sql_script.encode('utf-8'), overwrite=True, format=workspace.ImportFormat.RAW)
         asset_paths['aggregate_results'] = agg_script_path
 
