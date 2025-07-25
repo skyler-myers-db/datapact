@@ -20,6 +20,7 @@ from databricks.sdk.service.jobs import (
     RunLifeCycleState, Source, JobRunAs, JobSettings, Task, SqlTask,
     SqlTaskFile, TaskDependency, RunIf
 )
+from databricks.sdk.service import lakeview
 from loguru import logger
 
 TERMINAL_STATES: list[RunLifeCycleState] = [
@@ -310,39 +311,50 @@ class DataPactClient:
         return asset_paths
 
     def _create_or_update_dashboard(self, job_name: str, results_table_fqn: str, warehouse_id: str):
-        """Creates or updates a Databricks SQL Dashboard using the local client after a job run."""
-        logger.info("Creating or updating results dashboard...")
+        """
+        Creates or updates a modern Databricks Lakeview Dashboard using the local client.
+        This is the final, correct implementation using the lakeview API.
+        """
+        logger.info("Creating or updating results Lakeview dashboard...")
         dashboard_name = f"DataPact Results: {job_name}"
-        
-        for d in self.w.dashboards.list(q=dashboard_name):
+
+        for d in self.w.lakeview.list(q=dashboard_name):
             if d.display_name == dashboard_name:
-                logger.warning(f"Deleting existing dashboard (ID: {d.dashboard_id}) to recreate.")
-                self.w.dashboards.delete(d.dashboard_id)
-                if d.widgets:
-                    for widget in d.widgets:
-                        if widget.visualization and widget.visualization.query:
-                            try: self.w.queries.delete(widget.visualization.query.query_id)
-                            except Exception: pass
+                logger.warning(f"Deleting existing Lakeview dashboard (ID: {d.dashboard_id}) to recreate.")
+                self.w.lakeview.delete(dashboard_id=d.dashboard_id)
         
         queries = {
-            "run_summary": f"SELECT status, COUNT(1) as task_count FROM {results_table_fqn} WHERE run_id = (SELECT MAX(run_id) FROM {results_table_fqn} WHERE job_name = '{job_name}') GROUP BY status",
-            "failure_rate_over_time": f"SELECT to_date(timestamp) as run_date, COUNT(CASE WHEN status = 'FAILURE' THEN 1 END) * 100.0 / COUNT(1) as failure_rate_percent FROM {results_table_fqn} WHERE job_name = '{job_name}' GROUP BY 1 ORDER BY 1",
-            "top_failing_tasks": f"SELECT task_key, COUNT(1) as failure_count FROM {results_table_fqn} WHERE status = 'FAILURE' AND job_name = '{job_name}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10",
+            "Run Summary (Latest)": f"SELECT status, COUNT(1) as task_count FROM {results_table_fqn} WHERE run_id = (SELECT MAX(run_id) FROM {results_table_fqn} WHERE job_name = '{job_name}') GROUP BY status",
+            "Failure Rate Over Time (%)": f"SELECT to_date(timestamp) as run_date, COUNT(CASE WHEN status = 'FAILURE' THEN 1 END) * 100.0 / COUNT(1) as failure_rate_percent FROM {results_table_fqn} WHERE job_name = '{job_name}' GROUP BY 1 ORDER BY 1",
+            "Top 10 Failing Tasks": f"SELECT task_key, COUNT(1) as failure_count FROM {results_table_fqn} WHERE status = 'FAILURE' AND job_name = '{job_name}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10",
+            "Detailed Run History": f"SELECT * FROM {results_table_fqn} WHERE job_name = '{job_name}' ORDER BY timestamp DESC, task_key"
         }
+
         widgets = []
-        for name, sql in queries.items():
-            query_obj = self.w.queries.create(display_name=f"DataPact-{job_name}-{name}", data_source_id=warehouse_id, query=sql)
-            
-            viz_options, viz_type = {}, "TABLE"
-            if name == "run_summary": viz_type = "COUNTER"; viz_options = {"counterColName": "task_count"}
-            elif name == "failure_rate_over_time": viz_type = "CHART"; viz_options = {"globalSeriesType": "line"}
-            elif name == "top_failing_tasks": viz_type = "CHART"; viz_options = {"globalSeriesType": "bar"}
-            
-            viz = self.w.visualizations.create(query_id=query_obj.id, type=viz_type, display_name=f"Viz-{name}", options=viz_options)
-            widgets.append(sql_service.WidgetCreate(visualization_id=viz.id))
+        y_pos = 0
+        for i, (title, sql) in enumerate(queries.items()):
+            widget = lakeview.Widget(
+                content=lakeview.Content(
+                    sql=lakeview.Sql(
+                        query=lakeview.Query(text=sql)
+                    )
+                ),
+                position=lakeview.Position(x=0, y=y_pos, width=6, height=8),
+                title=title
+            )
+            widgets.append(widget)
+            y_pos += 8
+
+        content = lakeview.DashboardContent(widgets=widgets)
+
+        dashboard = self.w.lakeview.create(
+            display_name=dashboard_name,
+            warehouse_id=warehouse_id,
+            content=content
+        )
         
-        dashboard = self.w.dashboards.create(name=dashboard_name, warehouse_id=warehouse_id, widgets=widgets)
-        logger.success(f"✅ Dashboard is ready! View it here: {self.w.config.host}/sql/dashboards/{dashboard.id}")
+        dashboard_url = f"{self.w.config.host}/dashboards/lakeview/{dashboard.dashboard_id}"
+        logger.success(f"✅ Dashboard is ready! View it here: {dashboard_url}")
 
     def run_validation(
         self,
