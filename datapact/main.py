@@ -15,24 +15,21 @@ def main() -> None:
     )
     parser.add_argument("command", choices=["run"], help="The command to execute.")
     parser.add_argument("--config", required=True, help="Path to the validation_config.yml file.")
-    parser.add_argument("--job-name", default="datapact-validation-run", help="Name for the created Databricks job.")
+    parser.add_argument("--job-name", default="datapact-validation-run", help="Name for the created Databricks job and dashboard.")
     parser.add_argument("--warehouse", help="Name of the Serverless SQL Warehouse. Overrides all other settings.")
     parser.add_argument("--profile", help="Databricks CLI profile. Overrides DATABRICKS_PROFILE env var.")
     parser.add_argument("--results-table", help="Optional: A 3-level (catalog.schema.table) Delta table name to store results. If not provided, a default is created.")
-    parser.add_argument("--create-dashboard", action="store_true", help="If set, creates or updates a Databricks SQL dashboard for the results.")
     
     args: argparse.Namespace = parser.parse_args()
 
     profile_name: str = args.profile or os.getenv("DATABRICKS_PROFILE", "DEFAULT")
     
-    # Initialize the client first to access its configuration
     client: DataPactClient = DataPactClient(profile=profile_name)
 
     warehouse_name: str | None = args.warehouse
     if not warehouse_name:
         warehouse_name = os.getenv("DATAPACT_WAREHOUSE")
         if not warehouse_name:
-            # Safely access the custom config value from the SDK's config object
             warehouse_name = client.w.config.config.get('datapact_warehouse')
 
     if not warehouse_name:
@@ -52,7 +49,6 @@ def main() -> None:
                 job_name=args.job_name,
                 warehouse_name=warehouse_name,
                 results_table=args.results_table,
-                create_dashboard=args.create_dashboard,
             )
         except Exception as e:
             logger.critical(f"A critical error occurred during the DataPact run: {e}", exc_info=True)
