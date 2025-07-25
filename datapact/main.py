@@ -30,7 +30,7 @@ def main() -> None:
     if not warehouse_name:
         warehouse_name = os.getenv("DATAPACT_WAREHOUSE")
         if not warehouse_name:
-            warehouse_name = client.w.config.config.get('datapact_warehouse')
+            warehouse_name = client.w.config.get('datapact_warehouse')
 
     if not warehouse_name:
         raise ValueError(
