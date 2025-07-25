@@ -78,7 +78,7 @@ This creates a self-contained environment to avoid conflicts with other Python p
 
 ```bash
 # For macOS/Linux
-python3 -m venv .venv
+python -m venv .venv
 source .venv/bin/activate
 
 # For Windows
@@ -91,7 +91,7 @@ python -m venv .venv
 Install the package and its dependencies in editable mode.
 
 ```bash
-pip install -e
+pip install -e .
 ```
 
 #### Step 4: Set Up the Demo Environment
