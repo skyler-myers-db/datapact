@@ -420,7 +420,7 @@ class DataPactClient:
             sql_task=SqlTask(file=SqlTaskFile(path=asset_paths['aggregate_results'], source=Source.WORKSPACE), warehouse_id=warehouse.id, parameters=sql_parameters)
         ))
 
-        dashboard_id = ensure_dashboard_exists(
+        dashboard_id = self.ensure_dashboard_exists(
         job_name, final_results_table, warehouse.id)
         
         tasks.append(
