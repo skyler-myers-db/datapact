@@ -113,6 +113,7 @@ python demo/setup.py --warehouse "Your Serverless Warehouse Name" --profile your
 Execute DataPact using the pre-made comprehensive demo configuration. This run will showcase:
 
 ✅ Performance on tables with millions of rows.
+
 ✅ A mix of intentionally PASSING and FAILING tasks.
 ✅ Advanced features like accepted change thresholds (pk_hash_threshold).
 ✅ Performance tuning with selective column hashing (hash_columns).
