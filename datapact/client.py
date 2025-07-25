@@ -123,32 +123,41 @@ class DataPactClient:
 
         # Validation 1: Row Count
         if 'count_tolerance' in config:
-            tolerance: float = config.get('count_tolerance', 0.0)
+            tolerance = config.get('count_tolerance', 0.0)
             ctes.append(f"count_metrics AS (SELECT (SELECT COUNT(1) FROM {source_fqn}) AS source_count, (SELECT COUNT(1) FROM {target_fqn}) AS target_count)")
-            check: str = f"COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= {tolerance}"
-            payload_structs.append("struct(source_count, target_count, "
-                                   f"COALESCE((ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0)), 0) as relative_diff, {tolerance} as tolerance, "
-                                   f"CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status) AS count_validation")
-            overall_validation_passed_clauses.append(check)
+            check = f"COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= {tolerance}"
+            payload_structs.append(textwrap.dedent(f"""
+            struct(
+                FORMAT_NUMBER(source_count, '0') AS source_count,
+                FORMAT_NUMBER(target_count, '0') AS target_count,
+                FORMAT_STRING('%.2f%%', COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) * 100) as relative_diff,
+                FORMAT_STRING('%.2f%%', {tolerance} * 100) as tolerance,
+                CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
+            ) AS count_validation"""))
+            overall_clauses.append(check)
 
         # Validation 2: Row Hash
         if config.get('pk_row_hash_check') and config.get('primary_keys'):
-            pks: list[str] = config['primary_keys']
-            threshold: float = config.get('pk_hash_threshold', 0.0)
-            hash_cols: list[str] | None = config.get('hash_columns')
-            hash_expr: str = f"md5(to_json(struct({', '.join([f'`{c}`' for c in hash_cols]) if hash_cols else '*'})))"
-            pk_cols_str: str = ", ".join([f"`{pk}`" for pk in pks])
-            join_expr: str = " AND ".join([f"s.`{pk}` = t.`{pk}`" for pk in pks])
+            pks = config['primary_keys']
+            threshold = config.get('pk_hash_threshold', 0.0)
+            hash_cols = config.get('hash_columns')
+            hash_expr = f"md5(to_json(struct({', '.join([f'`{c}`' for c in hash_cols]) if hash_cols else '*'})))"
+            join_expr = " AND ".join([f"s.`{pk}` = t.`{pk}`" for pk in pks])
+            pk_cols_str = ", ".join([f"`{pk}`" for pk in pks])
             ctes.append(f"""row_hash_metrics AS (
-                SELECT COUNT(1) AS total_compared_rows, COALESCE(SUM(CASE WHEN s.row_hash <> t.row_hash THEN 1 ELSE 0 END), 0) AS mismatch_count
-                FROM (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {source_fqn}) s
-                INNER JOIN (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {target_fqn}) t ON {join_expr}
-            )""")
-            check = f"COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= {threshold}"
-            payload_structs.append("struct(total_compared_rows, mismatch_count, "
-                                   f"COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) as mismatch_ratio, {threshold} as threshold, "
-                                   f"CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status) AS row_hash_validation")
-            overall_validation_passed_clauses.append(check)
+                SELECT COUNT(1) AS total, COALESCE(SUM(CASE WHEN s.h <> t.h THEN 1 ELSE 0 END), 0) AS mismatches
+                FROM (SELECT {pk_cols_str}, {hash_expr} as h FROM {source_fqn}) s
+                JOIN (SELECT {pk_cols_str}, {hash_expr} as h FROM {target_fqn}) t ON {join_expr})""")
+            check = f"COALESCE(mismatches / NULLIF(CAST(total AS DOUBLE), 0), 0) <= {threshold}"
+            payload_structs.append(textwrap.dedent(f"""
+            struct(
+                FORMAT_NUMBER(total, '0') as total_compared_rows,
+                FORMAT_NUMBER(mismatches, '0') as mismatch_count,
+                FORMAT_STRING('%.2f%%', COALESCE(mismatches / NULLIF(CAST(total AS DOUBLE), 0), 0) * 100) as mismatch_ratio,
+                FORMAT_STRING('%.2f%%', {threshold} * 100) as threshold,
+                CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
+            ) AS row_hash_validation"""))
+            overall_clauses.append(check)
         
         # Validation 3: Null Counts
         null_cols: list[str] | None = config.get('null_validation_columns')
@@ -177,8 +186,8 @@ class DataPactClient:
                     )""")
                     check = f"COALESCE(ABS(source_nulls - target_nulls) / NULLIF(CAST(source_total AS DOUBLE), 0), 0) <= {threshold}"
                 
-                payload_structs.append("struct(source_nulls, target_nulls, total_compared_rows, "
-                                      f"COALESCE(ABS(source_nulls - target_nulls) / NULLIF(CAST(total_compared_rows AS DOUBLE), 0), 0) as diff_ratio, {threshold} as threshold, "
+                payload_structs.append("struct(FORMAT_NUMBER(source_nulls, '0') as source_nulls, FORMAT_NUMBER(target_nulls, '0') as target_nulls, FORMAT_NUMBER(total_compared_rows, '0') AS total_compared_rows, "
+                                      f"FORMAT_STRING('%.2f%%', COALESCE(ABS(source_nulls - target_nulls) / NULLIF(CAST(total_compared_rows AS DOUBLE), 0), 0)) as diff_ratio, FORMAT_STRING('%.2f%%', {threshold} * 100) as threshold, "
                                       f"CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END as status) as null_validation_{col}")
                 overall_validation_passed_clauses.append(check)
 
@@ -188,13 +197,20 @@ class DataPactClient:
                 col, validations = agg_config['column'], agg_config['validations']
                 for val in validations:
                     agg, tolerance = val['agg'].upper(), val['tolerance']
-                    src_alias, tgt_alias = f"source_value_{col}_{agg}", f"target_value_{col}_{agg}"
-                    ctes.append(f"agg_{col}_{agg} AS (SELECT (SELECT {agg}(`{col}`) FROM {source_fqn}) AS {src_alias}, (SELECT {agg}(`{col}`) FROM {target_fqn}) AS {tgt_alias})")
-                    check = f"COALESCE(ABS({src_alias} - {tgt_alias}) / NULLIF(ABS(CAST({src_alias} AS DOUBLE)), 0), 0) <= {tolerance}"
-                    payload_structs.append(f"struct({src_alias} as source_value, {tgt_alias} as target_value, "
-                                           f"COALESCE(ABS({src_alias} - {tgt_alias}) / NULLIF(ABS(CAST({src_alias} AS DOUBLE)), 0), 0) as relative_diff, {tolerance} as tolerance, "
-                                           f"CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END as status) as agg_validation_{col}_{agg}")
-                    overall_validation_passed_clauses.append(check)
+                    cte_key = f"agg_metrics_{col}_{agg}"
+                    ctes.append(f"""{cte_key} AS (
+                        SELECT (SELECT {agg}(`{col}`) FROM {source_fqn}) as source_val,
+                               (SELECT {agg}(`{col}`) FROM {target_fqn}) as target_val)""")
+                    check = f"COALESCE(ABS(source_val - target_val) / NULLIF(ABS(CAST(source_val AS DOUBLE)), 0), 0) <= {tolerance}"
+                    payload_structs.append(textwrap.dedent(f"""
+                    struct(
+                        FORMAT_NUMBER(source_val, '0.00') as source_value,
+                        FORMAT_NUMBER(target_val, '0.00') as target_value,
+                        FORMAT_STRING('%.2f%%', COALESCE(ABS(source_val - target_val) / NULLIF(ABS(CAST(source_val AS DOUBLE)), 0), 0) * 100) as relative_diff,
+                        FORMAT_STRING('%.2f%%', {tolerance} * 100) as tolerance,
+                        CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
+                    ) as agg_validation_{col}_{agg}"""))
+                    overall_clauses.append(check)
 
         if not payload_structs: return f"SELECT 'No validations configured for task {task_key}' AS status;"
 
@@ -279,27 +295,32 @@ class DataPactClient:
         asset_paths: dict[str, str] = {}
         job_assets_path: str = f"{self.root_path}/job_assets/{job_name}"
         self.w.workspace.mkdirs(job_assets_path)
-
         for task_config in config['validations']:
-            task_key: str = task_config['task_key']
-            sql_script: str = self._generate_validation_sql(task_config, results_table, job_name)
-            script_path: str = f"{job_assets_path}/{task_key}.sql"
+            task_key = task_config['task_key']
+            sql_script = self._generate_validation_sql(task_config, results_table, job_name)
+            script_path = f"{job_assets_path}/{task_key}.sql"
             self.w.workspace.upload(path=script_path, content=sql_script.encode('utf-8'), overwrite=True, format=workspace.ImportFormat.RAW)
             asset_paths[task_key] = script_path
         
-        agg_script_path: str = f"{job_assets_path}/aggregate_results.sql"
-        agg_sql_script: str = textwrap.dedent(f"""
-            CREATE OR REPLACE TEMP VIEW run_results AS SELECT * FROM {results_table} WHERE run_id = :run_id;
-            CREATE OR REPLACE TEMP VIEW agg_metrics AS
-            SELECT (SELECT COUNT(1) FROM run_results WHERE status = 'FAILURE') AS failure_count,
-                   (SELECT COLLECT_LIST(task_key) FROM run_results WHERE status = 'FAILURE') as failed_tasks;
-            SELECT CASE WHEN (SELECT failure_count FROM agg_metrics) > 0
-                THEN RAISE_ERROR(CONCAT('DataPact tasks failed: ', to_json(failed_tasks)))
-                ELSE 'All DataPact validations passed successfully!' END;""")
+        agg_script_path = f"{job_assets_path}/aggregate_results.sql"
+        agg_sql_script = textwrap.dedent(f"""
+            WITH run_results AS (
+                SELECT * FROM {results_table} WHERE run_id = :run_id
+            ),
+            agg_metrics AS (
+                SELECT
+                  (SELECT COUNT(1) FROM run_results WHERE status = 'FAILURE') AS failure_count,
+                  (SELECT COLLECT_LIST(task_key) FROM run_results WHERE status = 'FAILURE') as failed_tasks
+            )
+            SELECT CASE
+                WHEN (SELECT failure_count FROM agg_metrics) > 0
+                THEN RAISE_ERROR(CONCAT('DataPact validation tasks failed: ', to_json((SELECT failed_tasks FROM agg_metrics))))
+                ELSE 'All DataPact validations passed successfully!'
+            END;
+        """)
         self.w.workspace.upload(path=agg_script_path, content=agg_sql_script.encode('utf-8'), overwrite=True, format=workspace.ImportFormat.RAW)
         asset_paths['aggregate_results'] = agg_script_path
-        
-        logger.success("All job assets uploaded successfully.")
+        logger.success("All SQL scripts uploaded successfully.")
         return asset_paths
 
     def _create_or_update_dashboard(self, job_name: str, results_table_fqn: str, warehouse_id: str):
@@ -372,7 +393,10 @@ class DataPactClient:
         if existing_job: self.w.jobs.reset(job_id=job_id, new_settings=job_settings)
         
         logger.info(f"Launching job {job_id}...")
-        run = self.w.jobs.run_now(job_id=job_id)
+        
+        run_info = self.w.jobs.run_now(job_id=job_id)
+        run = self.w.jobs.get_run(run_info.run_id)
+
         logger.info(f"Run started! View progress here: {run.run_page_url}")
 
         timeout = timedelta(hours=1)
