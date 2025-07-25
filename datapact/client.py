@@ -21,7 +21,7 @@ from databricks.sdk.service.jobs import (
     RunLifeCycleState, Source, JobRunAs, JobSettings, Task, SqlTask,
     SqlTaskFile, TaskDependency, RunIf
 )
-from databricks.sdk.service.dashboards import Dashboard
+from databricks.sdk.service.dashboards import Dashboard, DashboardView
 from loguru import logger
 
 TERMINAL_STATES: list[RunLifeCycleState] = [
@@ -311,106 +311,149 @@ class DataPactClient:
         logger.success("All SQL scripts uploaded successfully.")
         return asset_paths
 
-    def _create_or_update_dashboard(self, job_name: str, results_table_fqn: str, warehouse_id: str):
+    def _create_or_update_dashboard(
+        self,
+        job_name: str,
+        results_table_fqn: str,
+        warehouse_id: str,
+    ) -> None:
         """
-        Creates or updates a modern Databricks Lakeview Dashboard using the local client.
+        Create a new Lakeview dashboard or update the existing one that has the same
+        display_name in the same parent_path. Then publish it with embedded
+        credentials so anyone can view it without extra warehouse grants.
         """
-        logger.info("Creating or updating results Lakeview dashboard...")
-        
-        # Use a sanitized name for the dashboard resource itself
+        logger.info("Creating or updating results Lakeview dashboard…")
+    
+        # ------------------------------------------------------------------
+        # 1. Stable names and parent folder
+        # ------------------------------------------------------------------
         sanitized_job_name = job_name.replace(" ", "_").replace(":", "")
-        dashboard_name = f"DataPact_Results_{sanitized_job_name}"
-        
-        # Use a stable parent path to store dashboards
-        parent_path = f"{self.root_path}/dashboards"
-        self.w.workspace.mkdirs(parent_path)
-
-        # Robustly delete by listing the workspace path, not using an unsupported API filter
-        dashboard_full_path = f"{parent_path}/{dashboard_name}"
-        try:
-            for item in self.w.workspace.list(parent_path):
-                if item.path == dashboard_full_path and item.object_type.name == 'DASHBOARD':
-                    logger.warning(f"Deleting existing Lakeview dashboard at path: {item.path}")
-                    for d in self.w.lakeview.list():
-                        if d.display_name == dashboard_name:
-                            self.w.lakeview.delete(dashboard_id=d.dashboard_id)
-                            logger.warning(f"Deleted dashboard with display_name: {dashboard_name}")
-                            break
-                    break
-        except Exception as e:
-            logger.warning(f"Could not check for or delete existing dashboard. This may be okay. Error: {e}")
-
+        dashboard_name     = f"DataPact_Results_{sanitized_job_name}"
+        parent_path        = f"{self.root_path}/dashboards"
+        self.w.workspace.mkdirs(parent_path)          # idempotent
+    
+        # ------------------------------------------------------------------
+        # 2. Define queries → datasets/visualizations/widgets
+        # ------------------------------------------------------------------
         queries = {
-            "Run Summary (Latest)": f"SELECT status, COUNT(1) as task_count FROM {results_table_fqn} WHERE run_id = (SELECT MAX(run_id) FROM {results_table_fqn} WHERE job_name = '{job_name}') GROUP BY status",
-            "Failure Rate Over Time (%)": f"SELECT to_date(timestamp) as run_date, COUNT(CASE WHEN status = 'FAILURE' THEN 1 END) * 100.0 / COUNT(1) as failure_rate_percent FROM {results_table_fqn} WHERE job_name = '{job_name}' GROUP BY 1 ORDER BY 1",
-            "Top 10 Failing Tasks": f"SELECT task_key, COUNT(1) as failure_count FROM {results_table_fqn} WHERE status = 'FAILURE' AND job_name = '{job_name}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10",
-            "Detailed Run History": f"SELECT task_key, status, timestamp, to_json(result_payload) as result_payload_json FROM {results_table_fqn} WHERE job_name = '{job_name}' ORDER BY timestamp DESC, task_key"
+            "Run Summary (Latest)": (
+                "SELECT status, COUNT(1) AS task_count "
+                f"FROM {results_table_fqn} "
+                "WHERE run_id = (SELECT MAX(run_id) FROM "
+                f"{results_table_fqn} WHERE job_name = '{job_name}') "
+                "GROUP BY status"
+            ),
+            "Failure Rate Over Time (%)": (
+                "SELECT to_date(timestamp) AS run_date, "
+                "COUNT(CASE WHEN status = 'FAILURE' THEN 1 END) * 100.0 "
+                "/ COUNT(1) AS failure_rate_percent "
+                f"FROM {results_table_fqn} WHERE job_name = '{job_name}' "
+                "GROUP BY 1 ORDER BY 1"
+            ),
+            "Top 10 Failing Tasks": (
+                "SELECT task_key, COUNT(1) AS failure_count "
+                f"FROM {results_table_fqn} "
+                "WHERE status = 'FAILURE' AND job_name = '{job_name}' "
+                "GROUP BY 1 ORDER BY 2 DESC LIMIT 10"
+            ),
+            "Detailed Run History": (
+                "SELECT task_key, status, timestamp, "
+                "to_json(result_payload) AS result_payload_json "
+                f"FROM {results_table_fqn} WHERE job_name = '{job_name}' "
+                "ORDER BY timestamp DESC, task_key"
+            ),
         }
-
+    
         datasets, visualizations, widgets = [], [], []
         y_pos = 0
-        
         for i, (title, sql) in enumerate(queries.items(), start=1):
             ds_id = f"d_{i}"
             vz_id = f"v_{i}"
             wd_id = f"w_{i}"
-        
-            # ---------- 1. DATASET (top-level `query`) ----------
+    
+            # dataset (top-level `query`)
             datasets.append({
-                "id": ds_id,
-                "name": ds_id,
+                "id":          ds_id,
+                "name":        ds_id,
                 "displayName": title,
-                "query": sql
+                "query":       sql                     # << correct placement
             })
-        
-            # ---------- 2. VISUALIZATION ----------
+    
+            # visualization
             visualizations.append({
-                "id": vz_id,
-                "type": "TABLE" if "History" in title else "CHART",
-                "datasetId": ds_id
+                "id":        vz_id,
+                "type":      "TABLE" if "History" in title else "CHART",
+                "datasetId": ds_id,
             })
-        
-            # ---------- 3. WIDGET ----------
+    
+            # widget
             widgets.append({
-                "id": wd_id,
-                "name": f"{title.replace(' ','_')}",
-                "visualization": {"id": vz_id, "datasetId": ds_id},
-                "position": {"x": 0, "y": y_pos, "width": 6, "height": 8}
+                "id":   wd_id,
+                "name": title.replace(" ", "_"),
+                "visualization": { "id": vz_id, "datasetId": ds_id },
+                "position": { "x": 0, "y": y_pos, "width": 6, "height": 8 },
             })
             y_pos += 8
-
-        dashboard_dict = {
-            "version": "1.0", # Mandatory field
-            "datasets": datasets,
+    
+        dashboard_json = {
+            "version": "1.0",
+            "datasets":       datasets,
             "visualizations": visualizations,
             "pages": [{
-                "id": "page_1",
-                "name": "main_page", # Mandatory field
-                "displayName": "DataPact Validation Results", # Mandatory field
-                "widgets": widgets
-            }]
+                "id":          "page_1",
+                "name":        "main_page",
+                "displayName": "DataPact Validation Results",
+                "widgets":     widgets,
+            }],
         }
-        
-        serialized_dashboard_str = json.dumps(dashboard_dict)
-
-        dashboard_payload = Dashboard(
-            display_name=dashboard_name,
+        serialized_dashboard_str = json.dumps(dashboard_json)
+    
+        # ------------------------------------------------------------------
+        # 3. Create OR update draft
+        # ------------------------------------------------------------------
+        existing = next(
+            (
+                d
+                for d in self.w.lakeview.list(view=DashboardView.DASHBOARD_VIEW_BASIC)
+                if d.display_name == dashboard_name and d.parent_path == parent_path
+            ),
+            None,
+        )
+    
+        if existing:
+            logger.info(f"Updating existing Lakeview draft {existing.dashboard_id}")
+            self.w.lakeview.update(
+                dashboard_id=existing.dashboard_id,
+                dashboard=Dashboard(
+                    display_name=dashboard_name,
+                    serialized_dashboard=serialized_dashboard_str,
+                    warehouse_id=warehouse_id,
+                ),
+            )
+            draft_id = existing.dashboard_id
+        else:
+            logger.info("Creating new Lakeview draft")
+            draft = self.w.lakeview.create(
+                Dashboard(
+                    display_name=dashboard_name,
+                    parent_path=parent_path,
+                    warehouse_id=warehouse_id,
+                    serialized_dashboard=serialized_dashboard_str,
+                )
+            )
+            draft_id = draft.dashboard_id
+    
+        # ------------------------------------------------------------------
+        # 4. Publish with embedded credentials
+        # ------------------------------------------------------------------
+        self.w.lakeview.publish(
+            dashboard_id=draft_id,
+            embed_credentials=True,
             warehouse_id=warehouse_id,
-            parent_path=parent_path,
-            serialized_dashboard=serialized_dashboard_str
         )
-
-        draft = self.w.lakeview.create(dashboard_payload)
-        
-        pub = self.w.lakeview.publish(
-            dashboard_id=draft.dashboard_id,
-            embed_credentials=True, # Publish with embedded credentials
-            warehouse_id=warehouse_id
-        )
-
-        published_meta = self.w.lakeview.get_published(draft.dashboard_id)
-        dashboard_url  = published_meta.webapp_path
-        logger.success(f"✅ Dashboard is ready! View it here: {dashboard_url}")
+    
+        dashboard_url = f"{self.w.config.host}/dashboardsv3/{draft_id}/published"
+        logger.success(f"✅ Dashboard ready: {dashboard_url}")
 
     def run_validation(
         self,
