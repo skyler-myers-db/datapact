@@ -4,7 +4,6 @@ The main entry point for the DataPact Command-Line Interface (CLI).
 import argparse
 import os
 import yaml
-from databricks.sdk import WorkspaceClient
 from .client import DataPactClient
 from loguru import logger
 
@@ -20,6 +19,7 @@ def main() -> None:
     parser.add_argument("--warehouse", help="Name of the Serverless SQL Warehouse. Overrides all other settings.")
     parser.add_argument("--profile", help="Databricks CLI profile. Overrides DATABRICKS_PROFILE env var.")
     parser.add_argument("--results-table", help="Optional: A 3-level (catalog.schema.table) Delta table name to store results. If not provided, a default is created.")
+    parser.add_argument("--create-dashboard", action="store_true", help="If set, creates or updates a Databricks SQL dashboard for the results.")
     
     args: argparse.Namespace = parser.parse_args()
 
@@ -52,6 +52,7 @@ def main() -> None:
                 job_name=args.job_name,
                 warehouse_name=warehouse_name,
                 results_table=args.results_table,
+                create_dashboard=args.create_dashboard,
             )
         except Exception as e:
             logger.critical(f"A critical error occurred during the DataPact run: {e}", exc_info=True)
