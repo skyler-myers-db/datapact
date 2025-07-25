@@ -349,34 +349,33 @@ class DataPactClient:
 
         datasets, visualizations, widgets = [], [], []
         y_pos = 0
+        
         for i, (title, sql) in enumerate(queries.items(), start=1):
-            ds_id = f"dataset_{i}"
-            vz_id = f"viz_{i}"
-            wd_id = f"widget_{i}"
-
+            ds_id = f"d_{i}"
+            vz_id = f"v_{i}"
+            wd_id = f"w_{i}"
+        
+            # ---------- 1. DATASET (top-level `query`) ----------
             datasets.append({
                 "id": ds_id,
-                "name": ds_id, # Mandatory field
-                "displayName": title, # Mandatory field
-                "sql": {
-                    "query": {
-                        "text": sql,
-                        "dataSourceId": warehouse_id # Mandatory field
-                    }
-                }
+                "name": ds_id,
+                "displayName": title,
+                "query": sql
             })
-
+        
+            # ---------- 2. VISUALIZATION ----------
             visualizations.append({
                 "id": vz_id,
                 "type": "TABLE" if "History" in title else "CHART",
                 "datasetId": ds_id
             })
-
+        
+            # ---------- 3. WIDGET ----------
             widgets.append({
                 "id": wd_id,
-                "visualization": { "id": vz_id, "datasetId": ds_id },
-                "position": { "x": 0, "y": y_pos, "width": 6, "height": 8 },
-                "title": title
+                "name": f"{title.replace(' ','_')}",
+                "visualization": {"id": vz_id, "datasetId": ds_id},
+                "position": {"x": 0, "y": y_pos, "width": 6, "height": 8}
             })
             y_pos += 8
 
