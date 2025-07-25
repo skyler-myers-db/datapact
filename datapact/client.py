@@ -278,26 +278,13 @@ class DataPactClient:
         results_table: str | None = None
     ) -> None:
         """
-        Main orchestrator for the validation process. This function will:
-        1. Set up the necessary infrastructure (results table).
-        2. Generate and upload SQL scripts for each validation task.
-        3. Create and run a multi-task Databricks job.
-        4. Automatically create or update a BI dashboard with the results.
-        
-        Args:
-            config: Loaded validation YAML file as a dictionary.
-            job_name: Name for the Databricks Job and Dashboard.
-            warehouse_name: Name of the Serverless SQL Warehouse.
-            results_table: Optional FQN of the table to store results.
+        Main orchestrator for the validation process.
         """
         warehouse = self._ensure_sql_warehouse(warehouse_name)
         
-        final_results_table: str
+        final_results_table = f"`{results_table}`" if results_table else f"`{DEFAULT_CATALOG}`.`{DEFAULT_SCHEMA}`.`{DEFAULT_TABLE}`"
         if not results_table:
             self._setup_default_infrastructure(warehouse.id)
-            final_results_table = f"`{DEFAULT_CATALOG}`.`{DEFAULT_SCHEMA}`.`{DEFAULT_TABLE}`"
-        else:
-            final_results_table = f"`{results_table}`"
 
         self._ensure_results_table_exists(final_results_table, warehouse.id)
         
@@ -320,33 +307,32 @@ class DataPactClient:
             job_id = existing_job.job_id
         else:
             logger.info(f"Creating new job '{job_name}'...")
-            new_job = self.w.jobs.create(**job_settings.as_dict())
+            new_job = self.w.jobs.create(
+                name=job_settings.name,
+                tasks=job_settings.tasks,
+                run_as=job_settings.run_as
+            )
             job_id = new_job.job_id
 
         logger.info(f"Launching job {job_id}...")
-        run_info = self.w.jobs.run_now(job_id=job_id)
+        run_info = self.w.jobs.run_now(job_id=job_id).result()
         run = self.w.jobs.get_run(run_info.run_id)
         
         logger.info(f"Run started! View progress here: {run.run_page_url}")
-        while run.state.life_cycle_state not in TERMINAL_STATES:
-            time.sleep(20)
-            run = self.w.jobs.get_run(run.run_id)
-            finished_tasks = sum(1 for t in run.tasks if t.state.life_cycle_state in TERMINAL_STATES)
-            logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{len(tasks)}")
-
-        final_state = run.state.result_state
-        logger.info(f"Run finished with state: {final_state}")
         
-        # Dashboard creation is now automatic and unconditional.
+        final_run_state = run.result(timeout=timedelta(hours=1))
+
+        logger.info(f"Run finished with state: {final_run_state.state.result_state}")
+        
         try:
             self._create_or_update_dashboard(job_name, final_results_table, warehouse.id)
         except Exception as e:
             logger.error(f"Failed to create or update the dashboard. Please check permissions. Error: {e}")
 
-        if final_state == jobs.RunResultState.SUCCESS:
+        if final_run_state.state.result_state == jobs.RunResultState.SUCCESS:
             logger.success("✅ DataPact job completed successfully.")
         else:
-            logger.error(f"DataPact job did not succeed. Final state: {final_state}. View details at {run.run_page_url}")
+            logger.error(f"DataPact job did not succeed. Final state: {final_run_state.state.result_state}. View details at {run.run_page_url}")
             raise Exception("DataPact job failed.")
 
     def _create_or_update_dashboard(self, job_name: str, results_table_fqn: str, warehouse_id: str) -> None:
