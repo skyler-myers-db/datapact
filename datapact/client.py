@@ -11,7 +11,7 @@ Serverless SQL Warehouse. Finally, it can create a results dashboard.
 import os
 import time
 import textwrap
-from datetime import timedelta
+from datetime import timedelta, datetime
 from typing import Optional
 
 from databricks.sdk import WorkspaceClient
