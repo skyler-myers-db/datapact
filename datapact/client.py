@@ -408,7 +408,8 @@ class DataPactClient:
             warehouse_id=warehouse_id
         )
 
-        dashboard_url = f"{self.w.config.host}{pub.path}"
+        published_meta = self.w.lakeview.get_published(draft.dashboard_id)
+        dashboard_url  = published_meta.webapp_path
         logger.success(f"✅ Dashboard is ready! View it here: {dashboard_url}")
 
     def run_validation(
