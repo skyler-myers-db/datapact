@@ -11,6 +11,7 @@ import os
 import re
 from pathlib import Path
 from typing import Optional
+from datetime import timedelta
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import sql as sql_service
 from loguru import logger
@@ -69,7 +70,6 @@ def run_demo_setup() -> None:
     with open(sql_file_path, 'r') as f:
         sql_script: str = f.read()
 
-    # Remove comments to allow for clean splitting by semicolon
     sql_script = re.sub(r'/\*.*?\*/', '', sql_script, flags=re.DOTALL)
     sql_script = re.sub(r'--.*', '', sql_script)
     sql_commands: list[str] = [cmd.strip() for cmd in sql_script.split(';') if cmd.strip()]
@@ -80,12 +80,12 @@ def run_demo_setup() -> None:
         logger.info(f"Executing statement {i+1}/{len(sql_commands)}...")
         logger.debug(f"SQL: {command}")
         try:
-            # Use synchronous execution for setup simplicity.
             w.statement_execution.execute_statement(
                 statement=command,
                 warehouse_id=warehouse.id,
-                wait_timeout='10m' # Generous timeout for large table creation
-            ).result()
+                wait_timeout='0s' 
+            ).result(timeout=timedelta(minutes=10))
+            
             logger.success(f"Statement {i+1} succeeded.")
         except Exception as e:
             logger.critical(f"An error occurred during execution of statement {i+1}. Halting setup.")
