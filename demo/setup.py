@@ -26,9 +26,12 @@ def get_warehouse_by_name(w: WorkspaceClient, name: str) -> sql_service.Endpoint
     Returns:
         An EndpointInfo object if the warehouse is found, otherwise None.
     """
-    for wh in w.warehouses.list():
-        if wh.name == name:
-            return wh
+    try:
+        for wh in w.warehouses.list():
+            if wh.name == name:
+                return wh
+    except Exception as e:
+        logger.error(f"An error occurred while trying to list warehouses: {e}")
     return None
 
 def run_demo_setup() -> None:
