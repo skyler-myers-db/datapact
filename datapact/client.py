@@ -5,13 +5,14 @@ This module contains the DataPactClient class. It orchestrates the entire
 validation process by dynamically generating pure SQL validation scripts based
 on a user's configuration. It then creates and runs a multi-task Databricks Job
 where each task executes one of the generated SQL scripts on a specified
-Serverless SQL Warehouse.
+Serverless SQL Warehouse. Finally, it can create a results dashboard.
 """
 
 import os
 import time
 import textwrap
 from datetime import timedelta
+from typing import Optional
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import jobs, sql as sql_service, workspace
@@ -31,13 +32,12 @@ DEFAULT_TABLE: str = "run_history"
 class DataPactClient:
     """
     A client that orchestrates validation tests by generating and running
-    a pure SQL-based Databricks Job.
+    a pure SQL-based Databricks Job and creating a results dashboard.
     """
 
     def __init__(self, profile: str = "DEFAULT") -> None:
         """
-        Initializes the client with Databricks workspace credentials and
-        determines the warehouse to use based on a defined hierarchy.
+        Initializes the client with Databricks workspace credentials.
 
         Args:
             profile: The Databricks CLI profile to use for authentication.
@@ -53,8 +53,7 @@ class DataPactClient:
         A robust, synchronous helper function to execute a SQL statement.
         
         It submits the statement to the Statement Execution API and polls until
-        it reaches a terminal state, raising an exception on failure. This is
-        used for setting up infrastructure before the main job runs.
+        it reaches a terminal state, raising an exception on failure.
 
         Args:
             sql: The SQL string to execute.
@@ -64,56 +63,36 @@ class DataPactClient:
             Exception: If the SQL statement fails to execute.
             TimeoutError: If the execution takes longer than the defined timeout.
         """
-        resp: sql_service.ExecuteStatementResponse = self.w.statement_execution.execute_statement(
-            statement=sql, warehouse_id=warehouse_id, wait_timeout='0s'
-        )
-        statement_id: str = resp.statement_id
-        timeout_seconds: int = 120
-
-        start_time: float = time.time()
-        while time.time() - start_time < timeout_seconds:
-            status: sql_service.StatementStatus = self.w.statement_execution.get_statement(statement_id=statement_id)
-            current_state: sql_service.StatementState = status.status.state
-
-            if current_state == sql_service.StatementState.SUCCEEDED:
-                return
-            
-            if current_state in [sql_service.StatementState.FAILED, sql_service.StatementState.CANCELED, sql_service.StatementState.CLOSED]:
-                error: sql_service.Error | None = status.status.error
+        try:
+            resp: sql_service.ExecuteStatementResponse = self.w.statement_execution.execute_statement(
+                statement=sql, warehouse_id=warehouse_id, wait_timeout='0s', disposition='SYNC'
+            )
+            status: sql_service.StatementStatus = resp.status
+            if status.state in [sql_service.StatementState.FAILED, sql_service.StatementState.CANCELED, sql_service.StatementState.CLOSED]:
+                error: sql_service.Error | None = status.error
                 error_message: str = error.message if error else "Unknown execution error."
-                raise Exception(f"SQL execution failed with state {current_state}: {error_message}")
-
-            time.sleep(3)
-        
-        raise TimeoutError(f"SQL statement timed out after {timeout_seconds} seconds.")
+                raise Exception(f"SQL execution failed with state {status.state}: {error_message}")
+        except Exception as e:
+            logger.critical(f"Failed to execute SQL: {sql}")
+            raise e
 
     def _setup_default_infrastructure(self, warehouse_id: str) -> None:
-        """
-        Creates the default catalog and schema if they do not already exist.
-
-        Args:
-            warehouse_id: The ID of the SQL warehouse to use for creation.
-        """
+        """Creates the default catalog and schema if they do not already exist."""
         logger.info(f"Ensuring default infrastructure ('{DEFAULT_CATALOG}.{DEFAULT_SCHEMA}') exists...")
         self._execute_sql(f"CREATE CATALOG IF NOT EXISTS `{DEFAULT_CATALOG}`", warehouse_id)
         self._execute_sql(f"CREATE SCHEMA IF NOT EXISTS `{DEFAULT_CATALOG}`.`{DEFAULT_SCHEMA}`", warehouse_id)
         logger.success("Default infrastructure is ready.")
 
     def _ensure_results_table_exists(self, results_table_fqn: str, warehouse_id: str) -> None:
-        """
-        Ensures the results Delta table exists, creating it if necessary.
-        This uses the modern VARIANT data type for storing the JSON payload.
-
-        Args:
-            results_table_fqn: The fully-qualified (catalog.schema.table) name for the results table.
-            warehouse_id: The ID of the SQL warehouse to run the DDL on.
-        """
+        """Ensures the results Delta table exists, creating it if necessary."""
         logger.info(f"Ensuring results table '{results_table_fqn}' exists...")
         create_table_ddl: str = textwrap.dedent(f"""
             CREATE TABLE IF NOT EXISTS {results_table_fqn} (
                 task_key STRING,
                 status STRING,
                 run_id BIGINT,
+                job_id BIGINT,
+                job_name STRING,
                 timestamp TIMESTAMP,
                 result_payload VARIANT
             ) USING DELTA
@@ -121,22 +100,24 @@ class DataPactClient:
         self._execute_sql(create_table_ddl, warehouse_id)
         logger.success(f"Results table '{results_table_fqn}' is ready.")
 
-    def _generate_validation_sql(self, config: dict[str, any], results_table: str) -> str:
+    def _generate_validation_sql(self, config: dict[str, any], results_table: str, job_name: str) -> str:
         """
-        Generates a complete, multi-statement SQL script for the validation task.
+        Generates a complete, multi-statement SQL script for one validation task.
 
         Args:
-            config: The configuration dictionary for a single validation task.
+            config: The config dictionary for a single validation task.
             results_table: The FQN of the results table to insert into.
+            job_name: The name of the parent job, for logging.
 
         Returns:
             A string containing the complete, executable SQL for one validation task.
         """
         task_key: str = config['task_key']
         
-        # --- Pre-computation and validation checks ---
         if config.get('pk_row_hash_check') and not config.get('primary_keys'):
-            raise ValueError(f"Task '{task_key}' requested a row hash check ('pk_row_hash_check: true') but did not provide a `primary_keys` list. Row level hashing requires primary keys to join the tables.")
+            raise ValueError(f"Task '{task_key}': 'pk_row_hash_check' requires 'primary_keys'.")
+        if config.get('null_validation_columns') and not config.get('primary_keys'):
+            logger.warning(f"Task '{task_key}': 'null_validation_columns' without 'primary_keys' will only compare overall null counts, which can be misleading. For best results, provide primary keys.")
 
         source_fqn: str = f"`{config['source_catalog']}`.`{config['source_schema']}`.`{config['source_table']}`"
         target_fqn: str = f"`{config['target_catalog']}`.`{config['target_schema']}`.`{config['target_table']}`"
@@ -145,151 +126,150 @@ class DataPactClient:
         payload_structs: list[str] = []
         overall_validation_passed_clauses: list[str] = []
 
+        # Validation 1: Row Count
         if 'count_tolerance' in config:
             tolerance: float = config.get('count_tolerance', 0.0)
             ctes.append(f"count_metrics AS (SELECT (SELECT COUNT(1) FROM {source_fqn}) AS source_count, (SELECT COUNT(1) FROM {target_fqn}) AS target_count)")
             check: str = f"COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= {tolerance}"
-            payload_structs.append(textwrap.dedent(f"""
-            struct(
-                FORMAT_NUMBER(source_count, 0) AS source_count,
-                FORMAT_NUMBER(target_count, 0) AS target_count,
-                FORMAT_STRING('%.2f%%', CAST(COALESCE((ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0)), 0) * 100 AS DOUBLE)) as relative_diff_percent,
-                FORMAT_STRING('%.2f%%', CAST({tolerance} * 100 AS DOUBLE)) AS tolerance_percent,
-                CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
-            ) AS count_validation
-            """))
+            payload_structs.append("struct(source_count, target_count, "
+                                   f"COALESCE((ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0)), 0) as relative_diff, {tolerance} as tolerance, "
+                                   f"CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status) AS count_validation")
             overall_validation_passed_clauses.append(check)
 
+        # Validation 2: Row Hash
         if config.get('pk_row_hash_check') and config.get('primary_keys'):
-            primary_keys: list[str] = config.get('primary_keys', [])
-            pk_hash_threshold: float = config.get('pk_hash_threshold', 0.0)
-            hash_columns: list[str] | None = config.get('hash_columns')
-            hash_expr: str = f"md5(to_json(struct({', '.join([f'`{c}`' for c in hash_columns]) if hash_columns else '*'})))"
-            pk_cols_str: str = ", ".join([f"`{pk}`" for pk in primary_keys])
-            join_expr: str = " AND ".join([f"s.`{pk}` = t.`{pk}`" for pk in primary_keys])
-            ctes.append(f"row_hash_metrics AS (SELECT COUNT(1) AS total_compared_rows, COALESCE(SUM(CASE WHEN s.row_hash <> t.row_hash THEN 1 ELSE 0 END), 0) AS mismatch_count FROM (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {source_fqn}) s INNER JOIN (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {target_fqn}) t ON {join_expr})")
-            check: str = f"COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= {pk_hash_threshold}"
-            payload_structs.append(textwrap.dedent(f"""
-            struct(
-                FORMAT_NUMBER(total_compared_rows, 0) AS compared_rows,
-                FORMAT_NUMBER(mismatch_count, 0) AS mismatch_count,
-                FORMAT_STRING('%.2f%%', CAST(COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) * 100 AS DOUBLE)) as mismatch_percent,
-                FORMAT_STRING('%.2f%%', CAST({pk_hash_threshold} * 100 AS DOUBLE)) AS threshold_percent,
-                CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
-            ) AS row_hash_validation
-            """))
+            pks: list[str] = config['primary_keys']
+            threshold: float = config.get('pk_hash_threshold', 0.0)
+            hash_cols: list[str] | None = config.get('hash_columns')
+            hash_expr: str = f"md5(to_json(struct({', '.join([f'`{c}`' for c in hash_cols]) if hash_cols else '*'})))"
+            pk_cols_str: str = ", ".join([f"`{pk}`" for pk in pks])
+            join_expr: str = " AND ".join([f"s.`{pk}` = t.`{pk}`" for pk in pks])
+            ctes.append(f"""row_hash_metrics AS (
+                SELECT COUNT(1) AS total_compared_rows, COALESCE(SUM(CASE WHEN s.row_hash <> t.row_hash THEN 1 ELSE 0 END), 0) AS mismatch_count
+                FROM (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {source_fqn}) s
+                INNER JOIN (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {target_fqn}) t ON {join_expr}
+            )""")
+            check = f"COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= {threshold}"
+            payload_structs.append("struct(total_compared_rows, mismatch_count, "
+                                   f"COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) as mismatch_ratio, {threshold} as threshold, "
+                                   f"CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status) AS row_hash_validation")
             overall_validation_passed_clauses.append(check)
+        
+        # Validation 3: Null Counts
+        null_cols: list[str] | None = config.get('null_validation_columns')
+        if null_cols and 'null_validation_threshold' in config:
+            threshold = config['null_validation_threshold']
+            pks = config.get('primary_keys')
+            for col in null_cols:
+                if pks: # Advanced check: compare null status for matching rows
+                    pk_cols_str = ", ".join([f"`{pk}`" for pk in pks])
+                    join_expr = " AND ".join([f"s.`{pk}` = t.`{pk}`" for pk in pks])
+                    ctes.append(f"""null_metrics_{col} AS (
+                        SELECT 
+                            SUM(CASE WHEN s.`{col}` IS NULL THEN 1 ELSE 0 END) as source_nulls,
+                            SUM(CASE WHEN t.`{col}` IS NULL THEN 1 ELSE 0 END) as target_nulls,
+                            COUNT(1) as total_compared_rows
+                        FROM {source_fqn} s JOIN {target_fqn} t ON {join_expr}
+                    )""")
+                    check = f"COALESCE(ABS(source_nulls - target_nulls) / NULLIF(CAST(total_compared_rows AS DOUBLE), 0), 0) <= {threshold}"
 
-        null_check_cols: list[str] | None = config.get('null_validation_columns')
-        if 'null_validation_threshold' in config:
-            if not null_check_cols:
-                logger.info(f"No null_validation_columns specified for task '{task_key}'. Defaulting to all columns.")
-                try:
-                    all_source_columns: list[sql_service.ColumnInfo] = self.w.columns.list(table_name=source_fqn)
-                    null_check_cols = [c.name for c in all_source_columns]
-                    logger.info(f"Found {len(null_check_cols)} columns to validate for nulls.")
-                except Exception as e:
-                    logger.warning(f"Could not fetch all columns for null validation on task '{task_key}': {e}. Skipping all-column null check.")
-                    null_check_cols = []
-
-            for col in null_check_cols:
-                threshold: float = config.get('null_validation_threshold', 0.0)
-                cte_key: str = f"null_metrics_{col}"
-                ctes.append(textwrap.dedent(f"""
-                {cte_key} AS (SELECT
-                    (SELECT COUNT(1) FROM {source_fqn} WHERE `{col}` IS NULL) AS source_nulls,
-                    (SELECT COUNT(1) FROM {target_fqn} WHERE `{col}` IS NULL) AS target_nulls)
-                """))
-                check: str = f"CASE WHEN source_nulls = 0 THEN target_nulls = 0 ELSE COALESCE(ABS(target_nulls - source_nulls) / NULLIF(CAST(source_nulls AS DOUBLE), 0), 0) <= {threshold} END"
-                payload_structs.append(textwrap.dedent(f"""
-                struct(
-                    FORMAT_NUMBER(source_nulls, 0) AS source_nulls,
-                    FORMAT_NUMBER(target_nulls, 0) AS target_nulls,
-                    FORMAT_STRING('%.2f%%', CAST({threshold} * 100 AS DOUBLE)) AS threshold_percent,
-                    CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
-                ) AS null_validation_{col}
-                """))
+                else: # Simple check: compare total null counts in each table
+                    ctes.append(f"""null_metrics_{col} AS (
+                        SELECT
+                            (SELECT COUNT(1) FROM {source_fqn} WHERE `{col}` IS NULL) AS source_nulls,
+                            (SELECT COUNT(1) FROM {target_fqn} WHERE `{col}` IS NULL) AS target_nulls,
+                            (SELECT COUNT(1) FROM {source_fqn}) AS source_total
+                    )""")
+                    check = f"COALESCE(ABS(source_nulls - target_nulls) / NULLIF(CAST(source_total AS DOUBLE), 0), 0) <= {threshold}"
+                
+                payload_structs.append("struct(source_nulls, target_nulls, total_compared_rows, "
+                                      f"COALESCE(ABS(source_nulls - target_nulls) / NULLIF(CAST(total_compared_rows AS DOUBLE), 0), 0) as diff_ratio, {threshold} as threshold, "
+                                      f"CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END as status) as null_validation_{col}")
                 overall_validation_passed_clauses.append(check)
 
+        # Validation 4: Aggregates
         if config.get('agg_validations'):
             for agg_config in config.get('agg_validations', []):
-                col, agg, tolerance = agg_config['column'], agg_config['validations'][0]['agg'], agg_config['validations'][0]['tolerance']
-                src_val_alias, tgt_val_alias = f"source_value_{col}_{agg}", f"target_value_{col}_{agg}"
-                ctes.append(f"agg_metrics_{col}_{agg} AS (SELECT TRY_CAST((SELECT {agg}(`{col}`) FROM {source_fqn}) AS DECIMAL(38, 6)) AS {src_val_alias}, TRY_CAST((SELECT {agg}(`{col}`) FROM {target_fqn}) AS DECIMAL(38, 6)) AS {tgt_val_alias})")
-                check = f"COALESCE(ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0), 0) <= {tolerance}"
-                payload_structs.append(textwrap.dedent(f"""
-                struct(
-                    {src_val_alias} AS source_value,
-                    {tgt_val_alias} AS target_value,
-                    FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
-                    FORMAT_STRING('%.2f%%', CAST({tolerance} * 100 AS DOUBLE)) AS tolerance_percent,
-                    CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
-                ) AS agg_validation_{col}_{agg}
-                """))
-                overall_validation_passed_clauses.append(check)
+                col, validations = agg_config['column'], agg_config['validations']
+                for val in validations:
+                    agg, tolerance = val['agg'].upper(), val['tolerance']
+                    src_alias, tgt_alias = f"source_value_{col}_{agg}", f"target_value_{col}_{agg}"
+                    ctes.append(f"agg_{col}_{agg} AS (SELECT (SELECT {agg}(`{col}`) FROM {source_fqn}) AS {src_alias}, (SELECT {agg}(`{col}`) FROM {target_fqn}) AS {tgt_alias})")
+                    check = f"COALESCE(ABS({src_alias} - {tgt_alias}) / NULLIF(ABS(CAST({src_alias} AS DOUBLE)), 0), 0) <= {tolerance}"
+                    payload_structs.append(f"struct({src_alias} as source_value, {tgt_alias} as target_value, "
+                                           f"COALESCE(ABS({src_alias} - {tgt_alias}) / NULLIF(ABS(CAST({src_alias} AS DOUBLE)), 0), 0) as relative_diff, {tolerance} as tolerance, "
+                                           f"CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END as status) as agg_validation_{col}_{agg}")
+                    overall_validation_passed_clauses.append(check)
 
-        sql_statements: list[str] = []
-        view_creation_sql: str = f"CREATE OR REPLACE TEMP VIEW final_metrics_view AS\n"
-        if ctes: view_creation_sql += "WITH\n" + ",\n".join(ctes) + "\n"
-        from_clause: str = " CROSS JOIN ".join([cte.split(" AS ")[0].strip() for cte in ctes]) if ctes else "(SELECT 1 AS placeholder)"
-        view_creation_sql += f"SELECT parse_json(to_json(struct({', '.join(payload_structs)}))) as result_payload, {' AND '.join(overall_validation_passed_clauses) if overall_validation_passed_clauses else 'true'} AS overall_validation_passed FROM {from_clause}"
-        sql_statements.append(view_creation_sql)
+        if not payload_structs: return f"SELECT 'No validations configured for task {task_key}' AS status;"
 
-        sql_statements.append(f"INSERT INTO {results_table} (task_key, status, run_id, timestamp, result_payload) SELECT '{task_key}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END, :run_id, current_timestamp(), result_payload FROM final_metrics_view")
-        sql_statements.append(f"SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Payload: \\n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false")
-        sql_statements.append(f"SELECT to_json(result_payload, map('pretty', 'true')) AS result FROM final_metrics_view WHERE overall_validation_passed = true")
+        view_creation_sql = "CREATE OR REPLACE TEMP VIEW final_metrics_view AS\n"
+        view_creation_sql += "WITH\n" + ",\n".join(ctes) + "\n"
+        from_clause = " CROSS JOIN ".join([cte.split(" AS ")[0].strip() for cte in ctes])
+        select_payload = f"parse_json(to_json(struct({', '.join(payload_structs)}))) as result_payload"
+        select_status = f"{' AND '.join(overall_validation_passed_clauses)} AS overall_validation_passed"
+        view_creation_sql += f"SELECT {select_payload}, {select_status} FROM {from_clause};"
         
-        return ";\n\n".join(sql_statements)
-    def _upload_sql_scripts(self, config: dict[str, any], results_table: str) -> dict[str, str]:
-        """
-        Generates and uploads SQL scripts, including a more robust and informative aggregation script.
-        """
+        insert_sql = (f"INSERT INTO {results_table} (task_key, status, run_id, job_id, job_name, timestamp, result_payload) "
+                      f"SELECT '{task_key}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END, "
+                      f"{{{{job.run_id}}}}, {{{{job.id}}}}, '{job_name}', current_timestamp(), result_payload FROM final_metrics_view;")
+
+        fail_sql = "SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Payload: \\n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false;"
+        pass_sql = "SELECT to_json(result_payload, map('pretty', 'true')) AS result FROM final_metrics_view WHERE overall_validation_passed = true;"
+        
+        return "\n\n".join([view_creation_sql, insert_sql, fail_sql, pass_sql])
+
+    def _upload_sql_scripts(self, config: dict[str, any], results_table: str, job_name: str) -> dict[str, str]:
+        """Generates and uploads all necessary SQL scripts for the job."""
         logger.info("Generating and uploading SQL validation scripts...")
         task_paths: dict[str, str] = {}
-        sql_tasks_path: str = f"{self.root_path}/sql_tasks"
+        sql_tasks_path: str = f"{self.root_path}/sql_tasks/{job_name}_{int(time.time())}"
         self.w.workspace.mkdirs(sql_tasks_path)
 
         for task_config in config['validations']:
             task_key: str = task_config['task_key']
-            sql_script: str = self._generate_validation_sql(task_config, results_table)
+            sql_script: str = self._generate_validation_sql(task_config, results_table, job_name)
             script_path: str = f"{sql_tasks_path}/{task_key}.sql"
-            self.w.workspace.upload(path=script_path, content=sql_script.encode('utf-8'), overwrite=True, format=workspace.ImportFormat.RAW)
+            self.w.workspace.upload(path=script_path, content=sql_script.encode('utf-8'), overwrite=True)
             task_paths[task_key] = script_path
-            logger.info(f"  - Uploaded SQL FILE for task '{task_key}' to {script_path}")
+            logger.info(f"  - Uploaded SQL for task '{task_key}' to {script_path}")
         
         agg_script_path: str = f"{sql_tasks_path}/aggregate_results.sql"
         agg_sql_script: str = textwrap.dedent(f"""
-            CREATE OR REPLACE TEMP VIEW latest_run_id AS 
-            SELECT run_id FROM {results_table} ORDER BY timestamp DESC LIMIT 1;
-
+            CREATE OR REPLACE TEMP VIEW run_results AS
+            SELECT * FROM {results_table} WHERE run_id = {{{{job.run_id}}}};
             CREATE OR REPLACE TEMP VIEW agg_metrics AS
             SELECT
-              (SELECT COUNT(1) FROM {results_table} WHERE run_id = (SELECT run_id FROM latest_run_id) AND status = 'FAILURE') AS failure_count,
-              (SELECT COUNT(1) FROM {results_table} WHERE run_id = (SELECT run_id FROM latest_run_id) AND status = 'SUCCESS') AS success_count,
-              (SELECT COLLECT_LIST(task_key) FROM {results_table} WHERE run_id = (SELECT run_id FROM latest_run_id) AND status = 'FAILURE') as failed_tasks;
-
-            SELECT CASE 
-                WHEN (SELECT failure_count FROM agg_metrics) > 0 
-                THEN RAISE_ERROR(CONCAT('The following DataPact tasks failed: ', (SELECT to_json(failed_tasks) FROM agg_metrics)))
-                WHEN (SELECT success_count FROM agg_metrics) < CAST(:expected_successes AS INT)
-                THEN RAISE_ERROR(CONCAT('Expected ', :expected_successes, ' successful tasks, but only ', (SELECT success_count FROM agg_metrics), ' reported success. Check for silent failures.'))
-                ELSE 'All DataPact validations passed successfully!' 
+              (SELECT COUNT(1) FROM run_results WHERE status = 'FAILURE') AS failure_count,
+              (SELECT COLLECT_LIST(task_key) FROM run_results WHERE status = 'FAILURE') as failed_tasks;
+            SELECT CASE
+                WHEN (SELECT failure_count FROM agg_metrics) > 0
+                THEN RAISE_ERROR(CONCAT('DataPact tasks failed: ', (SELECT to_json(failed_tasks) FROM agg_metrics)))
+                ELSE 'All DataPact validations passed successfully!'
             END;
         """)
-        self.w.workspace.upload(path=agg_script_path, content=agg_sql_script.encode('utf-8'), overwrite=True, format=workspace.ImportFormat.RAW)
+        self.w.workspace.upload(path=agg_script_path, content=agg_sql_script.encode('utf-8'), overwrite=True)
         task_paths['aggregate_results'] = agg_script_path
-        logger.info(f"  - Uploaded informative aggregation SQL FILE to {agg_script_path}")
+        logger.info(f"  - Uploaded aggregation SQL to {agg_script_path}")
         return task_paths
 
-    def run_validation(self, config: dict[str, any], job_name: str, warehouse_name: str, results_table: str | None = None) -> None:
+    def run_validation(
+        self,
+        config: dict[str, any],
+        job_name: str,
+        warehouse_name: str,
+        results_table: str | None = None,
+        create_dashboard: bool = False,
+    ) -> None:
         """
-        The main orchestrator for the entire validation process.
+        Main orchestrator for the validation process.
         
         Args:
-            config: The loaded validation YAML file as a dictionary.
-            job_name: The name to assign to the Databricks Job.
-            warehouse_name: The name of the Serverless SQL Warehouse to use.
+            config: Loaded validation YAML file as a dictionary.
+            job_name: Name for the Databricks Job.
+            warehouse_name: Name of the Serverless SQL Warehouse.
             results_table: Optional FQN of the table to store results.
+            create_dashboard: If True, create/update a dashboard after the run.
         """
         warehouse: sql_service.EndpointInfo = self._ensure_sql_warehouse(warehouse_name)
         
@@ -297,28 +277,23 @@ class DataPactClient:
         if not results_table:
             self._setup_default_infrastructure(warehouse.id)
             final_results_table = f"`{DEFAULT_CATALOG}`.`{DEFAULT_SCHEMA}`.`{DEFAULT_TABLE}`"
-            logger.info(f"No results table provided. Using default: {final_results_table}")
         else:
-            final_results_table = results_table
+            final_results_table = f"`{results_table}`"
 
         self._ensure_results_table_exists(final_results_table, warehouse.id)
         
-        task_paths: dict[str, str] = self._upload_sql_scripts(config, final_results_table)
+        task_paths: dict[str, str] = self._upload_sql_scripts(config, final_results_table, job_name)
         
         tasks: list[Task] = []
         validation_task_keys: list[str] = [v_conf["task_key"] for v_conf in config["validations"]]
-        num_validation_tasks: int = len(validation_task_keys)
-
         for task_key in validation_task_keys:
-            tasks.append(Task(task_key=task_key, sql_task=SqlTask(file=SqlTaskFile(path=task_paths[task_key], source=Source.WORKSPACE), warehouse_id=warehouse.id)))
+            tasks.append(Task(task_key=task_key, sql_task=SqlTask(file=SqlTaskFile(path=task_paths[task_key]), warehouse_id=warehouse.id)))
 
-        agg_task_parameters: dict[str, str] = {'expected_successes': str(num_validation_tasks)}
-        tasks.append(Task(task_key="aggregate_results", depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys], run_if=RunIf.ALL_DONE, sql_task=SqlTask(file=SqlTaskFile(path=task_paths['aggregate_results'], source=Source.WORKSPACE), warehouse_id=warehouse.id, parameters=agg_task_parameters)))
+        tasks.append(Task(task_key="aggregate_results", depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys], run_if=RunIf.ALL_DONE, sql_task=SqlTask(file=SqlTaskFile(path=task_paths['aggregate_results']), warehouse_id=warehouse.id)))
 
-        job_settings: JobSettings = JobSettings(name=job_name, tasks=tasks, run_as=JobRunAs(user_name=self.user_name), parameters=[JobParameterDefinition(name="run_id", default="{{job.run_id}}")])
+        job_settings = JobSettings(name=job_name, tasks=tasks, run_as=JobRunAs(user_name=self.user_name))
         
         existing_job: jobs.Job | None = next(iter(self.w.jobs.list(name=job_name)), None)
-        
         job_id: int
         if existing_job:
             logger.info(f"Updating existing job '{job_name}' (ID: {existing_job.job_id})...")
@@ -326,7 +301,7 @@ class DataPactClient:
             job_id = existing_job.job_id
         else:
             logger.info(f"Creating new job '{job_name}'...")
-            new_job: jobs.Job = self.w.jobs.create(name=job_settings.name, tasks=job_settings.tasks, run_as=job_settings.run_as, parameters=job_settings.parameters)
+            new_job: jobs.Job = self.w.jobs.create(**job_settings.as_dict())
             job_id = new_job.job_id
 
         logger.info(f"Launching job {job_id}...")
@@ -342,32 +317,90 @@ class DataPactClient:
 
         final_state: jobs.RunResultState = run.state.result_state
         logger.info(f"Run finished with state: {final_state}")
+        
+        if create_dashboard:
+            self._create_or_update_dashboard(job_name, final_results_table, warehouse.id)
+            
         if final_state == jobs.RunResultState.SUCCESS:
             logger.success("✅ DataPact job completed successfully.")
         else:
             logger.error(f"DataPact job did not succeed. Final state: {final_state}. View details at {run.run_page_url}")
             raise Exception(f"DataPact job failed.")
 
+    def _create_or_update_dashboard(self, job_name: str, results_table_fqn: str, warehouse_id: str) -> None:
+        """
+        Creates or updates a Databricks SQL Dashboard to visualize results.
+
+        Args:
+            job_name: The name of the job, used to name the dashboard.
+            results_table_fqn: The FQN of the table containing run history.
+            warehouse_id: The ID of the warehouse to run dashboard queries on.
+        """
+        dashboard_name = f"DataPact Results: {job_name}"
+        logger.info(f"Attempting to create or update dashboard: '{dashboard_name}'...")
+
+        # 1. Delete existing dashboard to ensure a clean slate
+        for d in self.w.dashboards.list(q=dashboard_name):
+            if d.display_name == dashboard_name:
+                logger.warning(f"Deleting existing dashboard (ID: {d.dashboard_id}) to recreate.")
+                self.w.dashboards.delete(d.dashboard_id)
+                # Also delete associated queries to prevent clutter
+                for widget in d.widgets:
+                    if widget.visualization and widget.visualization.query:
+                        try:
+                            self.w.queries.delete(widget.visualization.query.query_id)
+                        except Exception as e:
+                            logger.warning(f"Could not delete old query {widget.visualization.query.query_id}: {e}")
+
+        # 2. Define SQL Queries for visualizations
+        queries = {
+            "run_summary": f"SELECT status, COUNT(1) as task_count FROM {results_table_fqn} WHERE run_id = (SELECT MAX(run_id) FROM {results_table_fqn} WHERE job_name = '{job_name}') GROUP BY status",
+            "failure_rate_over_time": f"SELECT to_date(timestamp) as run_date, COUNT(CASE WHEN status = 'FAILURE' THEN 1 END) * 100.0 / COUNT(1) as failure_rate_percent FROM {results_table_fqn} WHERE job_name = '{job_name}' GROUP BY 1 ORDER BY 1",
+            "top_failing_tasks": f"SELECT task_key, COUNT(1) as failure_count FROM {results_table_fqn} WHERE status = 'FAILURE' AND job_name = '{job_name}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10",
+            "raw_history": f"SELECT *, to_json(result_payload) as payload_json FROM {results_table_fqn} WHERE job_name = '{job_name}' ORDER BY timestamp DESC, task_key"
+        }
+        
+        # 3. Create Query and Visualization objects
+        widgets = []
+        query_path_root = f"{self.root_path}/dashboard_queries/{job_name}_{int(time.time())}"
+        self.w.workspace.mkdirs(query_path_root)
+
+        for name, sql in queries.items():
+            query_obj = self.w.queries.create(name=f"{job_name}_{name}", data_source_id=warehouse_id, query=sql)
+            logger.info(f"  - Created query '{query_obj.name}' (ID: {query_obj.id})")
+            
+            viz_options = {}
+            viz_type = "TABLE"
+            if name == "run_summary":
+                viz_type = "COUNTER"
+                viz_options = {"counterColName": "task_count", "rowNumber": 1, "targetRowNumber": 2}
+            elif name == "failure_rate_over_time":
+                viz_type = "CHART"
+                viz_options = {"globalSeriesType": "line", "yAxis": [{"type": "linear"}], "xAxis": {"labels": {"enabled": True}}}
+            elif name == "top_failing_tasks":
+                viz_type = "CHART"
+                viz_options = {"globalSeriesType": "bar", "yAxis": [{"type": "linear"}], "xAxis": {"labels": {"enabled": True}}}
+
+            viz = self.w.visualizations.create(query_id=query_obj.id, type=viz_type, name=f"Viz - {name}", options=viz_options)
+            widgets.append(sql_service.WidgetCreate(visualization_id=viz.id, text=""))
+
+        # 4. Create the Dashboard
+        dashboard = self.w.dashboards.create(name=dashboard_name, warehouse_id=warehouse_id, widgets=widgets)
+        logger.success(f"✅ Successfully created dashboard. View it here: {self.w.config.host}/sql/dashboards/{dashboard.id}")
+
     def _ensure_sql_warehouse(self, name: str) -> sql_service.EndpointInfo:
-        """
-        Finds a SQL warehouse by name, starts it if it's stopped, and returns its details.
-        """
+        """Finds a SQL warehouse by name, starts it if stopped, and returns details."""
         logger.info(f"Looking for SQL Warehouse '{name}'...")
-        warehouse: sql_service.EndpointInfo | None = None
-        for wh in self.w.warehouses.list():
-            if wh.name == name:
-                warehouse = wh
-                break
+        warehouse: sql_service.EndpointInfo | None = next((wh for wh in self.w.warehouses.list() if wh.name == name), None)
 
         if not warehouse:
             raise ValueError(f"SQL Warehouse '{name}' not found.")
 
-        warehouse_id_to_check: str = warehouse.id
-        logger.info(f"Found warehouse {warehouse_id_to_check}. State: {warehouse.state}")
+        logger.info(f"Found warehouse '{name}' (ID: {warehouse.id}). State: {warehouse.state}")
         
         if warehouse.state not in [sql_service.State.RUNNING, sql_service.State.STARTING]:
-            logger.info(f"Warehouse '{name}' is {warehouse.state}. Starting it...")
-            self.w.warehouses.start(warehouse_id_to_check).result(timeout=timedelta(minutes=5))
+            logger.info(f"Warehouse '{name}' is {warehouse.state}. Attempting to start...")
+            self.w.warehouses.start(warehouse.id).result(timeout=timedelta(minutes=10))
             logger.success(f"Warehouse '{name}' started successfully.")
         
-        return self.w.warehouses.get(warehouse_id_to_check)
+        return self.w.warehouses.get(warehouse.id)
