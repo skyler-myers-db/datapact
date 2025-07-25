@@ -118,8 +118,8 @@ class DataPactClient:
             check = f"COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= {tolerance}"
             payload_structs.append(textwrap.dedent(f"""
             struct(
-                FORMAT_NUMBER(source_count, '0') AS source_count,
-                FORMAT_NUMBER(target_count, '0') AS target_count,
+                FORMAT_NUMBER(source_count, '#,##0') AS source_count,
+                FORMAT_NUMBER(target_count, '#,##0') AS target_count,
                 FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
                 FORMAT_STRING('%.2f%%', CAST({tolerance} * 100 AS DOUBLE)) AS tolerance_percent,
                 CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
@@ -137,8 +137,8 @@ class DataPactClient:
             check = f"COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= {threshold}"
             payload_structs.append(textwrap.dedent(f"""
             struct(
-                FORMAT_NUMBER(total_compared_rows, '0') AS compared_rows,
-                FORMAT_NUMBER(mismatch_count, '0') AS mismatch_count,
+                FORMAT_NUMBER(total_compared_rows, '#,##0') AS compared_rows,
+                FORMAT_NUMBER(mismatch_count, '#,##0') AS mismatch_count,
                 FORMAT_STRING('%.2f%%', CAST(COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) * 100 AS DOUBLE)) as mismatch_percent,
                 FORMAT_STRING('%.2f%%', CAST({threshold} * 100 AS DOUBLE)) AS threshold_percent,
                 CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
@@ -150,24 +150,27 @@ class DataPactClient:
             pks = config.get('primary_keys')
             for col in config['null_validation_columns']:
                 cte_key = f"null_metrics_{col}"
+                src_null_alias = f"source_nulls_{col}"
+                tgt_null_alias = f"target_nulls_{col}"
+                total_alias = f"total_compared_{col}"
                 if pks:
                     join_expr = " AND ".join([f"s.`{pk}` = t.`{pk}`" for pk in pks])
                     ctes.append(f"""{cte_key} AS (SELECT
-                        SUM(CASE WHEN s.`{col}` IS NULL THEN 1 ELSE 0 END) as source_nulls,
-                        SUM(CASE WHEN t.`{col}` IS NULL THEN 1 ELSE 0 END) as target_nulls,
-                        COUNT(1) as total_compared
+                        SUM(CASE WHEN s.`{col}` IS NULL THEN 1 ELSE 0 END) as {src_null_alias},
+                        SUM(CASE WHEN t.`{col}` IS NULL THEN 1 ELSE 0 END) as {tgt_null_alias},
+                        COUNT(1) as {total_alias}
                         FROM {source_fqn} s JOIN {target_fqn} t ON {join_expr})""")
-                    check = f"COALESCE(ABS(source_nulls - target_nulls) / NULLIF(CAST(total_compared AS DOUBLE), 0), 0) <= {threshold}"
+                    check = f"COALESCE(ABS({src_null_alias} - {tgt_null_alias}) / NULLIF(CAST({total_alias} AS DOUBLE), 0), 0) <= {threshold}"
                 else:
                     ctes.append(f"""{cte_key} AS (SELECT
-                        (SELECT COUNT(1) FROM {source_fqn} WHERE `{col}` IS NULL) as source_nulls,
-                        (SELECT COUNT(1) FROM {target_fqn} WHERE `{col}` IS NULL) as target_nulls)""")
-                    check = f"CASE WHEN source_nulls = 0 THEN target_nulls = 0 ELSE COALESCE(ABS(target_nulls - source_nulls) / NULLIF(CAST(source_nulls AS DOUBLE), 0), 0) <= {threshold} END"
+                        (SELECT COUNT(1) FROM {source_fqn} WHERE `{col}` IS NULL) as {src_null_alias},
+                        (SELECT COUNT(1) FROM {target_fqn} WHERE `{col}` IS NULL) as {tgt_null_alias})""")
+                    check = f"CASE WHEN {src_null_alias} = 0 THEN {tgt_null_alias} = 0 ELSE COALESCE(ABS({tgt_null_alias} - {src_null_alias}) / NULLIF(CAST({src_null_alias} AS DOUBLE), 0), 0) <= {threshold} END"
                 
                 payload_structs.append(textwrap.dedent(f"""
                 struct(
-                    FORMAT_NUMBER(source_nulls, '0') AS source_nulls,
-                    FORMAT_NUMBER(target_nulls, '0') AS target_nulls,
+                    FORMAT_NUMBER({src_null_alias}, '#,##0') AS source_nulls,
+                    FORMAT_NUMBER({tgt_null_alias}, '#,##0') AS target_nulls,
                     FORMAT_STRING('%.2f%%', CAST({threshold} * 100 AS DOUBLE)) AS threshold_percent,
                     CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
                 ) AS null_validation_{col}"""))
@@ -183,8 +186,8 @@ class DataPactClient:
                     check = f"COALESCE(ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0), 0) <= {tolerance}"
                     payload_structs.append(textwrap.dedent(f"""
                     struct(
-                        {src_val_alias} AS source_value,
-                        {tgt_val_alias} AS target_value,
+                        FORMAT_NUMBER({src_val_alias}, '#,##0.00') as source_value,
+                        FORMAT_NUMBER({tgt_val_alias}, '#,##0.00') as target_value,
                         FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
                         FORMAT_STRING('%.2f%%', CAST({tolerance} * 100 AS DOUBLE)) AS tolerance_percent,
                         CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
@@ -343,64 +346,58 @@ class DataPactClient:
         results_table: str | None = None
     ) -> None:
         warehouse = self._ensure_sql_warehouse(warehouse_name)
-        
         final_results_table = f"`{results_table}`" if results_table else f"`{DEFAULT_CATALOG}`.`{DEFAULT_SCHEMA}`.`{DEFAULT_TABLE}`"
         if not results_table: self._setup_default_infrastructure(warehouse.id)
         self._ensure_results_table_exists(final_results_table, warehouse.id)
-        
         asset_paths = self._upload_sql_scripts(config, final_results_table, job_name)
         
         tasks: list[Task] = []
         validation_task_keys: list[str] = [v_conf["task_key"] for v_conf in config["validations"]]
         sql_parameters = {'run_id': '{{job.run_id}}', 'job_id': '{{job.id}}'}
-
+        
         for task_key in validation_task_keys:
             tasks.append(Task(task_key=task_key, sql_task=SqlTask(file=SqlTaskFile(path=asset_paths[task_key], source=Source.WORKSPACE), warehouse_id=warehouse.id, parameters=sql_parameters)))
-
+        
         tasks.append(Task(
             task_key="aggregate_results",
             depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys],
             run_if=RunIf.ALL_DONE,
             sql_task=SqlTask(file=SqlTaskFile(path=asset_paths['aggregate_results'], source=Source.WORKSPACE), warehouse_id=warehouse.id, parameters=sql_parameters)
         ))
-
-        job_settings = JobSettings(name=job_name, tasks=tasks, run_as=JobRunAs(user_name=self.user_name))
         
+        job_settings = JobSettings(name=job_name, tasks=tasks, run_as=JobRunAs(user_name=self.user_name))
         existing_job = next(iter(self.w.jobs.list(name=job_name)), None)
         job_id = existing_job.job_id if existing_job else self.w.jobs.create(name=job_settings.name, tasks=job_settings.tasks, run_as=job_settings.run_as).job_id
         if existing_job: self.w.jobs.reset(job_id=job_id, new_settings=job_settings)
         
         logger.info(f"Launching job {job_id}...")
-        
         run_info = self.w.jobs.run_now(job_id=job_id)
         run = self.w.jobs.get_run(run_info.run_id)
-
         logger.info(f"Run started! View progress here: {run.run_page_url}")
-
+        
         timeout = timedelta(hours=1)
         deadline = datetime.now() + timeout
         while datetime.now() < deadline:
             run = self.w.jobs.get_run(run.run_id)
-            if run.state.life_cycle_state in TERMINAL_STATES:
-                break
+            if run.state.life_cycle_state in TERMINAL_STATES: break
             finished_tasks = sum(1 for t in run.tasks if t.state.life_cycle_state in TERMINAL_STATES)
             logger.info(f"Job state: {run.state.life_cycle_state}. Tasks finished: {finished_tasks}/{len(tasks)}")
             time.sleep(30)
         else:
-            raise TimeoutError(f"Job run timed out after {timeout.total_seconds()} seconds.")
+            raise TimeoutError("Job run timed out.")
         
         logger.info(f"Run finished with state: {run.state.result_state}")
-        
-        if run.state.result_state != jobs.RunResultState.SUCCESS:
-            error_message = run.state.state_message or "Job failed without a specific message."
-            raise Exception(f"DataPact job did not succeed. Final state: {run.state.result_state}. Reason: {error_message} View details at {run.run_page_url}")
-
-        logger.success("✅ DataPact job completed successfully.")
         
         try:
             self._create_or_update_dashboard(job_name, final_results_table, warehouse.id)
         except Exception as e:
-            logger.error(f"Validation run succeeded, but dashboard creation failed. Please check permissions. Error: {e}")
+            logger.warning(f"Dashboard creation/update failed, but this does not affect the validation run result. Error: {e}")
+
+        if run.state.result_state == jobs.RunResultState.SUCCESS:
+            logger.success("✅ DataPact job completed successfully.")
+        else:
+            error_message = run.state.state_message or "Job failed without a specific message."
+            raise Exception(f"DataPact job finished with failing tasks. Final state: {run.state.result_state}. Reason: {error_message} View details at {run.run_page_url}")
 
     def _ensure_sql_warehouse(self, name: str) -> sql_service.EndpointInfo:
         """Finds a SQL warehouse by name, starts it if stopped, and returns details."""
