@@ -118,8 +118,8 @@ class DataPactClient:
             check = f"COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= {tolerance}"
             payload_structs.append(textwrap.dedent(f"""
             struct(
-                FORMAT_NUMBER(source_count, '0') AS source_count,
-                FORMAT_NUMBER(target_count, '0') AS target_count,
+                FORMAT_NUMBER(CAST(source_count AS DOUBLE), '0') AS source_count,
+                FORMAT_NUMBER(CAST(target_count AS DOUBLE), '0') AS target_count,
                 FORMAT_STRING('%.2f%%', COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) * 100) as relative_diff,
                 FORMAT_STRING('%.2f%%', {tolerance} * 100) as tolerance,
                 CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
@@ -140,8 +140,8 @@ class DataPactClient:
             check = f"COALESCE(mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0), 0) <= {threshold}"
             payload_structs.append(textwrap.dedent(f"""
             struct(
-                FORMAT_NUMBER(total_compared_rows, '0') as total_compared_rows,
-                FORMAT_NUMBER(mismatch_count, '0') as mismatch_count,
+                FORMAT_NUMBER(CAST(total_compared_rows AS DOUBLE), '0') as total_compared_rows,
+                FORMAT_NUMBER(CAST(mismatch_count AS DOUBLE), '0') as mismatch_count,
                 FORMAT_STRING('%.2f%%', COALESCE(mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0), 0) * 100) as mismatch_ratio,
                 FORMAT_STRING('%.2f%%', {threshold} * 100) as threshold,
                 CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
@@ -153,7 +153,6 @@ class DataPactClient:
             pks = config.get('primary_keys')
             for col in config['null_validation_columns']:
                 cte_key = f"null_metrics_{col}"
-                # Use advanced row-by-row null comparison if PKs are available
                 if pks:
                     join_expr = " AND ".join([f"s.`{pk}` = t.`{pk}`" for pk in pks])
                     ctes.append(f"""{cte_key} AS (SELECT
@@ -162,7 +161,7 @@ class DataPactClient:
                         COUNT(1) as total_compared
                         FROM {source_fqn} s JOIN {target_fqn} t ON {join_expr})""")
                     check = f"COALESCE(ABS(source_nulls - target_nulls) / NULLIF(CAST(total_compared AS DOUBLE), 0), 0) <= {threshold}"
-                else: # Fallback to simple counts if no PKs
+                else:
                     ctes.append(f"""{cte_key} AS (SELECT
                         (SELECT COUNT(1) FROM {source_fqn} WHERE `{col}` IS NULL) as source_nulls,
                         (SELECT COUNT(1) FROM {target_fqn} WHERE `{col}` IS NULL) as target_nulls,
@@ -171,8 +170,8 @@ class DataPactClient:
 
                 payload_structs.append(textwrap.dedent(f"""
                 struct(
-                    FORMAT_NUMBER(source_nulls, '0') as source_nulls,
-                    FORMAT_NUMBER(target_nulls, '0') as target_nulls,
+                    FORMAT_NUMBER(CAST(source_nulls AS DOUBLE), '0') as source_nulls,
+                    FORMAT_NUMBER(CAST(target_nulls AS DOUBLE), '0') as target_nulls,
                     FORMAT_STRING('%.2f%%', {threshold} * 100) as threshold,
                     CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
                 ) as null_validation_{col}"""))
@@ -188,7 +187,6 @@ class DataPactClient:
                         SELECT (SELECT {agg}(`{col}`) FROM {source_fqn}) as source_val,
                                (SELECT {agg}(`{col}`) FROM {target_fqn}) as target_val)""")
                     check = f"COALESCE(ABS(source_val - target_val) / NULLIF(ABS(CAST(source_val AS DOUBLE)), 0), 0) <= {tolerance}"
-                    # CORRECTED: Cast Decimal types to Double before formatting to avoid internal Spark errors.
                     payload_structs.append(textwrap.dedent(f"""
                     struct(
                         FORMAT_NUMBER(CAST(source_val AS DOUBLE), '0.00') as source_value,
@@ -214,7 +212,7 @@ class DataPactClient:
                       f":run_id, :job_id, '{job_name}', current_timestamp(), result_payload FROM final_metrics_view;")
         fail_sql = f"SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Details: \\n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false"
         pass_sql = "SELECT to_json(result_payload, map('pretty', 'true')) AS result FROM final_metrics_view WHERE overall_validation_passed = true"
-        return ";\n\n".join([view_creation_sql, insert_sql, fail_sql, pass_sql])
+        return ";\n\n".join([view_creation_sql, insert_sql, fail_sql, pass_sql])```
 
     def _generate_dashboard_notebook_content(self) -> str:
         """Generates the Python code for the dashboard-creation notebook."""
