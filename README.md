@@ -2,7 +2,7 @@
 
 **An enterprise grade, programmatic data validation accelerator for Databricks.**
 
-DataPact ensures the integrity of your data by creating a 'pact' between your source and target tables. It programmatically generates, runs, and reports on a suite of validation tests directly within your Databricks workspace, enabling reliable and scalable data quality assurance.
+DataPact ensures the integrity of your data by creating a 'pact' between your source and target tables. It programmatically generates, runs, and reports on a suite of validation tests directly within your Databricks workspace, enabling reliable, scalable, and observable data quality assurance.
 
 ---
 
@@ -14,6 +14,7 @@ DataPact ensures the integrity of your data by creating a 'pact' between your so
 *   **Fully Serverless:** Built for efficiency. DataPact uses powerful Serverless SQL Warehouses for all operations, minimizing cost and operational overhead.
 *   **Rich Validations:** Go beyond simple row counts. DataPact supports aggregate comparisons (SUM, AVG, MAX), per-row hash validation, and multi-column null count analysis.
 *   **Persistent, Queryable Reporting:** Automatically log detailed validation results to a Delta table. The results are stored in a `VARIANT` column, allowing for easy, powerful, and native querying of your data quality history in Databricks SQL.
+
 ---
 
 ### Configuration: The 3 Tiers
@@ -111,10 +112,13 @@ python demo/setup.py --warehouse "Your Serverless Warehouse Name" --profile your
 
 Execute DataPact using the pre-made comprehensive demo configuration. This run will showcase:
 
-* ✅ Performance on millions of rows.
-* ✅ A mix of PASSING and FAILING tasks.
-* ✅ Advanced features like accepted thresholds (pk_hash_threshold) and performance tuning (hash_columns).
-* ✅ Graceful handling of edge cases like empty tables and tables without primary keys.
+✅ Performance on tables with millions of rows.
+✅ A mix of intentionally PASSING and FAILING tasks.
+✅ Advanced features like accepted change thresholds (pk_hash_threshold).
+✅ Performance tuning with selective column hashing (hash_columns).
+✅ Detailed aggregate validations (SUM, MAX).
+✅ In-depth null-count validation (null_validation_columns).
+✅ Graceful handling of edge cases like empty tables and tables without primary keys.
 
 ```bash
 # Assumes 'datapact_warehouse' is set in your profile
