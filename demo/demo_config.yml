@@ -3,81 +3,7 @@
 # It is designed to showcase every major feature and edge case.
 
 validations:
-  # 1. FAILING TASK: Large table with count, hash, and null discrepancies.
-  - task_key: "validate_users_FAIL"
-    source_catalog: "datapact_demo_catalog"
-    source_schema: "source_data"
-    source_table: "users"
-    target_catalog: "datapact_demo_catalog"
-    target_schema: "target_data"
-    target_table: "users"
-    primary_keys: ["user_id"]
-    count_tolerance: 0.001
-    pk_row_hash_check: true
-    pk_hash_threshold: 0.05
-    null_validation_columns: ["signup_date"]
-    null_validation_threshold: 0.01
-
-  # 2. PASSING TASK: Large, identical table.
-  - task_key: "validate_transactions_PASS"
-    source_catalog: "datapact_demo_catalog"
-    source_schema: "source_data"
-    source_table: "transactions"
-    target_catalog: "datapact_demo_catalog"
-    target_schema: "target_data"
-    target_table: "transactions"
-    primary_keys: ["transaction_id"]
-    count_tolerance: 0.0
-    pk_row_hash_check: true
-    pk_hash_threshold: 0.0
-
-  # 3. ADVANCED: SCD pattern with an accepted threshold of changes.
-  - task_key: "validate_products_SCD_PASS"
-    source_catalog: "datapact_demo_catalog"
-    source_schema: "source_data"
-    source_table: "products"
-    target_catalog: "datapact_demo_catalog"
-    target_schema: "target_data"
-    target_table: "products"
-    primary_keys: ["product_id"]
-    pk_row_hash_check: true
-    pk_hash_threshold: 0.025 # Allow for up to 2.5% of rows to change.
-
-  # 4. ADVANCED: Selective column hashing for performance.
-  - task_key: "validate_page_views_selective_hash_PASS"
-    source_catalog: "datapact_demo_catalog"
-    source_schema: "source_data"
-    source_table: "page_views"
-    target_catalog: "datapact_demo_catalog"
-    target_schema: "target_data"
-    target_table: "page_views"
-    primary_keys: ["session_id"]
-    pk_row_hash_check: true
-    pk_hash_threshold: 0.0
-    # The `view_ts` column is different, but we ignore it in the hash.
-    hash_columns: ["user_id", "session_id", "page_path"]
-
-  # 5. EDGE CASE: Table with no primary key. Only count validation will run.
-  - task_key: "validate_logs_no_pk_FAIL"
-    source_catalog: "datapact_demo_catalog"
-    source_schema: "source_data"
-    source_table: "log_messages"
-    target_catalog: "datapact_demo_catalog"
-    target_schema: "target_data"
-    target_table: "log_messages"
-    count_tolerance: 0.0
-
-  # 6. EDGE CASE: Empty tables. Should pass with zero tolerance.
-  - task_key: "validate_empty_tables_PASS"
-    source_catalog: "datapact_demo_catalog"
-    source_schema: "source_data"
-    source_table: "empty_audits"
-    target_catalog: "datapact_demo_catalog"
-    target_schema: "target_data"
-    target_table: "empty_audits"
-    count_tolerance: 0.0
-
-validations:
+  # 1. COMPREHENSIVE FAILING TASK: Demonstrates multiple failure modes in a single, large table.
   - task_key: "validate_users_comprehensive_FAIL"
     source_catalog: "datapact_demo_catalog"
     source_schema: "source_data"
@@ -88,30 +14,33 @@ validations:
     primary_keys: ["user_id"]
 
     # Test 1: Count Validation (will FAIL)
-    # Source: 10,000 | Target: ~10,100. Diff > 0.5%.
+    # Source has 1M rows. Target deletes 20k and adds 3k, for a net of 983k.
+    # The difference is ~1.7%, which is greater than the 0.5% tolerance.
     count_tolerance: 0.005
 
     # Test 2: Per-Row Hash Validation (will FAIL)
-    # Emails updated, nulls added. Mismatch ratio > 5%.
+    # 5% of emails are updated, causing their hash to mismatch. This exceeds the 2% threshold.
     pk_row_hash_check: true
-    pk_hash_threshold: 0.05
+    pk_hash_threshold: 0.02
 
     # Test 3: Null Count Validation (will FAIL on both columns)
-    # signup_date and status have more nulls in target.
-    null_validation_threshold: 0.1 # 10% tolerance on null count changes
+    # In the target, more `signup_date` and `status` values are set to NULL.
+    # The relative increase in nulls will exceed the 10% tolerance.
+    null_validation_threshold: 0.1
     null_validation_columns: ["signup_date", "status"]
 
     # Test 4: Aggregate Validations (one PASS, one FAIL)
     agg_validations:
       - column: "user_id"
         validations:
-          # MAX check will PASS (3% diff is within 10% tolerance)
+          # MAX check will PASS (target max is 1003000, source is 1000000, ~0.3% diff, within 10% tolerance)
           - { agg: "MAX", tolerance: 0.1 }
       - column: "total_logins"
         validations:
-          # SUM check will FAIL (logins for CAN users are inflated)
+          # SUM check will FAIL (logins for CAN users are doubled in the target, far exceeding the 1% tolerance)
           - { agg: "SUM", tolerance: 0.01 }
 
+  # 2. PASSING TASK: Validates a large, identical table. All zero-tolerance checks should pass.
   - task_key: "validate_transactions_identity_PASS"
     source_catalog: "datapact_demo_catalog"
     source_schema: "source_data"
@@ -120,8 +49,6 @@ validations:
     target_schema: "target_data"
     target_table: "transactions"
     primary_keys: ["transaction_id"]
-
-    # These tables are identical, so all zero-tolerance tests will PASS.
     count_tolerance: 0.0
     pk_row_hash_check: true
     pk_hash_threshold: 0.0
@@ -130,3 +57,50 @@ validations:
         validations:
           - { agg: "SUM", tolerance: 0.0 }
           - { agg: "AVG", tolerance: 0.0 }
+
+  # 3. ADVANCED PASS: SCD pattern with an accepted threshold of changes.
+  - task_key: "validate_products_SCD_PASS"
+    source_catalog: "datapact_demo_catalog"
+    source_schema: "source_data"
+    source_table: "products"
+    target_catalog: "datapact_demo_catalog"
+    target_schema: "target_data"
+    target_table: "products"
+    primary_keys: ["product_id"]
+    pk_row_hash_check: true
+    # We updated 2% of product prices. A 2.5% threshold allows this to PASS.
+    pk_hash_threshold: 0.025
+
+  # 4. ADVANCED PASS: Selective column hashing for performance/flexibility.
+  - task_key: "validate_page_views_selective_hash_PASS"
+    source_catalog: "datapact_demo_catalog"
+    source_schema: "source_data"
+    source_table: "page_views"
+    target_catalog: "datapact_demo_catalog"
+    target_schema: "target_data"
+    target_table: "page_views"
+    primary_keys: ["session_id"]
+    pk_row_hash_check: true
+    pk_hash_threshold: 0.0
+    # The `view_ts` column is different for every row, but we ignore it in the hash, so the task PASSES.
+    hash_columns: ["user_id", "session_id", "page_path"]
+
+  # 5. EDGE CASE FAIL: Table with no primary key. Only count validation runs and fails.
+  - task_key: "validate_logs_no_pk_FAIL"
+    source_catalog: "datapact_demo_catalog"
+    source_schema: "source_data"
+    source_table: "log_messages"
+    target_catalog: "datapact_demo_catalog"
+    target_schema: "target_data"
+    target_table: "log_messages"
+    count_tolerance: 0.0
+
+  # 6. EDGE CASE PASS: Empty tables. Should pass with zero tolerance.
+  - task_key: "validate_empty_tables_PASS"
+    source_catalog: "datapact_demo_catalog"
+    source_schema: "source_data"
+    source_table: "empty_audits"
+    target_catalog: "datapact_demo_catalog"
+    target_schema: "target_data"
+    target_table: "empty_audits"
+    count_tolerance: 0.0
