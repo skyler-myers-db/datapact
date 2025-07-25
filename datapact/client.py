@@ -20,7 +20,7 @@ from databricks.sdk.service.jobs import (
     RunLifeCycleState, Source, JobRunAs, JobSettings, Task, SqlTask,
     SqlTaskFile, TaskDependency, RunIf
 )
-from databricks.sdk.service import lakeview
+from databricks.sdk.service.lakeview import Widget, Content, Sql, Query, Position, DashboardContent
 from loguru import logger
 
 TERMINAL_STATES: list[RunLifeCycleState] = [
@@ -333,19 +333,19 @@ class DataPactClient:
         widgets = []
         y_pos = 0
         for i, (title, sql) in enumerate(queries.items()):
-            widget = lakeview.Widget(
-                content=lakeview.Content(
-                    sql=lakeview.Sql(
-                        query=lakeview.Query(text=sql)
+            widget = Widget(
+                content=Content(
+                    sql=Sql(
+                        query=Query(text=sql)
                     )
                 ),
-                position=lakeview.Position(x=0, y=y_pos, width=6, height=8),
+                position=Position(x=0, y=y_pos, width=6, height=8),
                 title=title
             )
             widgets.append(widget)
             y_pos += 8
 
-        content = lakeview.DashboardContent(widgets=widgets)
+        content = DashboardContent(widgets=widgets)
 
         dashboard = self.w.lakeview.create(
             display_name=dashboard_name,
