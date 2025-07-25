@@ -108,20 +108,10 @@ class DataPactClient:
             A string containing the complete, executable SQL for one validation task.
         """
         task_key: str = config['task_key']
-        
-        if config.get('pk_row_hash_check') and not config.get('primary_keys'):
-            raise ValueError(f"Task '{task_key}': 'pk_row_hash_check' requires 'primary_keys'.")
-        if config.get('null_validation_columns') and not config.get('primary_keys'):
-            logger.warning(f"Task '{task_key}': 'null_validation_columns' without 'primary_keys' will only compare overall null counts, which can be misleading. For best results, provide primary keys.")
+        source_fqn = f"`{config['source_catalog']}`.`{config['source_schema']}`.`{config['source_table']}`"
+        target_fqn = f"`{config['target_catalog']}`.`{config['target_schema']}`.`{config['target_table']}`"
+        ctes, payload_structs, overall_clauses = [], [], []
 
-        source_fqn: str = f"`{config['source_catalog']}`.`{config['source_schema']}`.`{config['source_table']}`"
-        target_fqn: str = f"`{config['target_catalog']}`.`{config['target_schema']}`.`{config['target_table']}`"
-        
-        ctes: list[str] = []
-        payload_structs: list[str] = []
-        overall_validation_passed_clauses: list[str] = []
-
-        # Validation 1: Row Count
         if 'count_tolerance' in config:
             tolerance = config.get('count_tolerance', 0.0)
             ctes.append(f"count_metrics AS (SELECT (SELECT COUNT(1) FROM {source_fqn}) AS source_count, (SELECT COUNT(1) FROM {target_fqn}) AS target_count)")
@@ -136,7 +126,6 @@ class DataPactClient:
             ) AS count_validation"""))
             overall_clauses.append(check)
 
-        # Validation 2: Row Hash
         if config.get('pk_row_hash_check') and config.get('primary_keys'):
             pks = config['primary_keys']
             threshold = config.get('pk_hash_threshold', 0.0)
@@ -145,53 +134,49 @@ class DataPactClient:
             join_expr = " AND ".join([f"s.`{pk}` = t.`{pk}`" for pk in pks])
             pk_cols_str = ", ".join([f"`{pk}`" for pk in pks])
             ctes.append(f"""row_hash_metrics AS (
-                SELECT COUNT(1) AS total, COALESCE(SUM(CASE WHEN s.h <> t.h THEN 1 ELSE 0 END), 0) AS mismatches
+                SELECT COUNT(1) AS total_compared_rows, COALESCE(SUM(CASE WHEN s.h <> t.h THEN 1 ELSE 0 END), 0) AS mismatch_count
                 FROM (SELECT {pk_cols_str}, {hash_expr} as h FROM {source_fqn}) s
                 JOIN (SELECT {pk_cols_str}, {hash_expr} as h FROM {target_fqn}) t ON {join_expr})""")
-            check = f"COALESCE(mismatches / NULLIF(CAST(total AS DOUBLE), 0), 0) <= {threshold}"
+            check = f"COALESCE(mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0), 0) <= {threshold}"
             payload_structs.append(textwrap.dedent(f"""
             struct(
-                FORMAT_NUMBER(total, '0') as total_compared_rows,
-                FORMAT_NUMBER(mismatches, '0') as mismatch_count,
-                FORMAT_STRING('%.2f%%', COALESCE(mismatches / NULLIF(CAST(total AS DOUBLE), 0), 0) * 100) as mismatch_ratio,
+                FORMAT_NUMBER(total_compared_rows, '0') as total_compared_rows,
+                FORMAT_NUMBER(mismatch_count, '0') as mismatch_count,
+                FORMAT_STRING('%.2f%%', COALESCE(mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0), 0) * 100) as mismatch_ratio,
                 FORMAT_STRING('%.2f%%', {threshold} * 100) as threshold,
                 CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
             ) AS row_hash_validation"""))
             overall_clauses.append(check)
         
-        # Validation 3: Null Counts
-        null_cols: list[str] | None = config.get('null_validation_columns')
-        if null_cols and 'null_validation_threshold' in config:
+        if config.get('null_validation_columns') and 'null_validation_threshold' in config:
             threshold = config['null_validation_threshold']
             pks = config.get('primary_keys')
-            for col in null_cols:
-                if pks: # Advanced check: compare null status for matching rows
-                    pk_cols_str = ", ".join([f"`{pk}`" for pk in pks])
+            for col in config['null_validation_columns']:
+                cte_key = f"null_metrics_{col}"
+                if pks:
                     join_expr = " AND ".join([f"s.`{pk}` = t.`{pk}`" for pk in pks])
-                    ctes.append(f"""null_metrics_{col} AS (
-                        SELECT 
-                            SUM(CASE WHEN s.`{col}` IS NULL THEN 1 ELSE 0 END) as source_nulls,
-                            SUM(CASE WHEN t.`{col}` IS NULL THEN 1 ELSE 0 END) as target_nulls,
-                            COUNT(1) as total_compared_rows
-                        FROM {source_fqn} s JOIN {target_fqn} t ON {join_expr}
-                    )""")
-                    check = f"COALESCE(ABS(source_nulls - target_nulls) / NULLIF(CAST(total_compared_rows AS DOUBLE), 0), 0) <= {threshold}"
+                    ctes.append(f"""{cte_key} AS (SELECT
+                        SUM(CASE WHEN s.`{col}` IS NULL THEN 1 ELSE 0 END) as source_nulls,
+                        SUM(CASE WHEN t.`{col}` IS NULL THEN 1 ELSE 0 END) as target_nulls,
+                        COUNT(1) as total_compared
+                        FROM {source_fqn} s JOIN {target_fqn} t ON {join_expr})""")
+                    check = f"COALESCE(ABS(source_nulls - target_nulls) / NULLIF(CAST(total_compared AS DOUBLE), 0), 0) <= {threshold}"
+                else:
+                    ctes.append(f"""{cte_key} AS (SELECT
+                        (SELECT COUNT(1) FROM {source_fqn} WHERE `{col}` IS NULL) as source_nulls,
+                        (SELECT COUNT(1) FROM {target_fqn} WHERE `{col}` IS NULL) as target_nulls,
+                        (SELECT COUNT(1) FROM {source_fqn}) as total_compared)""")
+                    check = f"COALESCE(ABS(source_nulls - target_nulls) / NULLIF(CAST(total_compared AS DOUBLE), 0), 0) <= {threshold}"
 
-                else: # Simple check: compare total null counts in each table
-                    ctes.append(f"""null_metrics_{col} AS (
-                        SELECT
-                            (SELECT COUNT(1) FROM {source_fqn} WHERE `{col}` IS NULL) AS source_nulls,
-                            (SELECT COUNT(1) FROM {target_fqn} WHERE `{col}` IS NULL) AS target_nulls,
-                            (SELECT COUNT(1) FROM {source_fqn}) AS source_total
-                    )""")
-                    check = f"COALESCE(ABS(source_nulls - target_nulls) / NULLIF(CAST(source_total AS DOUBLE), 0), 0) <= {threshold}"
-                
-                payload_structs.append("struct(FORMAT_NUMBER(source_nulls, '0') as source_nulls, FORMAT_NUMBER(target_nulls, '0') as target_nulls, FORMAT_NUMBER(total_compared_rows, '0') AS total_compared_rows, "
-                                      f"FORMAT_STRING('%.2f%%', COALESCE(ABS(source_nulls - target_nulls) / NULLIF(CAST(total_compared_rows AS DOUBLE), 0), 0)) as diff_ratio, FORMAT_STRING('%.2f%%', {threshold} * 100) as threshold, "
-                                      f"CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END as status) as null_validation_{col}")
-                overall_validation_passed_clauses.append(check)
+                payload_structs.append(textwrap.dedent(f"""
+                struct(
+                    FORMAT_NUMBER(source_nulls, '0') as source_nulls,
+                    FORMAT_NUMBER(target_nulls, '0') as target_nulls,
+                    FORMAT_STRING('%.2f%%', {threshold} * 100) as threshold,
+                    CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
+                ) as null_validation_{col}"""))
+                overall_clauses.append(check)
 
-        # Validation 4: Aggregates
         if config.get('agg_validations'):
             for agg_config in config.get('agg_validations', []):
                 col, validations = agg_config['column'], agg_config['validations']
@@ -211,24 +196,23 @@ class DataPactClient:
                         CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
                     ) as agg_validation_{col}_{agg}"""))
                     overall_clauses.append(check)
-
-        if not payload_structs: return f"SELECT 'No validations configured for task {task_key}' AS status;"
-
-        view_creation_sql = "CREATE OR REPLACE TEMP VIEW final_metrics_view AS\n"
-        view_creation_sql += "WITH\n" + ",\n".join(ctes) + "\n"
-        from_clause = " CROSS JOIN ".join([cte.split(" AS ")[0].strip() for cte in ctes])
-        select_payload = f"parse_json(to_json(struct({', '.join(payload_structs)}))) as result_payload"
-        select_status = f"{' AND '.join(overall_validation_passed_clauses)} AS overall_validation_passed"
-        view_creation_sql += f"SELECT {select_payload}, {select_status} FROM {from_clause};"
         
+        if not payload_structs:
+            view_creation_sql = f"CREATE OR REPLACE TEMP VIEW final_metrics_view AS SELECT true as overall_validation_passed, parse_json(to_json(struct('No validations configured for task {task_key}' as message))) as result_payload;"
+        else:
+            view_creation_sql = "CREATE OR REPLACE TEMP VIEW final_metrics_view AS\n"
+            if ctes: view_creation_sql += "WITH\n" + ",\n".join(ctes) + "\n"
+            from_clause = " CROSS JOIN ".join([cte.split(" AS ")[0].strip() for cte in ctes]) if ctes else "(SELECT 1)"
+            select_payload = f"parse_json(to_json(struct({', '.join(payload_structs)}))) as result_payload"
+            select_status = f"{' AND '.join(overall_clauses) if overall_clauses else 'true'} AS overall_validation_passed"
+            view_creation_sql += f"SELECT {select_payload}, {select_status} FROM {from_clause};"
+
         insert_sql = (f"INSERT INTO {results_table} (task_key, status, run_id, job_id, job_name, timestamp, result_payload) "
                       f"SELECT '{task_key}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END, "
                       f":run_id, :job_id, '{job_name}', current_timestamp(), result_payload FROM final_metrics_view;")
-
-        fail_sql = "SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Payload: \\n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false;"
-        pass_sql = "SELECT to_json(result_payload, map('pretty', 'true')) AS result FROM final_metrics_view WHERE overall_validation_passed = true;"
-        
-        return "\n\n".join([view_creation_sql, insert_sql, fail_sql, pass_sql])
+        fail_sql = f"SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Details: \\n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false"
+        pass_sql = "SELECT to_json(result_payload, map('pretty', 'true')) AS result FROM final_metrics_view WHERE overall_validation_passed = true"
+        return ";\n\n".join([view_creation_sql, insert_sql, fail_sql, pass_sql])
 
     def _generate_dashboard_notebook_content(self) -> str:
         """Generates the Python code for the dashboard-creation notebook."""
