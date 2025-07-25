@@ -319,21 +319,39 @@ class DataPactClient:
         warehouse_id: str,
     ) -> str:
         """
-        Idempotently create *or* fetch the Lakeview draft for <job_name>.
-        Returns the draft dashboard_id (needed by the dashboard task).
+        Make sure the Lakeview dashboard draft for <job_name> exists.
+        • If the .lvdash.json file already exists in the Workspace, reuse it.
+        • Otherwise create & publish a new draft.
+        Returns the *draft* dashboard_id (needed by the dashboard task).
         """
         display_name = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
         parent_path  = f"{self.root_path}/dashboards"
+        draft_path   = f"{parent_path}/{display_name}.lvdash.json"
         self.w.workspace.mkdirs(parent_path)
     
-        existing = next(
-            (d for d in self.w.lakeview.list(view=DashboardView.DASHBOARD_VIEW_BASIC)
-             if d.display_name == display_name and d.parent_path == parent_path),
-            None
-        )
-        if existing:
-            logger.info(f"Using existing dashboard {existing.dashboard_id}")
-            return existing.dashboard_id
+        try:
+            self.w.workspace.get_status(draft_path)
+            logger.info(f"Found existing dashboard file at {draft_path}")
+    
+            existing = next(
+                (d for d in self.w.lakeview.list(view=DashboardView.DASHBOARD_VIEW_BASIC)
+                 if d.display_name == display_name),
+                None
+            )
+            if existing:
+                logger.info(f"Re-using draft {existing.dashboard_id}")
+                return existing.dashboard_id
+    
+            logger.warning("File exists but no Lakeview object found – deleting orphan")
+            self.w.workspace.delete(draft_path)
+            while True:
+                try:
+                    self.w.workspace.get_status(draft_path)
+                    time.sleep(0.5)
+                except NotFound:
+                    break
+        except NotFound:
+            logger.info("Dashboard file does not yet exist – will create")
     
         q = lambda sql: sql.format(table=results_table_fqn, job=job_name)
         queries = {
@@ -343,7 +361,7 @@ class DataPactClient:
                 " GROUP BY status"),
             "Failure Rate %": q(
                 "SELECT date(timestamp) run_date,"
-                " COUNT(IF(status='FAILURE',1,NULL))*100.0/COUNT(*) failure_rate"
+                " COUNT(IF(status='FAILURE',1,NULL))*100/COUNT(*) failure_rate"
                 " FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1"),
             "Top Failures": q(
                 "SELECT task_key, COUNT(*) failure_count FROM {table}"
@@ -372,7 +390,10 @@ class DataPactClient:
                 "version": "1.0",
                 "datasets": ds,
                 "visualizations": vz,
-                "pages": [{"id": "p_1", "name": "main", "displayName": "DataPact", "widgets": wd}],
+                "pages": [{
+                    "id": "p_1", "name": "main",
+                    "displayName": "DataPact", "widgets": wd
+                }],
             }),
         ))
     
@@ -381,8 +402,7 @@ class DataPactClient:
             embed_credentials = True,
             warehouse_id      = warehouse_id,
         )
-        link = f"{self.w.config.host}/dashboardsv3/{draft.dashboard_id}/published"
-        logger.success(f"✅ Created dashboard → {link}")
+        logger.success(f"✅ Created dashboard: {self.w.config.host}/dashboardsv3/{draft.dashboard_id}/published")
         return draft.dashboard_id
 
     def run_validation(
