@@ -6,46 +6,30 @@ CREATE CATALOG IF NOT EXISTS datapact_demo_catalog;
 CREATE SCHEMA IF NOT EXISTS datapact_demo_catalog.source_data;
 CREATE SCHEMA IF NOT EXISTS datapact_demo_catalog.target_data;
 
+-- Step 2: Create large-scale Users and Transactions tables.
 CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.users AS
 SELECT
   id AS user_id,
   md5(CAST(id AS STRING)) || '@example.com' AS email,
-  CASE WHEN rand() < 0.8 THEN 'USA' WHEN rand() < 0.95 THEN 'CAN' ELSE 'MEX' END AS country,
-  date_add('2022-01-01', CAST(rand() * 365 AS INT)) AS signup_date,
-  CASE WHEN id % 100 = 0 THEN NULL ELSE 'active' END AS status,
-  (rand() * 1000)::INT AS total_logins
-FROM (SELECT explode(sequence(1, 10000)) AS id);
+  CASE WHEN rand() < 0.6 THEN 'USA' WHEN rand() < 0.8 THEN 'CAN' ELSE 'GBR' END AS country,
+  date_add('2022-01-01', CAST(rand() * 730 AS INT)) AS signup_date
+FROM (SELECT explode(sequence(1, 1000000)) AS id);
 
 CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.transactions AS
 SELECT
   uuid() AS transaction_id,
-  (abs(rand()) * 9999 + 1)::INT AS user_id,
+  (abs(rand()) * 999999 + 1)::INT AS user_id,
   (rand() * 500 + 5)::DECIMAL(10, 2) AS amount,
-  CASE WHEN rand() < 0.6 THEN 'electronics' WHEN rand() < 0.9 THEN 'groceries' ELSE 'apparel' END as category
-FROM (SELECT explode(sequence(1, 50000)) AS id);
+  uuid() as product_id,
+  current_timestamp() - (rand() * 365 * 2) * INTERVAL '1 day' as transaction_ts
+FROM (SELECT explode(sequence(1, 5000000)) AS id);
 
--- Step 2: Create target tables as copies
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.users TABLE datapact_demo_catalog.source_data.users;
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.transactions TABLE datapact_demo_catalog.source_data.transactions;
-
--- Step 3: Introduce intentional, DETERMINISTIC discrepancies for the demo
--- USERS table discrepancies (designed to FAIL specific tests)
--- 1. Update 5% of emails (for hash check failure)
+-- Step 3: Create target tables with intentional, deterministic discrepancies.
+CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.users AS TABLE datapact_demo_catalog.source_data.users;
 UPDATE datapact_demo_catalog.target_data.users SET email = md5(email) || '@changed.com' WHERE user_id % 20 = 0;
--- 2. Delete 2% of users (for count check failure)
 DELETE FROM datapact_demo_catalog.target_data.users WHERE user_id % 50 = 0;
--- 3. Add 300 new users (for count check failure)
-INSERT INTO datapact_demo_catalog.target_data.users (user_id, email, country, signup_date, status, total_logins)
-SELECT id, 'newuser_' || md5(CAST(id AS STRING)) || '@new.com', 'N/A', current_date(), 'new', 0
-FROM (SELECT explode(sequence(10001, 10300)) AS id);
--- 4. Set 10% of signup_dates to NULL (for null check failure)
+INSERT INTO datapact_demo_catalog.target_data.users SELECT id AS user_id, 'newuser_' || md5(CAST(id AS STRING)) || '@new.com' AS email, 'N/A' as country, current_date() AS signup_date FROM (SELECT explode(sequence(1000001, 1003000)) AS id);
 UPDATE datapact_demo_catalog.target_data.users SET signup_date = NULL WHERE user_id % 10 = 0;
--- 5. Change some statuses to NULL (for another null check failure)
-UPDATE datapact_demo_catalog.target_data.users SET status = NULL WHERE user_id % 33 = 0;
--- 6. Inflate total_logins (for SUM aggregate check failure)
-UPDATE datapact_demo_catalog.target_data.users SET total_logins = total_logins + 50 WHERE country = 'CAN';
-
--- TRANSACTIONS table discrepancies (designed to PASS all tests)
 
 CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.transactions AS TABLE datapact_demo_catalog.source_data.transactions;
 
