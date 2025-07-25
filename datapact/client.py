@@ -18,7 +18,7 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import jobs, sql as sql_service, workspace
 from databricks.sdk.service.jobs import (
     RunLifeCycleState, Source, JobRunAs, JobSettings, Task, SqlTask,
-    SqlTaskFile, TaskDependency, RunIf, JobParameterDefinition
+    SqlTaskFile, TaskDependency, RunIf, NotebookTask
 )
 from loguru import logger
 
