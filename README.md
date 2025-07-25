@@ -112,13 +112,13 @@ python demo/setup.py --warehouse "Your Serverless Warehouse Name" --profile your
 
 Execute DataPact using the pre-made comprehensive demo configuration. This run will showcase:
 
-✅ Performance on tables with millions of rows.
-✅ A mix of intentionally PASSING and FAILING tasks.
-✅ Advanced features like accepted change thresholds (pk_hash_threshold).
-✅ Performance tuning with selective column hashing (hash_columns).
-✅ Detailed aggregate validations (SUM, MAX).
-✅ In-depth null-count validation (null_validation_columns).
-✅ Graceful handling of edge cases like empty tables and tables without primary keys.
+* ✅ Performance on tables with millions of rows.
+* ✅ A mix of intentionally PASSING and FAILING tasks.
+* ✅ Advanced features like accepted change thresholds (pk_hash_threshold).
+* ✅ Performance tuning with selective column hashing (hash_columns).
+* ✅ Detailed aggregate validations (SUM, MAX).
+* ✅ In-depth null-count validation (null_validation_columns).
+* ✅ Graceful handling of edge cases like empty tables and tables without primary keys.
 
 ```bash
 # Assumes 'datapact_warehouse' is set in your profile
