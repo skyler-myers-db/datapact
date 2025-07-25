@@ -372,37 +372,41 @@ class DataPactClient:
         }
     
         datasets, visualizations, layout = [], [], []
-        y = 0
+        row = 0
         for i, (title, sql) in enumerate(queries.items(), 1):
-            ds_id, vz_id, wd_id = f"d_{i}", f"v_{i}", f"w_{i}"
+            ds_id, vz_id = f"d_{i}", f"v_{i}"
         
-            # DATASET ----------------------------------------------------------
+            # DATASET
             datasets.append({
-                "id": ds_id, "name": ds_id, "displayName": title, "query": sql
+                "id": ds_id, "name": ds_id,
+                "displayName": title, "query": sql
             })
         
-            # VISUALISATION ----------------------------------------------------
-            v_type, v_opts = (
-                ("COUNTER", {"counterColName": "task_count"}) if i == 1 else
-                ("CHART",   {"globalSeriesType": "line"})     if i == 2 else
-                ("CHART",   {"globalSeriesType": "bar"})      if i == 3 else
-                ("TABLE",   {})
-            )
+            # VISUALISATION
+            if title.startswith("Run Summary"):
+                v_type, v_opts = "COUNTER", {"counterColName": "task_count"}
+            elif title.startswith("Failure Rate"):
+                v_type, v_opts = "CHART",   {"globalSeriesType": "line"}
+            elif title.startswith("Top 10"):
+                v_type, v_opts = "CHART",   {"globalSeriesType": "bar"}
+            else:
+                v_type, v_opts = "TABLE",   {}
+        
             visualizations.append({
                 "id": vz_id, "name": title.replace(" ", "_"),
                 "type": v_type, "datasetId": ds_id, "options": v_opts
             })
         
-            # LAYOUT ENTRY -----------------------------------------------------
+            # LAYOUT (widget + position)
             layout.append({
                 "widget": {
-                    "id": wd_id, "name": title.replace(" ", "_"),
+                    "id": f"w_{i}", "name": title.replace(" ", "_"),
                     "frame": {"showTitle": True, "title": title},
-                    "visualization": { "id": vz_id, "datasetId": ds_id }
+                    "visualization": {"id": vz_id, "datasetId": ds_id}
                 },
-                "position": { "x": 0 if i % 2 else 6, "y": y, "width": 6, "height": 8 }
+                "position": {"x": 0 if i % 2 else 6, "y": row, "width": 6, "height": 8}
             })
-            if i % 2 == 0: y += 8
+            if i % 2 == 0: row += 8
         
         draft = self.w.lakeview.create(Dashboard(
             display_name         = display_name,
@@ -410,7 +414,7 @@ class DataPactClient:
             warehouse_id         = warehouse_id,
             serialized_dashboard = json.dumps({
                 "version": "1.0",
-                "datasets": datasets,
+                "datasets":       datasets,
                 "visualizations": visualizations,
                 "pages": [{
                     "id": "p_1", "name": "main",
