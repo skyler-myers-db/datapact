@@ -10,6 +10,7 @@ Serverless SQL Warehouse. Finally, it can create a results dashboard.
 
 import os
 import time
+import json
 import textwrap
 from datetime import timedelta, datetime
 from typing import Any
@@ -20,7 +21,7 @@ from databricks.sdk.service.jobs import (
     RunLifeCycleState, Source, JobRunAs, JobSettings, Task, SqlTask,
     SqlTaskFile, TaskDependency, RunIf
 )
-from databricks.sdk.service.lakeview import Widget, Content, Sql, Query, Position, DashboardContent
+from databricks.sdk.service.dashboards import Dashboard
 from loguru import logger
 
 TERMINAL_STATES: list[RunLifeCycleState] = [
@@ -313,7 +314,6 @@ class DataPactClient:
     def _create_or_update_dashboard(self, job_name: str, results_table_fqn: str, warehouse_id: str):
         """
         Creates or updates a modern Databricks Lakeview Dashboard using the local client.
-        This is the final, correct implementation using the lakeview API.
         """
         logger.info("Creating or updating results Lakeview dashboard...")
         dashboard_name = f"DataPact Results: {job_name}"
@@ -327,33 +327,49 @@ class DataPactClient:
             "Run Summary (Latest)": f"SELECT status, COUNT(1) as task_count FROM {results_table_fqn} WHERE run_id = (SELECT MAX(run_id) FROM {results_table_fqn} WHERE job_name = '{job_name}') GROUP BY status",
             "Failure Rate Over Time (%)": f"SELECT to_date(timestamp) as run_date, COUNT(CASE WHEN status = 'FAILURE' THEN 1 END) * 100.0 / COUNT(1) as failure_rate_percent FROM {results_table_fqn} WHERE job_name = '{job_name}' GROUP BY 1 ORDER BY 1",
             "Top 10 Failing Tasks": f"SELECT task_key, COUNT(1) as failure_count FROM {results_table_fqn} WHERE status = 'FAILURE' AND job_name = '{job_name}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10",
-            "Detailed Run History": f"SELECT * FROM {results_table_fqn} WHERE job_name = '{job_name}' ORDER BY timestamp DESC, task_key"
+            "Detailed Run History": f"SELECT task_key, status, timestamp, to_json(result_payload) as result_payload_json FROM {results_table_fqn} WHERE job_name = '{job_name}' ORDER BY timestamp DESC, task_key"
         }
 
-        widgets = []
+        widgets_list = []
         y_pos = 0
         for i, (title, sql) in enumerate(queries.items()):
-            widget = Widget(
-                content=Content(
-                    sql=Sql(
-                        query=Query(text=sql)
-                    )
-                ),
-                position=Position(x=0, y=y_pos, width=6, height=8),
-                title=title
-            )
-            widgets.append(widget)
+            dataset_id = f"d_{i+1}"
+            widget_id = f"w_{i+1}"
+            
+            widget_dict = {
+                "id": widget_id,
+                "visualization": { "id": f"v_{i+1}", "datasetId": dataset_id },
+                "position": { "x": 0, "y": y_pos, "width": 6, "height": 8 },
+                "title": title
+            }
+            widgets_list.append(widget_dict)
             y_pos += 8
 
-        content = DashboardContent(widgets=widgets)
+        dashboard_dict = {
+            "pages": [{
+                "id": "p_1",
+                "name": "DataPact Results",
+                "widgets": widgets_list
+            }],
+            "datasets": [{
+                "id": f"d_{i+1}",
+                "sql": { "query": { "text": sql } }
+            } for i, sql in enumerate(queries.values())]
+        }
+        
+        serialized_dashboard_str = json.dumps(dashboard_dict)
 
-        dashboard = self.w.lakeview.create(
+        dashboard_payload = Dashboard(
             display_name=dashboard_name,
             warehouse_id=warehouse_id,
-            content=content
+            serialized_dashboard=serialized_dashboard_str
         )
+
+        draft = self.w.lakeview.create(dashboard_payload)
         
-        dashboard_url = f"{self.w.config.host}/dashboards/lakeview/{dashboard.dashboard_id}"
+        pub = self.w.lakeview.publish(dashboard_id=draft.dashboard_id)
+
+        dashboard_url = f"{self.w.config.host}{pub.path}"
         logger.success(f"✅ Dashboard is ready! View it here: {dashboard_url}")
 
     def run_validation(
