@@ -153,6 +153,7 @@ class DataPactClient:
             pks = config.get('primary_keys')
             for col in config['null_validation_columns']:
                 cte_key = f"null_metrics_{col}"
+                # Use advanced row-by-row null comparison if PKs are available
                 if pks:
                     join_expr = " AND ".join([f"s.`{pk}` = t.`{pk}`" for pk in pks])
                     ctes.append(f"""{cte_key} AS (SELECT
@@ -161,7 +162,7 @@ class DataPactClient:
                         COUNT(1) as total_compared
                         FROM {source_fqn} s JOIN {target_fqn} t ON {join_expr})""")
                     check = f"COALESCE(ABS(source_nulls - target_nulls) / NULLIF(CAST(total_compared AS DOUBLE), 0), 0) <= {threshold}"
-                else:
+                else: # Fallback to simple counts if no PKs
                     ctes.append(f"""{cte_key} AS (SELECT
                         (SELECT COUNT(1) FROM {source_fqn} WHERE `{col}` IS NULL) as source_nulls,
                         (SELECT COUNT(1) FROM {target_fqn} WHERE `{col}` IS NULL) as target_nulls,
@@ -187,10 +188,11 @@ class DataPactClient:
                         SELECT (SELECT {agg}(`{col}`) FROM {source_fqn}) as source_val,
                                (SELECT {agg}(`{col}`) FROM {target_fqn}) as target_val)""")
                     check = f"COALESCE(ABS(source_val - target_val) / NULLIF(ABS(CAST(source_val AS DOUBLE)), 0), 0) <= {tolerance}"
+                    # CORRECTED: Cast Decimal types to Double before formatting to avoid internal Spark errors.
                     payload_structs.append(textwrap.dedent(f"""
                     struct(
-                        FORMAT_NUMBER(source_val, '0.00') as source_value,
-                        FORMAT_NUMBER(target_val, '0.00') as target_value,
+                        FORMAT_NUMBER(CAST(source_val AS DOUBLE), '0.00') as source_value,
+                        FORMAT_NUMBER(CAST(target_val AS DOUBLE), '0.00') as target_value,
                         FORMAT_STRING('%.2f%%', COALESCE(ABS(source_val - target_val) / NULLIF(ABS(CAST(source_val AS DOUBLE)), 0), 0) * 100) as relative_diff,
                         FORMAT_STRING('%.2f%%', {tolerance} * 100) as tolerance,
                         CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
