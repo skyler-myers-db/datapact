@@ -238,36 +238,40 @@ class DataPactClient:
 
     def _upload_sql_scripts(self, config: dict[str, any], results_table: str, job_name: str) -> dict[str, str]:
         """Generates and uploads all necessary SQL scripts for the job."""
-        logger.info("Generating and uploading SQL validation scripts...")
+        logger.info("Generating and uploading SQL validation scripts as raw files...")
         task_paths: dict[str, str] = {}
-        sql_tasks_path: str = f"{self.root_path}/sql_tasks/{job_name}_{int(time.time())}"
+        sql_tasks_path: str = f"{self.root_path}/sql_tasks/{job_name}"
         self.w.workspace.mkdirs(sql_tasks_path)
 
         for task_config in config['validations']:
             task_key: str = task_config['task_key']
             sql_script: str = self._generate_validation_sql(task_config, results_table, job_name)
             script_path: str = f"{sql_tasks_path}/{task_key}.sql"
-            self.w.workspace.upload(path=script_path, content=sql_script.encode('utf-8'), overwrite=True)
+            
+            self.w.workspace.upload(
+                path=script_path,
+                content=sql_script.encode('utf-8'),
+                overwrite=True,
+                format=workspace.ImportFormat.RAW 
+            )
             task_paths[task_key] = script_path
-            logger.info(f"  - Uploaded SQL for task '{task_key}' to {script_path}")
+            logger.info(f"  - Uploaded SQL FILE for task '{task_key}' to {script_path}")
         
         agg_script_path: str = f"{sql_tasks_path}/aggregate_results.sql"
         agg_sql_script: str = textwrap.dedent(f"""
-            CREATE OR REPLACE TEMP VIEW run_results AS
-            SELECT * FROM {results_table} WHERE run_id = {{{{job.run_id}}}};
-            CREATE OR REPLACE TEMP VIEW agg_metrics AS
-            SELECT
-              (SELECT COUNT(1) FROM run_results WHERE status = 'FAILURE') AS failure_count,
-              (SELECT COLLECT_LIST(task_key) FROM run_results WHERE status = 'FAILURE') as failed_tasks;
-            SELECT CASE
-                WHEN (SELECT failure_count FROM agg_metrics) > 0
-                THEN RAISE_ERROR(CONCAT('DataPact tasks failed: ', (SELECT to_json(failed_tasks) FROM agg_metrics)))
-                ELSE 'All DataPact validations passed successfully!'
-            END;
-        """)
-        self.w.workspace.upload(path=agg_script_path, content=agg_sql_script.encode('utf-8'), overwrite=True)
+            CREATE OR REPLACE TEMP VIEW run_results AS SELECT * FROM {results_table} WHERE run_id = {{{{job.run_id}}}};
+            SELECT CASE WHEN (SELECT COUNT(1) FROM run_results WHERE status = 'FAILURE') > 0
+                THEN RAISE_ERROR(CONCAT('DataPact tasks failed: ', (SELECT to_json(COLLECT_LIST(task_key)) FROM run_results WHERE status = 'FAILURE')))
+                ELSE 'All DataPact validations passed successfully!' END;""")
+        
+        self.w.workspace.upload(
+            path=agg_script_path,
+            content=agg_sql_script.encode('utf-8'),
+            overwrite=True,
+            format=workspace.ImportFormat.RAW
+        )
         task_paths['aggregate_results'] = agg_script_path
-        logger.info(f"  - Uploaded aggregation SQL to {agg_script_path}")
+        logger.info(f"  - Uploaded aggregation SQL FILE to {agg_script_path}")
         return task_paths
 
     def run_validation(
