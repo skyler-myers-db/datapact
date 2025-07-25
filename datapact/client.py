@@ -317,15 +317,29 @@ class DataPactClient:
         """
         logger.info("Creating or updating results Lakeview dashboard...")
         
+        # Use a sanitized name for the dashboard resource itself
         sanitized_job_name = job_name.replace(" ", "_").replace(":", "")
         dashboard_name = f"DataPact_Results_{sanitized_job_name}"
-
-        for d in self.w.lakeview.list():
-            if d.display_name == dashboard_name:
-                logger.warning(f"Deleting existing Lakeview dashboard (ID: {d.dashboard_id}) to recreate.")
-                self.w.lakeview.delete(dashboard_id=d.dashboard_id)
-                break
         
+        # Use a stable parent path to store dashboards
+        parent_path = f"{self.root_path}/dashboards"
+        self.w.workspace.mkdirs(parent_path)
+
+        # Robustly delete by listing the workspace path, not using an unsupported API filter
+        dashboard_full_path = f"{parent_path}/{dashboard_name}"
+        try:
+            for item in self.w.workspace.list(parent_path):
+                if item.path == dashboard_full_path and item.object_type.name == 'DASHBOARD':
+                    logger.warning(f"Deleting existing Lakeview dashboard at path: {item.path}")
+                    for d in self.w.lakeview.list():
+                        if d.display_name == dashboard_name:
+                            self.w.lakeview.delete(dashboard_id=d.dashboard_id)
+                            logger.warning(f"Deleted dashboard with display_name: {dashboard_name}")
+                            break
+                    break
+        except Exception as e:
+            logger.warning(f"Could not check for or delete existing dashboard. This may be okay. Error: {e}")
+
         queries = {
             "Run Summary (Latest)": f"SELECT status, COUNT(1) as task_count FROM {results_table_fqn} WHERE run_id = (SELECT MAX(run_id) FROM {results_table_fqn} WHERE job_name = '{job_name}') GROUP BY status",
             "Failure Rate Over Time (%)": f"SELECT to_date(timestamp) as run_date, COUNT(CASE WHEN status = 'FAILURE' THEN 1 END) * 100.0 / COUNT(1) as failure_rate_percent FROM {results_table_fqn} WHERE job_name = '{job_name}' GROUP BY 1 ORDER BY 1",
@@ -333,47 +347,67 @@ class DataPactClient:
             "Detailed Run History": f"SELECT task_key, status, timestamp, to_json(result_payload) as result_payload_json FROM {results_table_fqn} WHERE job_name = '{job_name}' ORDER BY timestamp DESC, task_key"
         }
 
-        widgets_list = []
-        datasets_list = []
+        datasets, visualizations, widgets = [], [], []
         y_pos = 0
-        for i, (title, sql) in enumerate(queries.items()):
-            dataset_name = f"dataset_{i+1}"
-            widget_id = f"widget_{i+1}"
-            
-            datasets_list.append({
-                "id": dataset_name,
-                "name": dataset_name,
-                "displayName": title,
-                "sql": { "query": { "text": sql } }
+        for i, (title, sql) in enumerate(queries.items(), start=1):
+            ds_id = f"dataset_{i}"
+            vz_id = f"viz_{i}"
+            wd_id = f"widget_{i}"
+
+            datasets.append({
+                "id": ds_id,
+                "name": ds_id, # Mandatory field
+                "displayName": title, # Mandatory field
+                "sql": {
+                    "query": {
+                        "text": sql,
+                        "dataSourceId": warehouse_id # Mandatory field
+                    }
+                }
             })
-            
-            widgets_list.append({
-                "id": widget_id,
-                "visualization": { "id": f"viz_{i+1}", "datasetId": dataset_name },
+
+            visualizations.append({
+                "id": vz_id,
+                "type": "TABLE" if "History" in title else "CHART",
+                "datasetId": ds_id
+            })
+
+            widgets.append({
+                "id": wd_id,
+                "visualization": { "id": vz_id, "datasetId": ds_id },
                 "position": { "x": 0, "y": y_pos, "width": 6, "height": 8 },
                 "title": title
             })
             y_pos += 8
 
         dashboard_dict = {
+            "version": "1.0", # Mandatory field
+            "datasets": datasets,
+            "visualizations": visualizations,
             "pages": [{
                 "id": "page_1",
-                "name": "page_1_name",
-                "displayName": "DataPact Results",
-                "widgets": widgets_list
-            }],
-            "datasets": datasets_list
+                "name": "main_page", # Mandatory field
+                "displayName": "DataPact Validation Results", # Mandatory field
+                "widgets": widgets
+            }]
         }
         
         serialized_dashboard_str = json.dumps(dashboard_dict)
 
-        draft = self.w.lakeview.create(
+        dashboard_payload = Dashboard(
             display_name=dashboard_name,
             warehouse_id=warehouse_id,
+            parent_path=parent_path,
             serialized_dashboard=serialized_dashboard_str
         )
+
+        draft = self.w.lakeview.create(dashboard_payload)
         
-        pub = self.w.lakeview.publish(dashboard_id=draft.dashboard_id)
+        pub = self.w.lakeview.publish(
+            dashboard_id=draft.dashboard_id,
+            embed_credentials=True, # Publish with embedded credentials
+            warehouse_id=warehouse_id
+        )
 
         dashboard_url = f"{self.w.config.host}{pub.path}"
         logger.success(f"✅ Dashboard is ready! View it here: {dashboard_url}")
