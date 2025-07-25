@@ -1,9 +1,10 @@
-# DataPact: Comprehensive Demo Validation Configuration
-# This config validates all tables created by the `setup.py` script.
-# It is designed to showcase every major feature and edge case.
+# DataPact: Comprehensive "Enterprise-in-a-Box" Demo Validation Configuration
+# This config validates all 12 tables created by the `setup.py` script.
+# It is designed to showcase every major feature and edge case across multiple business domains.
 
 validations:
-  # 1. COMPREHENSIVE FAILING TASK: Demonstrates multiple failure modes in a single, large table.
+  # ============================ SALES DOMAIN ============================
+  # 1. FAIL: The main 'users' table, testing multiple failure types at once.
   - task_key: "validate_users_comprehensive_FAIL"
     source_catalog: "datapact_demo_catalog"
     source_schema: "source_data"
@@ -12,35 +13,16 @@ validations:
     target_schema: "target_data"
     target_table: "users"
     primary_keys: ["user_id"]
-
-    # Test 1: Count Validation (will FAIL)
-    # Source has 1M rows. Target deletes 20k and adds 3k, for a net of 983k.
-    # The difference is ~1.7%, which is greater than the 0.5% tolerance.
-    count_tolerance: 0.005
-
-    # Test 2: Per-Row Hash Validation (will FAIL)
-    # 5% of emails are updated, causing their hash to mismatch. This exceeds the 2% threshold.
+    count_tolerance: 0.01 # Fails (net loss of 1.7%)
     pk_row_hash_check: true
-    pk_hash_threshold: 0.02
-
-    # Test 3: Null Count Validation (will FAIL on both columns)
-    # In the target, more `signup_date` and `status` values are set to NULL.
-    # The relative increase in nulls will exceed the 10% tolerance.
-    null_validation_threshold: 0.1
+    pk_hash_threshold: 0.04 # Fails (5% of emails changed)
+    null_validation_threshold: 0.02 # Fails (signup_date and status nulls increase > 2%)
     null_validation_columns: ["signup_date", "status"]
-
-    # Test 4: Aggregate Validations (one PASS, one FAIL)
     agg_validations:
-      - column: "user_id"
-        validations:
-          # MAX check will PASS (target max is 1003000, source is 1000000, ~0.3% diff, within 10% tolerance)
-          - { agg: "MAX", tolerance: 0.1 }
       - column: "total_logins"
-        validations:
-          # SUM check will FAIL (logins for CAN users are doubled in the target, far exceeding the 1% tolerance)
-          - { agg: "SUM", tolerance: 0.01 }
+        validations: [{ agg: "SUM", tolerance: 0.05 }] # Fails (logins for CAN users doubled)
 
-  # 2. PASSING TASK: Validates a large, identical table. All zero-tolerance checks should pass.
+  # 2. PASS: A large, 5M row table that is identical. All zero-tolerance checks will pass.
   - task_key: "validate_transactions_identity_PASS"
     source_catalog: "datapact_demo_catalog"
     source_schema: "source_data"
@@ -52,13 +34,8 @@ validations:
     count_tolerance: 0.0
     pk_row_hash_check: true
     pk_hash_threshold: 0.0
-    agg_validations:
-      - column: "amount"
-        validations:
-          - { agg: "SUM", tolerance: 0.0 }
-          - { agg: "AVG", tolerance: 0.0 }
 
-  # 3. ADVANCED PASS: SCD pattern with an accepted threshold of changes.
+  # 3. PASS: An SCD pattern where 2% of prices change, which is within the 2.5% accepted threshold.
   - task_key: "validate_products_SCD_PASS"
     source_catalog: "datapact_demo_catalog"
     source_schema: "source_data"
@@ -68,10 +45,71 @@ validations:
     target_table: "products"
     primary_keys: ["product_id"]
     pk_row_hash_check: true
-    # We updated 2% of product prices. A 2.5% threshold allows this to PASS.
-    pk_hash_threshold: 0.025
+    pk_hash_threshold: 0.025 # Allow for up to 2.5% of rows to change.
 
-  # 4. ADVANCED PASS: Selective column hashing for performance/flexibility.
+  # ============================ MARKETING DOMAIN ============================
+  # 4. FAIL: A small hash mismatch due to status changes. Will fail with a zero threshold.
+  - task_key: "validate_campaigns_hash_FAIL"
+    source_catalog: "datapact_demo_catalog"
+    source_schema: "source_data"
+    source_table: "campaigns"
+    target_catalog: "datapact_demo_catalog"
+    target_schema: "target_data"
+    target_table: "campaigns"
+    primary_keys: ["campaign_id"]
+    pk_row_hash_check: true
+    pk_hash_threshold: 0.0
+
+  # 5. FAIL: A subtle 0.1% inflation of ad spend will cause the SUM aggregate check to fail.
+  - task_key: "validate_ad_spend_agg_FAIL"
+    source_catalog: "datapact_demo_catalog"
+    source_schema: "source_data"
+    source_table: "ad_spend"
+    target_catalog: "datapact_demo_catalog"
+    target_schema: "target_data"
+    target_table: "ad_spend"
+    primary_keys: ["ad_id"]
+    agg_validations:
+      - column: "daily_spend"
+        validations: [{ agg: "SUM", tolerance: 0.0005 }] # Tolerance is 0.05%, change is 0.1%
+
+  # ============================ HR DOMAIN ============================
+  # 6. FAIL: Count validation will fail due to leavers and new joiners.
+  - task_key: "validate_employees_count_FAIL"
+    source_catalog: "datapact_demo_catalog"
+    source_schema: "source_data"
+    source_table: "employees"
+    target_catalog: "datapact_demo_catalog"
+    target_schema: "target_data"
+    target_table: "employees"
+    primary_keys: ["employee_id"]
+    count_tolerance: 0.0
+
+  # 7. PASS: A simple, identical reference table.
+  - task_key: "validate_salary_bands_PASS"
+    source_catalog: "datapact_demo_catalog"
+    source_schema: "source_data"
+    source_table: "salary_bands"
+    target_catalog: "datapact_demo_catalog"
+    target_schema: "target_data"
+    target_table: "salary_bands"
+    primary_keys: ["band_id"]
+    pk_row_hash_check: true
+    pk_hash_threshold: 0.0
+
+  # ============================ FINANCE DOMAIN ============================
+  # 8. FAIL: A batch of 500 records is missing, causing a count failure.
+  - task_key: "validate_gl_postings_count_FAIL"
+    source_catalog: "datapact_demo_catalog"
+    source_schema: "source_data"
+    source_table: "gl_postings"
+    target_catalog: "datapact_demo_catalog"
+    target_schema: "target_data"
+    target_table: "gl_postings"
+    count_tolerance: 0.01 # Fails (2.5% missing)
+
+  # ============================ LOGGING & OPS DOMAIN ============================
+  # 9. PASS: Selective column hashing ignores the changing `view_ts`, so the test passes.
   - task_key: "validate_page_views_selective_hash_PASS"
     source_catalog: "datapact_demo_catalog"
     source_schema: "source_data"
@@ -82,10 +120,9 @@ validations:
     primary_keys: ["session_id"]
     pk_row_hash_check: true
     pk_hash_threshold: 0.0
-    # The `view_ts` column is different for every row, but we ignore it in the hash, so the task PASSES.
-    hash_columns: ["user_id", "session_id", "page_path"]
+    hash_columns: ["user_id", "session_id", "page_path"] # Ignore the changing view_ts
 
-  # 5. EDGE CASE FAIL: Table with no primary key. Only count validation runs and fails.
+  # 10. FAIL: An edge case with no primary key. The simple count validation will fail.
   - task_key: "validate_logs_no_pk_FAIL"
     source_catalog: "datapact_demo_catalog"
     source_schema: "source_data"
@@ -95,7 +132,7 @@ validations:
     target_table: "log_messages"
     count_tolerance: 0.0
 
-  # 6. EDGE CASE PASS: Empty tables. Should pass with zero tolerance.
+  # 11. PASS: An edge case with two empty tables. Should pass with zero tolerance.
   - task_key: "validate_empty_tables_PASS"
     source_catalog: "datapact_demo_catalog"
     source_schema: "source_data"
@@ -104,3 +141,15 @@ validations:
     target_schema: "target_data"
     target_table: "empty_audits"
     count_tolerance: 0.0
+
+  # 12. FAIL: Null validation fails because extra nulls were introduced in the target table.
+  - task_key: "validate_status_codes_nulls_FAIL"
+    source_catalog: "datapact_demo_catalog"
+    source_schema: "source_data"
+    source_table: "status_codes"
+    target_catalog: "datapact_demo_catalog"
+    target_schema: "target_data"
+    target_table: "status_codes"
+    primary_keys: ["code"]
+    null_validation_threshold: 0.01
+    null_validation_columns: ["category"]
