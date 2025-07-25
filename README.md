@@ -8,13 +8,12 @@ DataPact ensures the integrity of your data by creating a 'pact' between your so
 
 ### Why DataPact?
 
+*   **Built-in Analytics Dashboard:** Every run automatically creates or updates a rich Databricks SQL Dashboard, visualizing data quality trends, failure rates, and the most common issues. Get immediate, powerful insights with zero effort.
 *   **Zero-Config Start:** Run validations instantly. DataPact automatically creates a default catalog and table to store your results history.
 *   **100% Programmatic:** Define your entire validation suite in a simple `YAML` file. Create, run, and manage tests from your local CLI or a CI/CD pipeline. No UI clicking required.
-*   **Built-in Analytics Dashboard:** Automatically generate a rich Databricks SQL Dashboard, visualizing data quality trends, failure rates, and the most common issues.
 *   **Fully Serverless:** Built for efficiency. DataPact uses powerful Serverless SQL Warehouses for all operations, minimizing cost and operational overhead.
 *   **Rich Validations:** Go beyond simple row counts. DataPact supports aggregate comparisons (SUM, AVG, MAX), per-row hash validation, and multi-column null count analysis.
 *   **Persistent, Queryable Reporting:** Automatically log detailed validation results to a Delta table. The results are stored in a `VARIANT` column, allowing for easy, powerful, and native querying of your data quality history in Databricks SQL.
-
 ---
 
 ### Configuration: The 3 Tiers
@@ -72,7 +71,7 @@ git clone https://github.com/skyler-myers-db/datapact.git
 cd datapact
 ```
 
-#### Step 2: Create and Activate a Virtual Environment (Recommended)
+#### Step 2: Create and Activate a Virtual Environment
 
 This creates a self-contained environment to avoid conflicts with other Python projects.
 
@@ -122,7 +121,7 @@ Execute DataPact using the pre-made comprehensive demo configuration. This run w
 datapact run \
   --config demo/demo_config.yml \
   --job-name "DataPact Comprehensive Demo" \
-  --profile my-profile
+  --profile your-databricks-profile
 ```
 
 That's it! You will see the validation results streamed to your terminal, including beautifully formatted payloads for every task, and the final aggregation task will report exactly which validations failed.
