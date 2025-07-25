@@ -110,20 +110,20 @@ class DataPactClient:
         task_key: str = config['task_key']
         source_fqn = f"`{config['source_catalog']}`.`{config['source_schema']}`.`{config['source_table']}`"
         target_fqn = f"`{config['target_catalog']}`.`{config['target_schema']}`.`{config['target_table']}`"
-        ctes, payload_structs, overall_clauses = [], [], []
+        ctes, map_entries, overall_clauses = [], [], []
 
         if 'count_tolerance' in config:
             tolerance = config.get('count_tolerance', 0.0)
             ctes.append(f"count_metrics AS (SELECT (SELECT COUNT(1) FROM {source_fqn}) AS source_count, (SELECT COUNT(1) FROM {target_fqn}) AS target_count)")
             check = f"COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= {tolerance}"
-            payload_structs.append(textwrap.dedent(f"""
-            struct(
+            map_entries.append(textwrap.dedent(f"""
+            'count_validation', struct(
                 FORMAT_NUMBER(CAST(source_count AS DOUBLE), '0') AS source_count,
                 FORMAT_NUMBER(CAST(target_count AS DOUBLE), '0') AS target_count,
                 FORMAT_STRING('%.2f%%', COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) * 100) as relative_diff,
                 FORMAT_STRING('%.2f%%', {tolerance} * 100) as tolerance,
                 CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
-            ) AS count_validation"""))
+            )"""))
             overall_clauses.append(check)
 
         if config.get('pk_row_hash_check') and config.get('primary_keys'):
@@ -138,14 +138,14 @@ class DataPactClient:
                 FROM (SELECT {pk_cols_str}, {hash_expr} as h FROM {source_fqn}) s
                 JOIN (SELECT {pk_cols_str}, {hash_expr} as h FROM {target_fqn}) t ON {join_expr})""")
             check = f"COALESCE(mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0), 0) <= {threshold}"
-            payload_structs.append(textwrap.dedent(f"""
-            struct(
+            map_entries.append(textwrap.dedent(f"""
+            'row_hash_validation', struct(
                 FORMAT_NUMBER(CAST(total_compared_rows AS DOUBLE), '0') as total_compared_rows,
                 FORMAT_NUMBER(CAST(mismatch_count AS DOUBLE), '0') as mismatch_count,
                 FORMAT_STRING('%.2f%%', COALESCE(mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0), 0) * 100) as mismatch_ratio,
                 FORMAT_STRING('%.2f%%', {threshold} * 100) as threshold,
                 CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
-            ) AS row_hash_validation"""))
+            )"""))
             overall_clauses.append(check)
         
         if config.get('null_validation_columns') and 'null_validation_threshold' in config:
@@ -167,14 +167,13 @@ class DataPactClient:
                         (SELECT COUNT(1) FROM {target_fqn} WHERE `{col}` IS NULL) as target_nulls,
                         (SELECT COUNT(1) FROM {source_fqn}) as total_compared)""")
                     check = f"COALESCE(ABS(source_nulls - target_nulls) / NULLIF(CAST(total_compared AS DOUBLE), 0), 0) <= {threshold}"
-
-                payload_structs.append(textwrap.dedent(f"""
-                struct(
+                map_entries.append(textwrap.dedent(f"""
+                'null_validation_{col}', struct(
                     FORMAT_NUMBER(CAST(source_nulls AS DOUBLE), '0') as source_nulls,
                     FORMAT_NUMBER(CAST(target_nulls AS DOUBLE), '0') as target_nulls,
                     FORMAT_STRING('%.2f%%', {threshold} * 100) as threshold,
                     CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
-                ) as null_validation_{col}"""))
+                )"""))
                 overall_clauses.append(check)
 
         if config.get('agg_validations'):
@@ -187,23 +186,23 @@ class DataPactClient:
                         SELECT (SELECT {agg}(`{col}`) FROM {source_fqn}) as source_val,
                                (SELECT {agg}(`{col}`) FROM {target_fqn}) as target_val)""")
                     check = f"COALESCE(ABS(source_val - target_val) / NULLIF(ABS(CAST(source_val AS DOUBLE)), 0), 0) <= {tolerance}"
-                    payload_structs.append(textwrap.dedent(f"""
-                    struct(
+                    map_entries.append(textwrap.dedent(f"""
+                    'agg_validation_{col}_{agg}', struct(
                         FORMAT_NUMBER(CAST(source_val AS DOUBLE), '0.00') as source_value,
                         FORMAT_NUMBER(CAST(target_val AS DOUBLE), '0.00') as target_value,
                         FORMAT_STRING('%.2f%%', COALESCE(ABS(source_val - target_val) / NULLIF(ABS(CAST(source_val AS DOUBLE)), 0), 0) * 100) as relative_diff,
                         FORMAT_STRING('%.2f%%', {tolerance} * 100) as tolerance,
                         CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
-                    ) as agg_validation_{col}_{agg}"""))
+                    )"""))
                     overall_clauses.append(check)
         
-        if not payload_structs:
+        if not map_entries:
             view_creation_sql = f"CREATE OR REPLACE TEMP VIEW final_metrics_view AS SELECT true as overall_validation_passed, parse_json(to_json(struct('No validations configured for task {task_key}' as message))) as result_payload;"
         else:
             view_creation_sql = "CREATE OR REPLACE TEMP VIEW final_metrics_view AS\n"
             if ctes: view_creation_sql += "WITH\n" + ",\n".join(ctes) + "\n"
             from_clause = " CROSS JOIN ".join([cte.split(" AS ")[0].strip() for cte in ctes]) if ctes else "(SELECT 1)"
-            select_payload = f"parse_json(to_json(struct({', '.join(payload_structs)}))) as result_payload"
+            select_payload = f"parse_json(to_json(MAP({', '.join(map_entries)}))) as result_payload"
             select_status = f"{' AND '.join(overall_clauses) if overall_clauses else 'true'} AS overall_validation_passed"
             view_creation_sql += f"SELECT {select_payload}, {select_status} FROM {from_clause};"
 
