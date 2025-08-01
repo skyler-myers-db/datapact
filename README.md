@@ -124,7 +124,7 @@ Execute DataPact using the pre-made comprehensive demo configuration. This run w
 # Assumes 'datapact_warehouse' is set in your profile
 datapact run \
   --config demo/demo_config.yml \
-  --job-name "DataPact Comprehensive Demo" \
+  --job-name "DataPact Enterprise Demo" \
   --profile your-databricks-profile
 ```
 
@@ -137,18 +137,17 @@ That's it! You will see the validation results streamed to your terminal, includ
 1.  **Create Your Config:** Create a `my_validations.yml` file.
 2.  **Run DataPact:**
 
-    To get started quickly without specifying a results table:
+    To get started quickly using the default results table and warehouse in the `~/.databrickscfg`:
     
     ```bash
     datapact run \
       --config my_validations.yml \
-      --results-table "main.reporting.datapact_results" \
-      --warehouse "Your Serverless Warehouse Name"
+      --job-name "DataPact Validation Job"
     ```
     
     This will automatically create and log results to `datapact_main.results.run_history`.
 
-    To specify a custom results table:
+    To specify a custom results table + SQL warehouse:
     
     ```bash
     datapact run \

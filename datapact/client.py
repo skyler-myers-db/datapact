@@ -319,9 +319,10 @@ class DataPactClient:
         warehouse_id: str,
     ) -> str:
         """
-        Make sure the Lakeview dashboard draft for <job_name> exists.
-        • If the .lvdash.json file already exists in the Workspace, reuse it.
-        • Otherwise create & publish a new draft.
+        Make sure the Lakeview dashboard for <job_name> exists.
+        This version correctly builds the serialized_dashboard JSON with fully
+        defined widget queries, including the 'fields' array to bind data
+        to the visualizations.
         Returns the *draft* dashboard_id (needed by the dashboard task).
         """
         display_name = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
@@ -331,103 +332,127 @@ class DataPactClient:
     
         try:
             self.w.workspace.get_status(draft_path)
-            logger.info(f"Found existing dashboard file at {draft_path}")
-    
-            existing = next(
-                (d for d in self.w.lakeview.list(view=DashboardView.DASHBOARD_VIEW_BASIC)
-                 if d.display_name == display_name),
-                None
-            )
-            if existing:
-                logger.info(f"Re-using draft {existing.dashboard_id}")
-                return existing.dashboard_id
-    
-            logger.warning("File exists but no Lakeview object found – deleting orphan")
-            self.w.workspace.delete(draft_path)
-            while True:
-                try:
-                    self.w.workspace.get_status(draft_path)
-                    time.sleep(0.5)
-                except NotFound:
-                    break
+            logger.warning(f"Found existing dashboard file at {draft_path}. Deleting to recreate with latest format.")
+            self.w.workspace.delete(path=draft_path, recursive=True)
+            time.sleep(2)
         except NotFound:
             logger.info("Dashboard file does not yet exist – will create")
     
         q = lambda sql: sql.format(table=results_table_fqn, job=job_name)
         queries = {
             "Run Summary": q(
-                "SELECT status, COUNT(*) task_count FROM {table}"
+                "SELECT status, COUNT(*) as task_count FROM {table}"
                 " WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')"
                 " GROUP BY status"),
             "Failure Rate %": q(
-                "SELECT date(timestamp) run_date,"
-                " COUNT(IF(status='FAILURE',1,NULL))*100/COUNT(*) failure_rate"
+                "SELECT date(timestamp) as run_date,"
+                " COUNT(IF(status='FAILURE',1,NULL))*100/COUNT(*) as failure_rate"
                 " FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1"),
             "Top Failures": q(
-                "SELECT task_key, COUNT(*) failure_count FROM {table}"
+                "SELECT task_key, COUNT(*) as failure_count FROM {table}"
                 " WHERE status='FAILURE' AND job_name='{job}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10"),
             "History": q(
-                "SELECT task_key,status,timestamp,to_json(result_payload) payload_json"
+                "SELECT task_key,status,timestamp,to_json(result_payload) as payload_json"
                 " FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"),
         }
     
-        datasets, visualizations, layout = [], [], []
-        row = 0
+        datasets, widgets = [], []
+        row, col = 0, 0
+    
         for i, (title, sql) in enumerate(queries.items(), 1):
-            ds_id, vz_id, wd_id = f"d_{i}", f"v_{i}", f"w_{i}"
-        
-            # DATASET ---------------------------------------------------------
-            datasets.append({
-                "id": ds_id, "name": ds_id,
-                "displayName": title, "query": sql
-            })
-        
-            # VISUALISATION ---------------------------------------------------
+            ds_id = f"d_{i}"
+            datasets.append({ "name": ds_id, "displayName": title, "queryLines": [sql] })
+    
+            widget_spec, widget_query = {}, {}
+            
+            # Define the spec and query fields for each visualization
             if "Run Summary" in title:
-                v_type, v_opts = "COUNTER", {"counterColName": "task_count"}
+                widget_query = { "fields": [
+                    {"name": "sum(task_count)", "expression": "SUM(`task_count`)"},
+                    {"name": "status", "expression": "`status`"}
+                ]}
+                widget_spec = {
+                    "version": 3, "widgetType": "pie",
+                    "encodings": {
+                        "angle": {"fieldName": "sum(task_count)", "scale": {"type": "quantitative"}},
+                        "color": {"fieldName": "status", "scale": {"type": "categorical"}},
+                        "label": {"show": True}
+                    },
+                    "frame": {"title": "Run Summary", "showTitle": True}
+                }
             elif "Failure Rate" in title:
-                v_type, v_opts = "CHART",   {"globalSeriesType": "line"}
-            elif "Top 10" in title:
-                v_type, v_opts = "CHART",   {"globalSeriesType": "bar"}
-            else:
-                v_type, v_opts = "TABLE",   {}
-        
-            visualizations.append({
-                "id": vz_id,
-                "name": title.replace(" ", "_"),
-                "type": v_type,
-                "datasetId": ds_id,
-                "options": v_opts
-            })
-        
-            # LAYOUT = widget + position --------------------------------------
-            layout.append({
+                widget_query = { "fields": [
+                    {"name": "run_date", "expression": "`run_date`"},
+                    {"name": "avg(failure_rate)", "expression": "AVG(`failure_rate`)"}
+                ]}
+                widget_spec = {
+                    "version": 3, "widgetType": "line",
+                    "encodings": {
+                        "x": {"fieldName": "run_date", "scale": {"type": "temporal"}},
+                        "y": {"fieldName": "avg(failure_rate)", "scale": {"type": "quantitative"}}
+                    },
+                    "frame": {"title": "Failure Rate Over Time", "showTitle": True}
+                }
+            elif "Top Failures" in title:
+                widget_query = { "fields": [
+                    {"name": "task_key", "expression": "`task_key`"},
+                    {"name": "sum(failure_count)", "expression": "SUM(`failure_count`)"}
+                ]}
+                widget_spec = {
+                    "version": 3, "widgetType": "bar",
+                    "encodings": {
+                        "x": {"fieldName": "task_key", "scale": {"type": "categorical"}},
+                        "y": {"fieldName": "sum(failure_count)", "scale": {"type": "quantitative"}}
+                    },
+                    "frame": {"title": "Top Failing Tasks", "showTitle": True}
+                }
+            else: # History Table
+                widget_query = { "fields": [
+                    {"name": "task_key", "expression": "`task_key`"},
+                    {"name": "status", "expression": "`status`"},
+                    {"name": "timestamp", "expression": "`timestamp`"},
+                    {"name": "payload_json", "expression": "`payload_json`"}
+                ]}
+                widget_spec = {
+                    "version": 3, "widgetType": "table",
+                    "encodings": { "columns": [
+                        {"fieldName": "task_key", "displayName": "Task Key"},
+                        {"fieldName": "status", "displayName": "Status"},
+                        {"fieldName": "timestamp", "displayName": "Timestamp"},
+                        {"fieldName": "payload_json", "displayName": "Result Payload"}
+                    ]},
+                    "frame": {"title": "Detailed Run History", "showTitle": True}
+                }
+            
+            final_widget_query = { "datasetName": ds_id, "disaggregated": False, **widget_query }
+            
+            widgets.append({
                 "widget": {
-                    "id": wd_id,
-                    "name": title.replace(" ", "_"),
-                    "frame": {"showTitle": True, "title": title},
-                    "visualization": {"id": vz_id, "datasetId": ds_id}
+                    "name": f"w_{i}",
+                    "queries": [{"name": "main_query", "query": final_widget_query}],
+                    "spec": widget_spec
                 },
-                "position": {"x": 0 if i % 2 else 6, "y": row, "width": 6, "height": 8}
+                "position": {"x": col, "y": row, "width": 6, "height": 8}
             })
-            if i % 2 == 0:
-                row += 8
-        
+            
+            col += 6
+            if col >= 12: col = 0; row += 8
+    
+        dashboard_payload = {
+            "datasets": datasets,
+            "pages": [{
+                "name": "main_page",
+                "displayName": "DataPact Validation Results",
+                "layout": widgets,
+                "pageType": "PAGE_TYPE_CANVAS"
+            }]
+        }
+    
         draft = self.w.lakeview.create(Dashboard(
             display_name         = display_name,
             parent_path          = parent_path,
             warehouse_id         = warehouse_id,
-            serialized_dashboard = json.dumps({
-            "version": "1.0",
-            "datasets":       datasets,
-            "visualizations": visualizations,
-            "pages": [{
-                "id": "p_1",
-                "name": "main",
-                "displayName": "DataPact Validation Results",
-                "layout": layout
-            }]
-        }),
+            serialized_dashboard = json.dumps(dashboard_payload)
         ))
     
         self.w.lakeview.publish(
