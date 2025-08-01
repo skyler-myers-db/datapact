@@ -356,78 +356,79 @@ class DataPactClient:
         q = lambda sql: sql.format(table=results_table_fqn, job=job_name)
         queries = {
             "Run Summary": q(
-                "SELECT status, COUNT(*) task_count FROM {table}"
+                "SELECT status, COUNT(*) as task_count FROM {table}"
                 " WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')"
                 " GROUP BY status"),
             "Failure Rate %": q(
-                "SELECT date(timestamp) run_date,"
-                " COUNT(IF(status='FAILURE',1,NULL))*100/COUNT(*) failure_rate"
+                "SELECT date(timestamp) as run_date,"
+                " COUNT(IF(status='FAILURE',1,NULL))*100/COUNT(*) as failure_rate"
                 " FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1"),
             "Top Failures": q(
-                "SELECT task_key, COUNT(*) failure_count FROM {table}"
+                "SELECT task_key, COUNT(*) as failure_count FROM {table}"
                 " WHERE status='FAILURE' AND job_name='{job}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10"),
             "History": q(
-                "SELECT task_key,status,timestamp,to_json(result_payload) payload_json"
+                "SELECT task_key,status,timestamp,to_json(result_payload) as payload_json"
                 " FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"),
         }
     
         datasets, visualizations, layout = [], [], []
         row = 0
-        for i, (title, sql) in enumerate(queries.items(), 1):
-            ds_id, vz_id, wd_id = f"d_{i}", f"v_{i}", f"w_{i}"
-        
-            # DATASET ---------------------------------------------------------
+        for i, (title, sql) in enumerate(queries.items()):
+            ds_id, vz_id, wd_id = f"ds_{i}", f"vz_{i}", f"wd_{i}"
+    
+            # DATASET
             datasets.append({
-                "id": ds_id, "name": ds_id,
-                "displayName": title, "query": sql
+                "id": ds_id,
+                "name": ds_id,
+                "displayName": title,
+                "sql": { "query": sql, "warehouseId": warehouse_id }
             })
-        
-            # VISUALISATION ---------------------------------------------------
+    
+            # VISUALIZATION
             if "Run Summary" in title:
-                v_type, v_opts = "COUNTER", {"counterColName": "task_count"}
+                v_type, v_opts = "COUNTER", {"counter": {"counterColName": "task_count", "primaryValueColName": "status"}}
             elif "Failure Rate" in title:
-                v_type, v_opts = "CHART",   {"globalSeriesType": "line"}
-            elif "Top 10" in title:
-                v_type, v_opts = "CHART",   {"globalSeriesType": "bar"}
+                v_type, v_opts = "CHART",   {"chart": {"type": "line", "xAxis": {"colName": "run_date"}, "yAxis": [{"colName": "failure_rate"}]}}
+            elif "Top Failures" in title:
+                v_type, v_opts = "CHART",   {"chart": {"type": "bar", "xAxis": {"colName": "task_key"}, "yAxis": [{"colName": "failure_count"}]}}
             else:
-                v_type, v_opts = "TABLE",   {}
-        
+                v_type, v_opts = "TABLE",   {"table": {}}
+    
             visualizations.append({
                 "id": vz_id,
-                "name": title.replace(" ", "_"),
                 "type": v_type,
+                "displayName": title,
                 "datasetId": ds_id,
-                "options": v_opts
+                "visualization": v_opts
             })
-        
-            # LAYOUT = widget + position --------------------------------------
+    
+            # LAYOUT
+            col = 0 if i % 2 == 0 else 6
             layout.append({
                 "widget": {
                     "id": wd_id,
-                    "name": title.replace(" ", "_"),
-                    "frame": {"showTitle": True, "title": title},
-                    "visualization": {"id": vz_id, "datasetId": ds_id}
+                    "visualizationId": vz_id
                 },
-                "position": {"x": 0 if i % 2 else 6, "y": row, "width": 6, "height": 8}
+                "position": {"x": col, "y": row, "width": 6, "height": 8}
             })
-            if i % 2 == 0:
+            if i % 2 != 0:
                 row += 8
-        
+    
         draft = self.w.lakeview.create(Dashboard(
             display_name         = display_name,
             parent_path          = parent_path,
             warehouse_id         = warehouse_id,
             serialized_dashboard = json.dumps({
-            "version": "1.0",
-            "datasets":       datasets,
-            "visualizations": visualizations,
-            "pages": [{
-                "id": "p_1",
-                "name": "main",
-                "displayName": "DataPact Validation Results",
-                "layout": layout
-            }]
-        }),
+                "version": "1.0",
+                "datasets":       datasets,
+                "visualizations": visualizations,
+                "pages": [{
+                    "id": "p_1",
+                    "name": "main",
+                    "displayName": "DataPact Validation Results",
+                    "layout": layout
+                }]
+            }),
         ))
     
         self.w.lakeview.publish(
