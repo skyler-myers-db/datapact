@@ -312,83 +312,83 @@ class DataPactClient:
         logger.success("All SQL scripts uploaded successfully.")
         return asset_paths
 
-def ensure_dashboard_exists(
-    self,
-    job_name: str,
-    results_table_fqn: str,
-    warehouse_id: str,
-) -> str:
-    """
-    Creates a polished, executive-ready Lakeview dashboard using the robust,
-    object-oriented Databricks SDK methods. This is the definitive, working solution.
-    Returns the *draft* dashboard_id (needed by the dashboard task).
-    """
-    dashboard_name = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
-    
-    # --- 1. THOROUGH CLEANUP ---
-    # First, find any existing dashboard object by its display name.
-    existing_dashboard = next(
-        (d for d in self.w.dashboards.list(q=dashboard_name) if d.display_name == dashboard_name),
-        None
-    )
-
-    if existing_dashboard:
-        logger.warning(f"Found and deleting existing dashboard (ID: {existing_dashboard.dashboard_id}) and its components to recreate.")
-        # If the dashboard has widgets, delete their visualizations and queries first
-        if existing_dashboard.widgets:
-            for widget in existing_dashboard.widgets:
-                if widget.visualization:
-                    viz = widget.visualization
-                    # Deleting the visualization and query can sometimes fail if they're already gone, so we wrap in try/except
-                    try:
-                        self.w.visualizations.delete(visualization_id=viz.id)
-                    except Exception as e:
-                        logger.debug(f"Could not delete visualization {viz.id}, may already be gone: {e}")
-                    try:
-                        self.w.queries.delete(query_id=viz.query.query_id)
-                    except Exception as e:
-                        logger.debug(f"Could not delete query {viz.query.query_id}, may already be gone: {e}")
-        # Finally, delete the dashboard itself
-        self.w.dashboards.delete(dashboard_id=existing_dashboard.id)
-
-
-    # --- 2. DEFINE QUERIES AND VISUALIZATION SPECS ---
-    q = lambda sql: sql.format(table=results_table_fqn, job=job_name)
-    widget_specs = [
-        {"title": "Total Tasks Executed", "sql": q("SELECT COUNT(*) as value FROM {table} WHERE run_id=(SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')"), "type": "COUNTER", "options": {"counterColName": "value"}, "pos": {"x": 0, "y": 0, "sizeX": 4, "sizeY": 4}},
-        {"title": "Failed Tasks", "sql": q("SELECT COUNT(*) as value FROM {table} WHERE status='FAILURE' AND run_id=(SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')"), "type": "COUNTER", "options": {"counterColName": "value", "counterTitle": "Failed Tasks"}, "pos": {"x": 4, "y": 0, "sizeX": 4, "sizeY": 4}},
-        {"title": "Success Rate", "sql": q("SELECT COUNT(IF(status='SUCCESS',1,NULL))*100.0/COUNT(*) as value FROM {table} WHERE run_id=(SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')"), "type": "COUNTER", "options": {"counterColName": "value", "stringDecimalFormat": "0.0'%'"}, "pos": {"x": 8, "y": 0, "sizeX": 4, "sizeY": 4}},
-        {"title": "Run Summary", "sql": q("SELECT status, COUNT(*) as task_count FROM {table} WHERE run_id=(SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') GROUP BY status"), "type": "CHART", "options": {"globalSeriesType": "pie", "legend": {"placement": "right"}, "seriesOptions": {"status": {"type": "pie", "customColors": {"FAILURE": "#D44953", "SUCCESS": "#539F80"}}}, "columnMapping": {"x": "status", "y": "task_count"}}, "pos": {"x": 0, "y": 4, "sizeX": 6, "sizeY": 8}},
-        {"title": "Failure Rate Over Time", "sql": q("SELECT date(timestamp) as run_date, COUNT(IF(status='FAILURE',1,NULL))*100/COUNT(*) as failure_rate FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1"), "type": "CHART", "options": {"globalSeriesType": "line", "yAxis": [{"title": "Failure Rate (%)"}], "columnMapping": {"x": "run_date", "y": "failure_rate"}}, "pos": {"x": 6, "y": 4, "sizeX": 6, "sizeY": 8}},
-        {"title": "Top Failing Tasks", "sql": q("SELECT task_key, COUNT(*) as failure_count FROM {table} WHERE status='FAILURE' AND job_name='{job}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10"), "type": "CHART", "options": {"globalSeriesType": "bar", "yAxis": [{"title": "Total Failures"}], "xAxis": {"labels": {"enabled": False}}, "columnMapping": {"x": "task_key", "y": "failure_count"}}, "pos": {"x": 0, "y": 12, "sizeX": 6, "sizeY": 8}},
-        {"title": "Detailed Run History", "sql": q("SELECT task_key, status, timestamp, to_json(result_payload) as payload FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"), "type": "TABLE", "options": {}, "pos": {"x": 6, "y": 12, "sizeX": 6, "sizeY": 8}},
-    ]
-
-    # --- 3. CREATE ALL DASHBOARD COMPONENTS PROGRAMMATICALLY ---
-    logger.info("Creating dashboard components using the robust SDK object model...")
-    widgets = []
-    for spec in widget_specs:
-        query_obj = self.w.queries.create(
-            description=f"DataPact Query: {job_name} - {spec['title']}",
-            data_source_id=warehouse_id,
-            query=spec['sql']
+    def ensure_dashboard_exists(
+        self,
+        job_name: str,
+        results_table_fqn: str,
+        warehouse_id: str,
+    ) -> str:
+        """
+        Creates a polished, executive-ready Lakeview dashboard using the robust,
+        object-oriented Databricks SDK methods. This is the definitive, working solution.
+        Returns the *draft* dashboard_id (needed by the dashboard task).
+        """
+        dashboard_name = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
+        
+        # --- 1. THOROUGH CLEANUP ---
+        # First, find any existing dashboard object by its display name.
+        existing_dashboard = next(
+            (d for d in self.w.dashboards.list(q=dashboard_name) if d.display_name == dashboard_name),
+            None
         )
-        viz_obj = self.w.visualizations.create(
-            query_id=query_obj.id,
-            type=spec['type'],
-            name=f"Viz - {spec['title']}",
-            options=spec['options']
-        )
-        widgets.append(sql_service.WidgetCreate(visualization_id=viz_obj.id, position=spec['pos'], title=spec['title']))
-
-    # --- 4. CREATE THE DASHBOARD ITSELF ---
-    dashboard = self.w.dashboards.create(name=dashboard_name, warehouse_id=warehouse_id, widgets=widgets)
     
-    # We must publish the legacy dashboard to get a shareable URL
-    self.w.dashboards.publish(dashboard_id=dashboard.id)
-
-    logger.success(f"✅ Created dashboard: {dashboard.url}")
-    return dashboard.id
+        if existing_dashboard:
+            logger.warning(f"Found and deleting existing dashboard (ID: {existing_dashboard.dashboard_id}) and its components to recreate.")
+            # If the dashboard has widgets, delete their visualizations and queries first
+            if existing_dashboard.widgets:
+                for widget in existing_dashboard.widgets:
+                    if widget.visualization:
+                        viz = widget.visualization
+                        # Deleting the visualization and query can sometimes fail if they're already gone, so we wrap in try/except
+                        try:
+                            self.w.visualizations.delete(visualization_id=viz.id)
+                        except Exception as e:
+                            logger.debug(f"Could not delete visualization {viz.id}, may already be gone: {e}")
+                        try:
+                            self.w.queries.delete(query_id=viz.query.query_id)
+                        except Exception as e:
+                            logger.debug(f"Could not delete query {viz.query.query_id}, may already be gone: {e}")
+            # Finally, delete the dashboard itself
+            self.w.dashboards.delete(dashboard_id=existing_dashboard.id)
+    
+    
+        # --- 2. DEFINE QUERIES AND VISUALIZATION SPECS ---
+        q = lambda sql: sql.format(table=results_table_fqn, job=job_name)
+        widget_specs = [
+            {"title": "Total Tasks Executed", "sql": q("SELECT COUNT(*) as value FROM {table} WHERE run_id=(SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')"), "type": "COUNTER", "options": {"counterColName": "value"}, "pos": {"x": 0, "y": 0, "sizeX": 4, "sizeY": 4}},
+            {"title": "Failed Tasks", "sql": q("SELECT COUNT(*) as value FROM {table} WHERE status='FAILURE' AND run_id=(SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')"), "type": "COUNTER", "options": {"counterColName": "value", "counterTitle": "Failed Tasks"}, "pos": {"x": 4, "y": 0, "sizeX": 4, "sizeY": 4}},
+            {"title": "Success Rate", "sql": q("SELECT COUNT(IF(status='SUCCESS',1,NULL))*100.0/COUNT(*) as value FROM {table} WHERE run_id=(SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')"), "type": "COUNTER", "options": {"counterColName": "value", "stringDecimalFormat": "0.0'%'"}, "pos": {"x": 8, "y": 0, "sizeX": 4, "sizeY": 4}},
+            {"title": "Run Summary", "sql": q("SELECT status, COUNT(*) as task_count FROM {table} WHERE run_id=(SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') GROUP BY status"), "type": "CHART", "options": {"globalSeriesType": "pie", "legend": {"placement": "right"}, "seriesOptions": {"status": {"type": "pie", "customColors": {"FAILURE": "#D44953", "SUCCESS": "#539F80"}}}, "columnMapping": {"x": "status", "y": "task_count"}}, "pos": {"x": 0, "y": 4, "sizeX": 6, "sizeY": 8}},
+            {"title": "Failure Rate Over Time", "sql": q("SELECT date(timestamp) as run_date, COUNT(IF(status='FAILURE',1,NULL))*100/COUNT(*) as failure_rate FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1"), "type": "CHART", "options": {"globalSeriesType": "line", "yAxis": [{"title": "Failure Rate (%)"}], "columnMapping": {"x": "run_date", "y": "failure_rate"}}, "pos": {"x": 6, "y": 4, "sizeX": 6, "sizeY": 8}},
+            {"title": "Top Failing Tasks", "sql": q("SELECT task_key, COUNT(*) as failure_count FROM {table} WHERE status='FAILURE' AND job_name='{job}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10"), "type": "CHART", "options": {"globalSeriesType": "bar", "yAxis": [{"title": "Total Failures"}], "xAxis": {"labels": {"enabled": False}}, "columnMapping": {"x": "task_key", "y": "failure_count"}}, "pos": {"x": 0, "y": 12, "sizeX": 6, "sizeY": 8}},
+            {"title": "Detailed Run History", "sql": q("SELECT task_key, status, timestamp, to_json(result_payload) as payload FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"), "type": "TABLE", "options": {}, "pos": {"x": 6, "y": 12, "sizeX": 6, "sizeY": 8}},
+        ]
+    
+        # --- 3. CREATE ALL DASHBOARD COMPONENTS PROGRAMMATICALLY ---
+        logger.info("Creating dashboard components using the robust SDK object model...")
+        widgets = []
+        for spec in widget_specs:
+            query_obj = self.w.queries.create(
+                description=f"DataPact Query: {job_name} - {spec['title']}",
+                data_source_id=warehouse_id,
+                query=spec['sql']
+            )
+            viz_obj = self.w.visualizations.create(
+                query_id=query_obj.id,
+                type=spec['type'],
+                name=f"Viz - {spec['title']}",
+                options=spec['options']
+            )
+            widgets.append(sql_service.WidgetCreate(visualization_id=viz_obj.id, position=spec['pos'], title=spec['title']))
+    
+        # --- 4. CREATE THE DASHBOARD ITSELF ---
+        dashboard = self.w.dashboards.create(name=dashboard_name, warehouse_id=warehouse_id, widgets=widgets)
+        
+        # We must publish the legacy dashboard to get a shareable URL
+        self.w.dashboards.publish(dashboard_id=dashboard.id)
+    
+        logger.success(f"✅ Created dashboard: {dashboard.url}")
+        return dashboard.id
 
     def run_validation(
         self,
