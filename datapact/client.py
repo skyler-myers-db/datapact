@@ -319,9 +319,9 @@ class DataPactClient:
         warehouse_id: str,
     ) -> str:
         """
-        Make sure the Lakeview dashboard draft for <job_name> exists.
-        • If the .lvdash.json file already exists in the Workspace, reuse it.
-        • Otherwise create & publish a new draft.
+        Make sure the Lakeview dashboard for <job_name> exists.
+        This version correctly builds the serialized_dashboard JSON with nested
+        widget specs to ensure visualizations are rendered.
         Returns the *draft* dashboard_id (needed by the dashboard task).
         """
         display_name = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
@@ -331,25 +331,17 @@ class DataPactClient:
     
         try:
             self.w.workspace.get_status(draft_path)
-            logger.info(f"Found existing dashboard file at {draft_path}")
-    
+            logger.info(f"Found existing dashboard file at {draft_path}, recreating for new format.")
+            # To ensure the new format is applied, we delete and recreate
             existing = next(
-                (d for d in self.w.lakeview.list(view=DashboardView.DASHBOARD_VIEW_BASIC)
-                 if d.display_name == display_name),
-                None
+                (d for d in self.w.lakeview.list(view=DashboardView.DASHBOARD_VIEW_BASIC) if d.display_name == display_name), None
             )
             if existing:
-                logger.info(f"Re-using draft {existing.dashboard_id}")
-                return existing.dashboard_id
+                self.w.lakeview.delete(dashboard_id=existing.dashboard_id)
+            self.w.workspace.delete(draft_path, recursive=True)
+            # Wait for deletion to propagate
+            time.sleep(2)
     
-            logger.warning("File exists but no Lakeview object found – deleting orphan")
-            self.w.workspace.delete(draft_path)
-            while True:
-                try:
-                    self.w.workspace.get_status(draft_path)
-                    time.sleep(0.5)
-                except NotFound:
-                    break
         except NotFound:
             logger.info("Dashboard file does not yet exist – will create")
     
@@ -371,64 +363,90 @@ class DataPactClient:
                 " FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"),
         }
     
-        datasets, visualizations, layout = [], [], []
-        row = 0
-        for i, (title, sql) in enumerate(queries.items()):
-            ds_id, vz_id, wd_id = f"ds_{i}", f"vz_{i}", f"wd_{i}"
+        datasets, widgets = [], []
+        row, col = 0, 0
     
-            # DATASET
+        for i, (title, sql) in enumerate(queries.items(), 1):
+            ds_id = f"d_{i}"
             datasets.append({
-                "id": ds_id,
                 "name": ds_id,
                 "displayName": title,
-                "sql": { "query": sql, "warehouseId": warehouse_id }
+                "queryLines": [sql]
             })
     
-            # VISUALIZATION
+            widget_spec = {}
+            # Define the spec for each visualization
             if "Run Summary" in title:
-                v_type, v_opts = "COUNTER", {"counter": {"counterColName": "task_count", "primaryValueColName": "status"}}
+                widget_spec = {
+                    "version": 3, "widgetType": "pie",
+                    "encodings": {
+                        "angle": {"fieldName": "sum(task_count)", "scale": {"type": "quantitative"}, "displayName": "Total Tasks"},
+                        "color": {"fieldName": "status", "scale": {"type": "categorical"}, "displayName": "Status"},
+                        "label": {"show": True}
+                    },
+                    "frame": {"title": "Run Summary", "showTitle": True}
+                }
             elif "Failure Rate" in title:
-                v_type, v_opts = "CHART",   {"chart": {"type": "line", "xAxis": {"colName": "run_date"}, "yAxis": [{"colName": "failure_rate"}]}}
+                widget_spec = {
+                    "version": 3, "widgetType": "line",
+                    "encodings": {
+                        "x": {"fieldName": "run_date", "scale": {"type": "temporal"}, "displayName": "Date"},
+                        "y": {"fieldName": "avg(failure_rate)", "scale": {"type": "quantitative"}, "displayName": "Avg. Failure Rate (%)"}
+                    },
+                    "frame": {"title": "Failure Rate Over Time", "showTitle": True}
+                }
             elif "Top Failures" in title:
-                v_type, v_opts = "CHART",   {"chart": {"type": "bar", "xAxis": {"colName": "task_key"}, "yAxis": [{"colName": "failure_count"}]}}
-            else:
-                v_type, v_opts = "TABLE",   {"table": {}}
+                widget_spec = {
+                    "version": 3, "widgetType": "bar",
+                    "encodings": {
+                        "x": {"fieldName": "task_key", "scale": {"type": "categorical"}, "displayName": "Task"},
+                        "y": {"fieldName": "sum(failure_count)", "scale": {"type": "quantitative"}, "displayName": "Total Failures"}
+                    },
+                    "frame": {"title": "Top Failing Tasks", "showTitle": True}
+                }
+            else: # History Table
+                 widget_spec = {
+                    "version": 3, "widgetType": "table",
+                    "encodings": {
+                        "columns": [
+                            {"fieldName": "task_key", "displayName": "Task Key"},
+                            {"fieldName": "status", "displayName": "Status"},
+                            {"fieldName": "timestamp", "displayName": "Timestamp"},
+                            {"fieldName": "payload_json", "displayName": "Result Payload"}
+                        ]
+                    },
+                    "frame": {"title": "Detailed Run History", "showTitle": True}
+                }
     
-            visualizations.append({
-                "id": vz_id,
-                "type": v_type,
-                "displayName": title,
-                "datasetId": ds_id,
-                "visualization": v_opts
-            })
-    
-            # LAYOUT
-            col = 0 if i % 2 == 0 else 6
-            layout.append({
+            widgets.append({
                 "widget": {
-                    "id": wd_id,
-                    "visualizationId": vz_id
+                    "name": f"w_{i}",
+                    "queries": [{"name": "main_query", "query": {"datasetName": ds_id}}],
+                    "spec": widget_spec
                 },
                 "position": {"x": col, "y": row, "width": 6, "height": 8}
             })
-            if i % 2 != 0:
+            
+            col += 6
+            if col >= 12:
+                col = 0
                 row += 8
+    
+        dashboard_payload = {
+            "datasets": datasets,
+            "pages": [{
+                "name": "main_page",
+                "displayName": "DataPact Validation Results",
+                "layout": widgets,
+                "pageType": "PAGE_TYPE_CANVAS"
+            }]
+        }
     
         draft = self.w.lakeview.create(Dashboard(
             display_name         = display_name,
             parent_path          = parent_path,
             warehouse_id         = warehouse_id,
-            serialized_dashboard = json.dumps({
-                "version": "1.0",
-                "datasets":       datasets,
-                "visualizations": visualizations,
-                "pages": [{
-                    "id": "p_1",
-                    "name": "main",
-                    "displayName": "DataPact Validation Results",
-                    "layout": layout
-                }]
-            }),
+            serialized_dashboard = json.dumps(dashboard_payload)
         ))
     
         self.w.lakeview.publish(
