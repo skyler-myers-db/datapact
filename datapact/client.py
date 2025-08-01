@@ -320,8 +320,8 @@ class DataPactClient:
     ) -> str:
         """
         Make sure the Lakeview dashboard for <job_name> exists.
-        This version correctly builds the serialized_dashboard JSON with nested
-        widget specs to ensure visualizations are rendered.
+        This version correctly builds the serialized_dashboard JSON and uses the
+        correct workspace API to manage dashboard files.
         Returns the *draft* dashboard_id (needed by the dashboard task).
         """
         display_name = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
@@ -330,16 +330,11 @@ class DataPactClient:
         self.w.workspace.mkdirs(parent_path)
     
         try:
+            # Check if the dashboard file exists in the workspace
             self.w.workspace.get_status(draft_path)
-            logger.info(f"Found existing dashboard file at {draft_path}, recreating for new format.")
-            # To ensure the new format is applied, we delete and recreate
-            existing = next(
-                (d for d in self.w.lakeview.list(view=DashboardView.DASHBOARD_VIEW_BASIC) if d.display_name == display_name), None
-            )
-            if existing:
-                self.w.lakeview.delete(dashboard_id=existing.dashboard_id)
-            self.w.workspace.delete(draft_path, recursive=True)
-            # Wait for deletion to propagate
+            logger.warning(f"Found existing dashboard file at {draft_path}. Deleting to recreate with latest format.")
+            self.w.workspace.delete(path=draft_path, recursive=True)
+            # Wait for the deletion to propagate before creating a new one
             time.sleep(2)
     
         except NotFound:
@@ -375,7 +370,6 @@ class DataPactClient:
             })
     
             widget_spec = {}
-            # Define the spec for each visualization
             if "Run Summary" in title:
                 widget_spec = {
                     "version": 3, "widgetType": "pie",
