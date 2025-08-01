@@ -319,118 +319,61 @@ class DataPactClient:
         warehouse_id: str,
     ) -> str:
         """
-        Creates a polished, executive-ready Lakeview dashboard.
-        This definitive version corrects data binding, implements a balanced layout,
-        and adds interactive drill-down functionality.
+        Creates a polished, executive-ready Lakeview dashboard using the robust,
+        object-oriented Databricks SDK methods. This is the definitive, working solution.
         Returns the *draft* dashboard_id (needed by the dashboard task).
         """
-        display_name = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
-        parent_path  = f"{self.root_path}/dashboards"
-        draft_path   = f"{parent_path}/{display_name}.lvdash.json"
-        self.w.workspace.mkdirs(parent_path)
+        dashboard_name = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
+        
+        # --- 1. THOROUGH CLEANUP ---
+        # Delete the old dashboard and all its associated components (widgets, visualizations, queries)
+        # to prevent orphaned assets and ensure a clean slate.
+        for d in self.w.dashboards.list(q=dashboard_name):
+            if d.display_name == dashboard_name:
+                logger.warning(f"Found and deleting existing dashboard (ID: {d.dashboard_id}) to recreate.")
+                if d.widgets:
+                    for widget in d.widgets:
+                        if widget.visualization and widget.visualization.query:
+                            try:
+                                # Must delete widgets and visualizations before deleting the query
+                                self.w.widgets.delete(widget.id)
+                                self.w.visualizations.delete(widget.visualization.id)
+                                self.w.queries.delete(widget.visualization.query.query_id)
+                            except Exception as e:
+                                logger.debug(f"Could not clean up component, may already be deleted: {e}")
+                self.w.dashboards.delete(dashboard_id=d.dashboard_id)
     
-        try:
-            self.w.workspace.get_status(draft_path)
-            logger.warning(f"Found existing dashboard file at {draft_path}. Deleting to recreate with latest format.")
-            self.w.workspace.delete(path=draft_path, recursive=True)
-            time.sleep(2)
-        except NotFound:
-            logger.info("Dashboard file does not yet exist – will create")
-    
+        # --- 2. DEFINE QUERIES AND VISUALIZATION SPECS ---
         q = lambda sql: sql.format(table=results_table_fqn, job=job_name)
-        datasets = [
-            {"name": "ds_kpi", "displayName": "KPI Metrics (Latest Run)", "queryLines": [q(
-                "WITH latest_run AS (SELECT * FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')) "
-                "SELECT COUNT(*) as total_tasks, COUNT(IF(status = 'FAILURE', 1, NULL)) as failed_tasks, "
-                "COUNT(IF(status = 'SUCCESS', 1, NULL)) * 100.0 / COUNT(*) as success_rate_percent FROM latest_run"
-            )]},
-            {"name": "ds_summary", "displayName": "Run Summary", "queryLines": [q(
-                "SELECT status, COUNT(*) as task_count FROM {table} "
-                "WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') GROUP BY status"
-            )]},
-            {"name": "ds_failure_rate", "displayName": "Failure Rate Over Time", "queryLines": [q(
-                "SELECT date(timestamp) as run_date, COUNT(IF(status='FAILURE',1,NULL))*100/COUNT(*) as failure_rate "
-                "FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1"
-            )]},
-            {"name": "ds_top_failures", "displayName": "Top Failing Tasks", "queryLines": [q(
-                "SELECT task_key, COUNT(*) as failure_count FROM {table} "
-                "WHERE status='FAILURE' AND job_name='{job}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10"
-            )]},
-            {"name": "ds_history", "displayName": "Detailed Run History", "queryLines": [q(
-                "SELECT task_key, status, timestamp, to_json(result_payload) as payload_json "
-                "FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"
-            )]}
+        widget_specs = [
+            # KPIs
+            {"title": "Total Tasks Executed", "sql": q("SELECT COUNT(*) as value FROM {table} WHERE run_id=(SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')"), "type": "COUNTER", "options": {"counterColName": "value"}, "pos": {"x": 0, "y": 0, "sizeX": 4, "sizeY": 4}},
+            {"title": "Failed Tasks", "sql": q("SELECT COUNT(*) as value FROM {table} WHERE status='FAILURE' AND run_id=(SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')"), "type": "COUNTER", "options": {"counterColName": "value"}, "pos": {"x": 4, "y": 0, "sizeX": 4, "sizeY": 4}},
+            {"title": "Success Rate", "sql": q("SELECT COUNT(IF(status='SUCCESS',1,NULL))*100.0/COUNT(*) as value FROM {table} WHERE run_id=(SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')"), "type": "COUNTER", "options": {"counterColName": "value", "stringDecimalFormat": "0.00'%'"}, "pos": {"x": 8, "y": 0, "sizeX": 4, "sizeY": 4}},
+            # Charts
+            {"title": "Run Summary", "sql": q("SELECT status, COUNT(*) as task_count FROM {table} WHERE run_id=(SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') GROUP BY status"), "type": "CHART", "options": {"globalSeriesType": "pie", "legend": {"placement": "right"}, "seriesOptions": {"status": {"type": "pie", "customColors": {"FAILURE": "#D44953", "SUCCESS": "#539F80"}}}, "columnMapping": {"x": "status", "y": "task_count"}}, "pos": {"x": 0, "y": 4, "sizeX": 6, "sizeY": 8}},
+            {"title": "Failure Rate Over Time", "sql": q("SELECT date(timestamp) as run_date, COUNT(IF(status='FAILURE',1,NULL))*100/COUNT(*) as failure_rate FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1"), "type": "CHART", "options": {"globalSeriesType": "line", "yAxis": [{"title": "Failure Rate (%)"}], "columnMapping": {"x": "run_date", "y": "failure_rate"}}, "pos": {"x": 6, "y": 4, "sizeX": 6, "sizeY": 8}},
+            {"title": "Top Failing Tasks", "sql": q("SELECT task_key, COUNT(*) as failure_count FROM {table} WHERE status='FAILURE' AND job_name='{job}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10"), "type": "CHART", "options": {"globalSeriesType": "bar", "yAxis": [{"title": "Total Failures"}], "xAxis": {"labels": {"enabled": False}}, "columnMapping": {"x": "task_key", "y": "failure_count"}}, "pos": {"x": 0, "y": 12, "sizeX": 6, "sizeY": 8}},
+            {"title": "Detailed Run History", "sql": q("SELECT task_key, status, timestamp, result_payload:count_validation.status as count_status, result_payload:row_hash_validation.status as hash_status FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"), "type": "TABLE", "options": {}, "pos": {"x": 6, "y": 12, "sizeX": 6, "sizeY": 8}},
         ]
     
-        widget_definitions = [
-            {"ds_name": "ds_kpi", "w_type": "COUNTER", "title": "Total Tasks Executed", "value_col": "total_tasks", "pos": {"x": 0, "y": 0, "width": 4, "height": 4}},
-            {"ds_name": "ds_kpi", "w_type": "COUNTER", "title": "Failed Tasks", "value_col": "failed_tasks", "pos": {"x": 4, "y": 0, "width": 4, "height": 4}},
-            {"ds_name": "ds_kpi", "w_type": "COUNTER", "title": "Success Rate", "value_col": "success_rate_percent", "pos": {"x": 8, "y": 0, "width": 4, "height": 4}, "format": "0.0'%'"},
-            {"ds_name": "ds_summary", "w_type": "DONUT", "title": "Run Summary", "pos": {"x": 0, "y": 4, "width": 6, "height": 8}},
-            {"ds_name": "ds_failure_rate", "w_type": "LINE", "title": "Failure Rate Over Time", "pos": {"x": 6, "y": 4, "width": 6, "height": 8}},
-            {"ds_name": "ds_top_failures", "w_type": "BAR", "title": "Top Failing Tasks", "pos": {"x": 0, "y": 12, "width": 6, "height": 8}},
-            {"ds_name": "ds_history", "w_type": "TABLE", "title": "Detailed Run History", "pos": {"x": 6, "y": 12, "width": 6, "height": 8}}
-        ]
-    
+        # --- 3. CREATE ALL DASHBOARD COMPONENTS PROGRAMMATICALLY ---
+        logger.info("Creating dashboard components using the robust SDK object model...")
         widgets = []
-        for i, w_def in enumerate(widget_definitions):
-            spec, query = {}, {"datasetName": w_def['ds_name'], "disaggregated": False}
+        for spec in widget_specs:
+            query_obj = self.w.queries.create(name=f"DataPact-{job_name}-{spec['title']}", data_source_id=warehouse_id, query=spec['sql'])
+            viz_obj = self.w.visualizations.create(query_id=query_obj.id, type=spec['type'], name=f"Viz-{spec['title']}", options=spec['options'])
+            widgets.append(sql_service.WidgetCreate(visualization_id=viz_obj.id, position=spec['pos']))
     
-            if w_def['w_type'] == "COUNTER":
-                query["fields"] = [{"name": w_def['value_col'], "expression": f"`{w_def['value_col']}`"}]
-                spec = {"version": 3, "widgetType": "counter", "encodings": {"value": {"fieldName": w_def['value_col']}}, "frame": {"title": w_def['title'], "showTitle": True}}
-                if "format" in w_def: spec["encodings"]["value"]["numberFormat"] = w_def['format']
+        # --- 4. CREATE THE DASHBOARD ITSELF ---
+        dashboard = self.w.dashboards.create(name=dashboard_name, warehouse_id=warehouse_id, widgets=widgets)
+        
+        # We must publish the legacy dashboard to get a shareable URL
+        self.w.dashboards.publish(dashboard_id=dashboard.id)
     
-            elif w_def['w_type'] == "DONUT":
-                query["fields"] = [{"name": "sum(task_count)", "expression": "SUM(`task_count`)"}, {"name": "status", "expression": "`status`"}]
-                spec = {"version": 3, "widgetType": "pie", "encodings": {
-                    "angle": {"fieldName": "sum(task_count)"},
-                    "color": {"fieldName": "status", "scale": {"customColors": [
-                        {"value": "FAILURE", "color": "#D44953"}, {"value": "SUCCESS", "color": "#539F80"}
-                    ]}},
-                    "label": {"show": True}, "innerRadius": 0.6,
-                    "drillthrough": {"type": "DASHBOARD_FILTER", "fieldName": "status"}
-                }, "frame": {"title": w_def['title'], "showTitle": True}}
-    
-            elif w_def['w_type'] == "LINE":
-                query["fields"] = [{"name": "run_date", "expression": "`run_date`"}, {"name": "avg(failure_rate)", "expression": "AVG(`failure_rate`)"}]
-                spec = {"version": 3, "widgetType": "line", "encodings": {
-                    "x": {"fieldName": "run_date", "displayName": "Date"},
-                    "y": {"fieldName": "avg(failure_rate)", "displayName": "Failure Rate (%)"}
-                }, "frame": {"title": w_def['title'], "showTitle": True}}
-            
-            elif w_def['w_type'] == "BAR":
-                query["fields"] = [{"name": "task_key", "expression": "`task_key`"}, {"name": "sum(failure_count)", "expression": "SUM(`failure_count`)"}]
-                spec = {"version": 3, "widgetType": "bar", "encodings": {
-                    "x": {"fieldName": "task_key", "displayName": "Failing Task"},
-                    "y": {"fieldName": "sum(failure_count)", "displayName": "Total Failures"}
-                }, "frame": {"title": w_def['title'], "showTitle": True}}
-    
-            elif w_def['w_type'] == "TABLE":
-                query["fields"] = [{"name": c, "expression": f"`{c}`"} for c in ["task_key", "status", "timestamp", "payload_json"]]
-                spec = {"version": 3, "widgetType": "table", "encodings": {"columns": [
-                    {"fieldName": "task_key", "displayName": "Task Key"}, {"fieldName": "status", "displayName": "Status"},
-                    {"fieldName": "timestamp", "displayName": "Timestamp"}, {"fieldName": "payload_json", "displayName": "Result Payload"}
-                ]}, "frame": {"title": w_def['title'], "showTitle": True}}
-    
-            widgets.append({
-                "widget": {"name": f"w_{i}", "queries": [{"name": "main_query", "query": query}], "spec": spec},
-                "position": w_def['pos']
-            })
-    
-        dashboard_payload = {
-            "datasets": datasets,
-            "pages": [{"name": "main_page", "displayName": "DataPact Validation Results", "layout": widgets, "pageType": "PAGE_TYPE_CANVAS"}]
-        }
-    
-        draft = self.w.lakeview.create(Dashboard(
-            display_name=display_name, parent_path=parent_path, warehouse_id=warehouse_id,
-            serialized_dashboard=json.dumps(dashboard_payload)
-        ))
-    
-        self.w.lakeview.publish(dashboard_id=draft.dashboard_id, embed_credentials=True, warehouse_id=warehouse_id)
-        logger.success(f"✅ Created dashboard: {self.w.config.host}/dashboardsv3/{draft.dashboard_id}/published")
-        return draft.dashboard_id
+        logger.success(f"✅ Created dashboard: {dashboard.url}")
+        # Return the draft ID required by the job's dashboard task
+        return dashboard.id
 
     def run_validation(
         self,
