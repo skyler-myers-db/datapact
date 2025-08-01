@@ -320,9 +320,8 @@ class DataPactClient:
     ) -> str:
         """
         Creates a polished, executive-ready Lakeview dashboard.
-        This version corrects the data binding by removing double aggregation,
-        and includes a 3-column KPI header, a balanced layout, custom chart
-        labels, and strategic color coding.
+        This definitive version corrects data binding, implements a balanced layout,
+        and adds interactive drill-down functionality.
         Returns the *draft* dashboard_id (needed by the dashboard task).
         """
         display_name = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
@@ -339,14 +338,11 @@ class DataPactClient:
             logger.info("Dashboard file does not yet exist – will create")
     
         q = lambda sql: sql.format(table=results_table_fqn, job=job_name)
-        # Define datasets first
         datasets = [
             {"name": "ds_kpi", "displayName": "KPI Metrics (Latest Run)", "queryLines": [q(
                 "WITH latest_run AS (SELECT * FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')) "
-                "SELECT COUNT(*) as total_tasks, "
-                "COUNT(IF(status = 'FAILURE', 1, NULL)) as failed_tasks, "
-                "COUNT(IF(status = 'SUCCESS', 1, NULL)) * 100.0 / COUNT(*) as success_rate_percent "
-                "FROM latest_run"
+                "SELECT COUNT(*) as total_tasks, COUNT(IF(status = 'FAILURE', 1, NULL)) as failed_tasks, "
+                "COUNT(IF(status = 'SUCCESS', 1, NULL)) * 100.0 / COUNT(*) as success_rate_percent FROM latest_run"
             )]},
             {"name": "ds_summary", "displayName": "Run Summary", "queryLines": [q(
                 "SELECT status, COUNT(*) as task_count FROM {table} "
@@ -379,34 +375,35 @@ class DataPactClient:
         widgets = []
         for i, w_def in enumerate(widget_definitions):
             spec, query = {}, {"datasetName": w_def['ds_name'], "disaggregated": False}
-            
+    
             if w_def['w_type'] == "COUNTER":
                 query["fields"] = [{"name": w_def['value_col'], "expression": f"`{w_def['value_col']}`"}]
                 spec = {"version": 3, "widgetType": "counter", "encodings": {"value": {"fieldName": w_def['value_col']}}, "frame": {"title": w_def['title'], "showTitle": True}}
                 if "format" in w_def: spec["encodings"]["value"]["numberFormat"] = w_def['format']
     
             elif w_def['w_type'] == "DONUT":
-                query["fields"] = [{"name": "task_count", "expression": "`task_count`"}, {"name": "status", "expression": "`status`"}]
+                query["fields"] = [{"name": "sum(task_count)", "expression": "SUM(`task_count`)"}, {"name": "status", "expression": "`status`"}]
                 spec = {"version": 3, "widgetType": "pie", "encodings": {
-                    "angle": {"fieldName": "task_count"},
+                    "angle": {"fieldName": "sum(task_count)"},
                     "color": {"fieldName": "status", "scale": {"customColors": [
                         {"value": "FAILURE", "color": "#D44953"}, {"value": "SUCCESS", "color": "#539F80"}
                     ]}},
-                    "label": {"show": True}, "innerRadius": 0.6
+                    "label": {"show": True}, "innerRadius": 0.6,
+                    "drillthrough": {"type": "DASHBOARD_FILTER", "fieldName": "status"}
                 }, "frame": {"title": w_def['title'], "showTitle": True}}
     
             elif w_def['w_type'] == "LINE":
-                query["fields"] = [{"name": "run_date", "expression": "`run_date`"}, {"name": "failure_rate", "expression": "`failure_rate`"}]
+                query["fields"] = [{"name": "run_date", "expression": "`run_date`"}, {"name": "avg(failure_rate)", "expression": "AVG(`failure_rate`)"}]
                 spec = {"version": 3, "widgetType": "line", "encodings": {
                     "x": {"fieldName": "run_date", "displayName": "Date"},
-                    "y": {"fieldName": "failure_rate", "displayName": "Failure Rate (%)"}
+                    "y": {"fieldName": "avg(failure_rate)", "displayName": "Failure Rate (%)"}
                 }, "frame": {"title": w_def['title'], "showTitle": True}}
             
             elif w_def['w_type'] == "BAR":
-                query["fields"] = [{"name": "task_key", "expression": "`task_key`"}, {"name": "failure_count", "expression": "`failure_count`"}]
+                query["fields"] = [{"name": "task_key", "expression": "`task_key`"}, {"name": "sum(failure_count)", "expression": "SUM(`failure_count`)"}]
                 spec = {"version": 3, "widgetType": "bar", "encodings": {
                     "x": {"fieldName": "task_key", "displayName": "Failing Task"},
-                    "y": {"fieldName": "failure_count", "displayName": "Total Failures"}
+                    "y": {"fieldName": "sum(failure_count)", "displayName": "Total Failures"}
                 }, "frame": {"title": w_def['title'], "showTitle": True}}
     
             elif w_def['w_type'] == "TABLE":
