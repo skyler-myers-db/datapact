@@ -320,8 +320,9 @@ class DataPactClient:
     ) -> str:
         """
         Creates a polished, executive-ready Lakeview dashboard.
-        This version includes a 3-column KPI header, a balanced layout, custom chart
-        labels, strategic color coding, and other visual enhancements.
+        This version corrects the data binding by removing double aggregation,
+        and includes a 3-column KPI header, a balanced layout, custom chart
+        labels, and strategic color coding.
         Returns the *draft* dashboard_id (needed by the dashboard task).
         """
         display_name = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
@@ -340,7 +341,6 @@ class DataPactClient:
         q = lambda sql: sql.format(table=results_table_fqn, job=job_name)
         # Define datasets first
         datasets = [
-            # Main KPI Dataset - powers the top 3 counters from a single query
             {"name": "ds_kpi", "displayName": "KPI Metrics (Latest Run)", "queryLines": [q(
                 "WITH latest_run AS (SELECT * FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')) "
                 "SELECT COUNT(*) as total_tasks, "
@@ -348,40 +348,30 @@ class DataPactClient:
                 "COUNT(IF(status = 'SUCCESS', 1, NULL)) * 100.0 / COUNT(*) as success_rate_percent "
                 "FROM latest_run"
             )]},
-            # Dataset for the Run Summary Donut Chart
             {"name": "ds_summary", "displayName": "Run Summary", "queryLines": [q(
                 "SELECT status, COUNT(*) as task_count FROM {table} "
                 "WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') GROUP BY status"
             )]},
-            # Dataset for Failure Rate Line Chart
             {"name": "ds_failure_rate", "displayName": "Failure Rate Over Time", "queryLines": [q(
                 "SELECT date(timestamp) as run_date, COUNT(IF(status='FAILURE',1,NULL))*100/COUNT(*) as failure_rate "
                 "FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1"
             )]},
-            # Dataset for Top Failures Bar Chart
             {"name": "ds_top_failures", "displayName": "Top Failing Tasks", "queryLines": [q(
                 "SELECT task_key, COUNT(*) as failure_count FROM {table} "
                 "WHERE status='FAILURE' AND job_name='{job}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10"
             )]},
-            # Dataset for the Detailed History Table
             {"name": "ds_history", "displayName": "Detailed Run History", "queryLines": [q(
                 "SELECT task_key, status, timestamp, to_json(result_payload) as payload_json "
                 "FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"
             )]}
         ]
     
-        # Define all widgets with their full specifications
         widget_definitions = [
-            # --- Top Row: KPIs ---
             {"ds_name": "ds_kpi", "w_type": "COUNTER", "title": "Total Tasks Executed", "value_col": "total_tasks", "pos": {"x": 0, "y": 0, "width": 4, "height": 4}},
             {"ds_name": "ds_kpi", "w_type": "COUNTER", "title": "Failed Tasks", "value_col": "failed_tasks", "pos": {"x": 4, "y": 0, "width": 4, "height": 4}},
-            {"ds_name": "ds_kpi", "w_type": "COUNTER", "title": "Success Rate", "value_col": "success_rate_percent", "pos": {"x": 8, "y": 0, "width": 4, "height": 4}, "format": "0.00'%'"},
-    
-            # --- Second Row: Summary Charts ---
+            {"ds_name": "ds_kpi", "w_type": "COUNTER", "title": "Success Rate", "value_col": "success_rate_percent", "pos": {"x": 8, "y": 0, "width": 4, "height": 4}, "format": "0.0'%'"},
             {"ds_name": "ds_summary", "w_type": "DONUT", "title": "Run Summary", "pos": {"x": 0, "y": 4, "width": 6, "height": 8}},
             {"ds_name": "ds_failure_rate", "w_type": "LINE", "title": "Failure Rate Over Time", "pos": {"x": 6, "y": 4, "width": 6, "height": 8}},
-    
-            # --- Third Row: Detailed Charts ---
             {"ds_name": "ds_top_failures", "w_type": "BAR", "title": "Top Failing Tasks", "pos": {"x": 0, "y": 12, "width": 6, "height": 8}},
             {"ds_name": "ds_history", "w_type": "TABLE", "title": "Detailed Run History", "pos": {"x": 6, "y": 12, "width": 6, "height": 8}}
         ]
@@ -396,28 +386,27 @@ class DataPactClient:
                 if "format" in w_def: spec["encodings"]["value"]["numberFormat"] = w_def['format']
     
             elif w_def['w_type'] == "DONUT":
-                query["fields"] = [{"name": "sum(task_count)", "expression": "SUM(`task_count`)"}, {"name": "status", "expression": "`status`"}]
+                query["fields"] = [{"name": "task_count", "expression": "`task_count`"}, {"name": "status", "expression": "`status`"}]
                 spec = {"version": 3, "widgetType": "pie", "encodings": {
-                    "angle": {"fieldName": "sum(task_count)"},
+                    "angle": {"fieldName": "task_count"},
                     "color": {"fieldName": "status", "scale": {"customColors": [
                         {"value": "FAILURE", "color": "#D44953"}, {"value": "SUCCESS", "color": "#539F80"}
                     ]}},
-                    "label": {"show": True},
-                    "innerRadius": 0.6
+                    "label": {"show": True}, "innerRadius": 0.6
                 }, "frame": {"title": w_def['title'], "showTitle": True}}
     
             elif w_def['w_type'] == "LINE":
-                query["fields"] = [{"name": "run_date", "expression": "`run_date`"}, {"name": "avg(failure_rate)", "expression": "AVG(`failure_rate`)"}]
+                query["fields"] = [{"name": "run_date", "expression": "`run_date`"}, {"name": "failure_rate", "expression": "`failure_rate`"}]
                 spec = {"version": 3, "widgetType": "line", "encodings": {
                     "x": {"fieldName": "run_date", "displayName": "Date"},
-                    "y": {"fieldName": "avg(failure_rate)", "displayName": "Failure Rate (%)"}
+                    "y": {"fieldName": "failure_rate", "displayName": "Failure Rate (%)"}
                 }, "frame": {"title": w_def['title'], "showTitle": True}}
             
             elif w_def['w_type'] == "BAR":
-                query["fields"] = [{"name": "task_key", "expression": "`task_key`"}, {"name": "sum(failure_count)", "expression": "SUM(`failure_count`)"}]
+                query["fields"] = [{"name": "task_key", "expression": "`task_key`"}, {"name": "failure_count", "expression": "`failure_count`"}]
                 spec = {"version": 3, "widgetType": "bar", "encodings": {
                     "x": {"fieldName": "task_key", "displayName": "Failing Task"},
-                    "y": {"fieldName": "sum(failure_count)", "displayName": "Total Failures"}
+                    "y": {"fieldName": "failure_count", "displayName": "Total Failures"}
                 }, "frame": {"title": w_def['title'], "showTitle": True}}
     
             elif w_def['w_type'] == "TABLE":
