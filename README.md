@@ -124,7 +124,7 @@ Execute DataPact using the pre-made comprehensive demo configuration. This run w
 # Assumes 'datapact_warehouse' is set in your profile
 datapact run \
   --config demo/demo_config.yml \
-  --job-name "DataPact Comprehensive Demo" \
+  --job-name "DataPact Enterprise Demo" \
   --profile your-databricks-profile
 ```
 
