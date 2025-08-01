@@ -319,10 +319,9 @@ class DataPactClient:
         warehouse_id: str,
     ) -> str:
         """
-        Make sure the Lakeview dashboard for <job_name> exists.
-        This version correctly builds the serialized_dashboard JSON with fully
-        defined widget queries, including the 'fields' array to bind data
-        to the visualizations.
+        Creates a polished, executive-ready Lakeview dashboard.
+        This version includes a 3-column KPI header, a balanced layout, custom chart
+        labels, strategic color coding, and other visual enhancements.
         Returns the *draft* dashboard_id (needed by the dashboard task).
         """
         display_name = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
@@ -339,127 +338,111 @@ class DataPactClient:
             logger.info("Dashboard file does not yet exist – will create")
     
         q = lambda sql: sql.format(table=results_table_fqn, job=job_name)
-        queries = {
-            "Run Summary": q(
-                "SELECT status, COUNT(*) as task_count FROM {table}"
-                " WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')"
-                " GROUP BY status"),
-            "Failure Rate %": q(
-                "SELECT date(timestamp) as run_date,"
-                " COUNT(IF(status='FAILURE',1,NULL))*100/COUNT(*) as failure_rate"
-                " FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1"),
-            "Top Failures": q(
-                "SELECT task_key, COUNT(*) as failure_count FROM {table}"
-                " WHERE status='FAILURE' AND job_name='{job}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10"),
-            "History": q(
-                "SELECT task_key,status,timestamp,to_json(result_payload) as payload_json"
-                " FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"),
-        }
+        # Define datasets first
+        datasets = [
+            # Main KPI Dataset - powers the top 3 counters from a single query
+            {"name": "ds_kpi", "displayName": "KPI Metrics (Latest Run)", "queryLines": [q(
+                "WITH latest_run AS (SELECT * FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')) "
+                "SELECT COUNT(*) as total_tasks, "
+                "COUNT(IF(status = 'FAILURE', 1, NULL)) as failed_tasks, "
+                "COUNT(IF(status = 'SUCCESS', 1, NULL)) * 100.0 / COUNT(*) as success_rate_percent "
+                "FROM latest_run"
+            )]},
+            # Dataset for the Run Summary Donut Chart
+            {"name": "ds_summary", "displayName": "Run Summary", "queryLines": [q(
+                "SELECT status, COUNT(*) as task_count FROM {table} "
+                "WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') GROUP BY status"
+            )]},
+            # Dataset for Failure Rate Line Chart
+            {"name": "ds_failure_rate", "displayName": "Failure Rate Over Time", "queryLines": [q(
+                "SELECT date(timestamp) as run_date, COUNT(IF(status='FAILURE',1,NULL))*100/COUNT(*) as failure_rate "
+                "FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1"
+            )]},
+            # Dataset for Top Failures Bar Chart
+            {"name": "ds_top_failures", "displayName": "Top Failing Tasks", "queryLines": [q(
+                "SELECT task_key, COUNT(*) as failure_count FROM {table} "
+                "WHERE status='FAILURE' AND job_name='{job}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10"
+            )]},
+            # Dataset for the Detailed History Table
+            {"name": "ds_history", "displayName": "Detailed Run History", "queryLines": [q(
+                "SELECT task_key, status, timestamp, to_json(result_payload) as payload_json "
+                "FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"
+            )]}
+        ]
     
-        datasets, widgets = [], []
-        row, col = 0, 0
+        # Define all widgets with their full specifications
+        widget_definitions = [
+            # --- Top Row: KPIs ---
+            {"ds_name": "ds_kpi", "w_type": "COUNTER", "title": "Total Tasks Executed", "value_col": "total_tasks", "pos": {"x": 0, "y": 0, "width": 4, "height": 4}},
+            {"ds_name": "ds_kpi", "w_type": "COUNTER", "title": "Failed Tasks", "value_col": "failed_tasks", "pos": {"x": 4, "y": 0, "width": 4, "height": 4}},
+            {"ds_name": "ds_kpi", "w_type": "COUNTER", "title": "Success Rate", "value_col": "success_rate_percent", "pos": {"x": 8, "y": 0, "width": 4, "height": 4}, "format": "0.00'%'"},
     
-        for i, (title, sql) in enumerate(queries.items(), 1):
-            ds_id = f"d_{i}"
-            datasets.append({ "name": ds_id, "displayName": title, "queryLines": [sql] })
+            # --- Second Row: Summary Charts ---
+            {"ds_name": "ds_summary", "w_type": "DONUT", "title": "Run Summary", "pos": {"x": 0, "y": 4, "width": 6, "height": 8}},
+            {"ds_name": "ds_failure_rate", "w_type": "LINE", "title": "Failure Rate Over Time", "pos": {"x": 6, "y": 4, "width": 6, "height": 8}},
     
-            widget_spec, widget_query = {}, {}
+            # --- Third Row: Detailed Charts ---
+            {"ds_name": "ds_top_failures", "w_type": "BAR", "title": "Top Failing Tasks", "pos": {"x": 0, "y": 12, "width": 6, "height": 8}},
+            {"ds_name": "ds_history", "w_type": "TABLE", "title": "Detailed Run History", "pos": {"x": 6, "y": 12, "width": 6, "height": 8}}
+        ]
+    
+        widgets = []
+        for i, w_def in enumerate(widget_definitions):
+            spec, query = {}, {"datasetName": w_def['ds_name'], "disaggregated": False}
             
-            # Define the spec and query fields for each visualization
-            if "Run Summary" in title:
-                widget_query = { "fields": [
-                    {"name": "sum(task_count)", "expression": "SUM(`task_count`)"},
-                    {"name": "status", "expression": "`status`"}
-                ]}
-                widget_spec = {
-                    "version": 3, "widgetType": "pie",
-                    "encodings": {
-                        "angle": {"fieldName": "sum(task_count)", "scale": {"type": "quantitative"}},
-                        "color": {"fieldName": "status", "scale": {"type": "categorical"}},
-                        "label": {"show": True}
-                    },
-                    "frame": {"title": "Run Summary", "showTitle": True}
-                }
-            elif "Failure Rate" in title:
-                widget_query = { "fields": [
-                    {"name": "run_date", "expression": "`run_date`"},
-                    {"name": "avg(failure_rate)", "expression": "AVG(`failure_rate`)"}
-                ]}
-                widget_spec = {
-                    "version": 3, "widgetType": "line",
-                    "encodings": {
-                        "x": {"fieldName": "run_date", "scale": {"type": "temporal"}},
-                        "y": {"fieldName": "avg(failure_rate)", "scale": {"type": "quantitative"}}
-                    },
-                    "frame": {"title": "Failure Rate Over Time", "showTitle": True}
-                }
-            elif "Top Failures" in title:
-                widget_query = { "fields": [
-                    {"name": "task_key", "expression": "`task_key`"},
-                    {"name": "sum(failure_count)", "expression": "SUM(`failure_count`)"}
-                ]}
-                widget_spec = {
-                    "version": 3, "widgetType": "bar",
-                    "encodings": {
-                        "x": {"fieldName": "task_key", "scale": {"type": "categorical"}},
-                        "y": {"fieldName": "sum(failure_count)", "scale": {"type": "quantitative"}}
-                    },
-                    "frame": {"title": "Top Failing Tasks", "showTitle": True}
-                }
-            else: # History Table
-                widget_query = { "fields": [
-                    {"name": "task_key", "expression": "`task_key`"},
-                    {"name": "status", "expression": "`status`"},
-                    {"name": "timestamp", "expression": "`timestamp`"},
-                    {"name": "payload_json", "expression": "`payload_json`"}
-                ]}
-                widget_spec = {
-                    "version": 3, "widgetType": "table",
-                    "encodings": { "columns": [
-                        {"fieldName": "task_key", "displayName": "Task Key"},
-                        {"fieldName": "status", "displayName": "Status"},
-                        {"fieldName": "timestamp", "displayName": "Timestamp"},
-                        {"fieldName": "payload_json", "displayName": "Result Payload"}
-                    ]},
-                    "frame": {"title": "Detailed Run History", "showTitle": True}
-                }
+            if w_def['w_type'] == "COUNTER":
+                query["fields"] = [{"name": w_def['value_col'], "expression": f"`{w_def['value_col']}`"}]
+                spec = {"version": 3, "widgetType": "counter", "encodings": {"value": {"fieldName": w_def['value_col']}}, "frame": {"title": w_def['title'], "showTitle": True}}
+                if "format" in w_def: spec["encodings"]["value"]["numberFormat"] = w_def['format']
+    
+            elif w_def['w_type'] == "DONUT":
+                query["fields"] = [{"name": "sum(task_count)", "expression": "SUM(`task_count`)"}, {"name": "status", "expression": "`status`"}]
+                spec = {"version": 3, "widgetType": "pie", "encodings": {
+                    "angle": {"fieldName": "sum(task_count)"},
+                    "color": {"fieldName": "status", "scale": {"customColors": [
+                        {"value": "FAILURE", "color": "#D44953"}, {"value": "SUCCESS", "color": "#539F80"}
+                    ]}},
+                    "label": {"show": True},
+                    "innerRadius": 0.6
+                }, "frame": {"title": w_def['title'], "showTitle": True}}
+    
+            elif w_def['w_type'] == "LINE":
+                query["fields"] = [{"name": "run_date", "expression": "`run_date`"}, {"name": "avg(failure_rate)", "expression": "AVG(`failure_rate`)"}]
+                spec = {"version": 3, "widgetType": "line", "encodings": {
+                    "x": {"fieldName": "run_date", "displayName": "Date"},
+                    "y": {"fieldName": "avg(failure_rate)", "displayName": "Failure Rate (%)"}
+                }, "frame": {"title": w_def['title'], "showTitle": True}}
             
-            final_widget_query = { "datasetName": ds_id, "disaggregated": False, **widget_query }
-            
+            elif w_def['w_type'] == "BAR":
+                query["fields"] = [{"name": "task_key", "expression": "`task_key`"}, {"name": "sum(failure_count)", "expression": "SUM(`failure_count`)"}]
+                spec = {"version": 3, "widgetType": "bar", "encodings": {
+                    "x": {"fieldName": "task_key", "displayName": "Failing Task"},
+                    "y": {"fieldName": "sum(failure_count)", "displayName": "Total Failures"}
+                }, "frame": {"title": w_def['title'], "showTitle": True}}
+    
+            elif w_def['w_type'] == "TABLE":
+                query["fields"] = [{"name": c, "expression": f"`{c}`"} for c in ["task_key", "status", "timestamp", "payload_json"]]
+                spec = {"version": 3, "widgetType": "table", "encodings": {"columns": [
+                    {"fieldName": "task_key", "displayName": "Task Key"}, {"fieldName": "status", "displayName": "Status"},
+                    {"fieldName": "timestamp", "displayName": "Timestamp"}, {"fieldName": "payload_json", "displayName": "Result Payload"}
+                ]}, "frame": {"title": w_def['title'], "showTitle": True}}
+    
             widgets.append({
-                "widget": {
-                    "name": f"w_{i}",
-                    "queries": [{"name": "main_query", "query": final_widget_query}],
-                    "spec": widget_spec
-                },
-                "position": {"x": col, "y": row, "width": 6, "height": 8}
+                "widget": {"name": f"w_{i}", "queries": [{"name": "main_query", "query": query}], "spec": spec},
+                "position": w_def['pos']
             })
-            
-            col += 6
-            if col >= 12: col = 0; row += 8
     
         dashboard_payload = {
             "datasets": datasets,
-            "pages": [{
-                "name": "main_page",
-                "displayName": "DataPact Validation Results",
-                "layout": widgets,
-                "pageType": "PAGE_TYPE_CANVAS"
-            }]
+            "pages": [{"name": "main_page", "displayName": "DataPact Validation Results", "layout": widgets, "pageType": "PAGE_TYPE_CANVAS"}]
         }
     
         draft = self.w.lakeview.create(Dashboard(
-            display_name         = display_name,
-            parent_path          = parent_path,
-            warehouse_id         = warehouse_id,
-            serialized_dashboard = json.dumps(dashboard_payload)
+            display_name=display_name, parent_path=parent_path, warehouse_id=warehouse_id,
+            serialized_dashboard=json.dumps(dashboard_payload)
         ))
     
-        self.w.lakeview.publish(
-            dashboard_id      = draft.dashboard_id,
-            embed_credentials = True,
-            warehouse_id      = warehouse_id,
-        )
+        self.w.lakeview.publish(dashboard_id=draft.dashboard_id, embed_credentials=True, warehouse_id=warehouse_id)
         logger.success(f"✅ Created dashboard: {self.w.config.host}/dashboardsv3/{draft.dashboard_id}/published")
         return draft.dashboard_id
 
