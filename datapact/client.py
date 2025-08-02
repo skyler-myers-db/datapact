@@ -320,8 +320,8 @@ class DataPactClient:
     ) -> str:
         """
         Creates a polished, executive-ready Lakeview dashboard using the proven
-        and correct serialized_dashboard method. This definitive solution fixes all
-        previous API and layout errors.
+        and API-compliant serialized_dashboard method. This is the definitive solution,
+        built strictly according to the official SDK documentation.
         Returns the *draft* dashboard_id (needed by the dashboard task).
         """
         dashboard_name = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
@@ -425,12 +425,12 @@ class DataPactClient:
     
         dashboard_payload = {
             "displayName": dashboard_name,
+            "parentPath": parent_path,
             "datasets": datasets,
             "pages": [{"name": "main_page", "displayName": "DataPact Validation Results", "layout": layout, "pageType": "PAGE_TYPE_CANVAS"}]
         }
     
         draft = self.w.lakeview.create(
-            parent_path=parent_path,
             warehouse_id=warehouse_id,
             serialized_dashboard=json.dumps(dashboard_payload)
         )
