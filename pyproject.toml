@@ -22,6 +22,7 @@ dependencies = [
     "pyarrow",
     "pyyaml",
     "loguru",
+    "pydantic",
 ]
 
 [project.urls]
