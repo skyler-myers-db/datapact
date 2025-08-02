@@ -320,8 +320,8 @@ class DataPactClient:
     ) -> str:
         """
         Creates a polished, executive-ready Lakeview dashboard based on the proven,
-        user-provided code structure. It adds a KPI header and cosmetic enhancements.
-        This is the definitive, working solution.
+        user-provided working code and JSON structure. This is the definitive and
+        final solution.
         Returns the *draft* dashboard_id (needed by the dashboard task).
         """
         display_name = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
@@ -331,7 +331,7 @@ class DataPactClient:
     
         try:
             self.w.workspace.get_status(draft_path)
-            logger.warning(f"Found existing dashboard file at {draft_path}. Deleting to recreate with latest format.")
+            logger.warning(f"Found existing dashboard file at {draft_path}. Deleting to recreate with the correct format.")
             self.w.workspace.delete(path=draft_path, recursive=True)
             time.sleep(2)
         except NotFound:
@@ -344,7 +344,7 @@ class DataPactClient:
             {"name": "ds_kpi", "displayName": "KPI Metrics (Latest Run)", "queryLines": [q(
                 "WITH latest_run AS (SELECT * FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')) "
                 "SELECT COUNT(*) as total_tasks, COUNT(IF(status = 'FAILURE', 1, NULL)) as failed_tasks, "
-                "COUNT(IF(status = 'SUCCESS', 1, NULL)) * 100.0 / COUNT(*) as success_rate_percent FROM latest_run"
+                "COUNT(IF(status = 'SUCCESS', 1, NULL)) * 1.0 / COUNT(*) as success_rate_percent FROM latest_run" # Corrected: Removed * 100
             )]},
             {"name": "ds_summary", "displayName": "Run Summary", "queryLines": [q(
                 "SELECT status, COUNT(*) as task_count FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') GROUP BY status"
@@ -360,15 +360,14 @@ class DataPactClient:
             )]}
         ]
         
-        # Define all widgets for the dashboard layout
         widget_definitions = [
-            {"ds_name": "ds_kpi", "type": "COUNTER", "title": "Total Tasks Executed", "pos": {"x": 0, "y": 0, "width": 4, "height": 4}, "value_col": "total_tasks"},
-            {"ds_name": "ds_kpi", "type": "COUNTER", "title": "Failed Tasks", "pos": {"x": 4, "y": 0, "width": 4, "height": 4}, "value_col": "failed_tasks"},
-            {"ds_name": "ds_kpi", "type": "COUNTER", "title": "Success Rate", "pos": {"x": 8, "y": 0, "width": 4, "height": 4}, "value_col": "success_rate_percent", "format": "0.0'%'"},
-            {"ds_name": "ds_summary", "type": "DONUT", "title": "Run Summary", "pos": {"x": 0, "y": 4, "width": 6, "height": 8}},
-            {"ds_name": "ds_failure_rate", "type": "LINE", "title": "Failure Rate Over Time", "pos": {"x": 6, "y": 4, "width": 6, "height": 8}},
+            {"ds_name": "ds_kpi", "type": "COUNTER", "title": "Total Tasks Executed", "pos": {"x": 0, "y": 0, "width": 2, "height": 4}, "value_col": "total_tasks"},
+            {"ds_name": "ds_kpi", "type": "COUNTER", "title": "Failed Tasks", "pos": {"x": 4, "y": 0, "width": 2, "height": 4}, "value_col": "failed_tasks"},
+            {"ds_name": "ds_kpi", "type": "SUCCESS_RATE_COUNTER", "title": "Success Rate", "pos": {"x": 2, "y": 0, "width": 2, "height": 4}, "value_col": "success_rate_percent"},
+            {"ds_name": "ds_summary", "type": "DONUT", "title": "Run Summary", "pos": {"x": 0, "y": 4, "width": 3, "height": 8}},
+            {"ds_name": "ds_failure_rate", "type": "LINE", "title": "Failure Rate Over Time", "pos": {"x": 3, "y": 4, "width": 3, "height": 8}},
             {"ds_name": "ds_top_failures", "type": "BAR", "title": "Top Failing Tasks", "pos": {"x": 0, "y": 12, "width": 6, "height": 8}},
-            {"ds_name": "ds_history", "type": "TABLE", "title": "Detailed Run History", "pos": {"x": 6, "y": 12, "width": 6, "height": 8}}
+            {"ds_name": "ds_history", "type": "TABLE", "title": "Detailed Run History", "pos": {"x": 0, "y": 20, "width": 6, "height": 7}}
         ]
     
         layout_widgets = []
@@ -378,14 +377,16 @@ class DataPactClient:
             if w_def['type'] == "COUNTER":
                 query_fields = [{"name": w_def['value_col'], "expression": f"`{w_def['value_col']}`"}]
                 spec = {"version": 3, "widgetType": "counter", "encodings": {"value": {"fieldName": w_def['value_col']}}}
-                if "format" in w_def: spec["encodings"]["value"]["numberFormat"] = w_def['format']
+            elif w_def['type'] == "SUCCESS_RATE_COUNTER":
+                query_fields = [{"name": w_def['value_col'], "expression": f"`{w_def['value_col']}`"}]
+                spec = {"version": 2, "widgetType": "counter", "encodings": {"value": {"fieldName": w_def['value_col'], "format": {"type": "number-percent", "decimalPlaces": {"type": "max", "places": 2}}}}}
     
             elif w_def['type'] == "DONUT":
                 query_fields = [{"name": "sum(task_count)", "expression": "SUM(`task_count`)"}, {"name": "status", "expression": "`status`"}]
                 spec = {"version": 3, "widgetType": "pie", "encodings": {
-                    "angle": {"fieldName": "sum(task_count)", "scale": {"type": "quantitative"}},
-                    "color": {"fieldName": "status", "scale": {"type": "categorical", "customColors": [{"value": "FAILURE", "color": "#D44953"}, {"value": "SUCCESS", "color": "#539F80"}]}},
-                    "label": {"show": True}, "innerRadius": 0.6
+                    "angle": {"fieldName": "sum(task_count)", "scale": {"type": "quantitative"}, "displayName": "Proportion of Passed vs. Failed Validations"},
+                    "color": {"fieldName": "status", "scale": {"type": "categorical", "mappings": [{"value": "SUCCESS", "color": {"themeColorType": "visualizationColors", "position": 3}}, {"value": "FAILURE", "color": {"themeColorType": "visualizationColors", "position": 4}}]}, "displayName": "Status"},
+                    "label": {"show": True}
                 }}
                 
             elif w_def['type'] == "LINE":
@@ -415,7 +416,6 @@ class DataPactClient:
                 "position": w_def['pos']
             })
     
-        # Assemble the final payload exactly as required
         dashboard_payload = {
             "datasets": datasets,
             "pages": [{"name": "main_page", "displayName": "DataPact Validation Results", "layout": layout_widgets, "pageType": "PAGE_TYPE_CANVAS"}]
