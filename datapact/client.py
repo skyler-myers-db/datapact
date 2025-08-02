@@ -319,26 +319,27 @@ class DataPactClient:
         warehouse_id: str,
     ) -> str:
         """
-        Creates a polished, executive-ready Lakeview dashboard using the proven
-        and API-compliant serialized_dashboard method. This is the definitive solution,
-        built strictly according to the official SDK documentation.
+        Creates a polished, executive-ready Lakeview dashboard based on the proven,
+        user-provided code structure. It adds a KPI header and cosmetic enhancements.
+        This is the definitive, working solution.
         Returns the *draft* dashboard_id (needed by the dashboard task).
         """
-        dashboard_name = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
+        display_name = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
         parent_path  = f"{self.root_path}/dashboards"
-        draft_path   = f"{parent_path}/{dashboard_name}.lvdash.json"
+        draft_path   = f"{parent_path}/{display_name}.lvdash.json"
         self.w.workspace.mkdirs(parent_path)
     
         try:
             self.w.workspace.get_status(draft_path)
-            logger.warning(f"Found existing dashboard file at {draft_path}. Deleting to recreate with the correct format.")
+            logger.warning(f"Found existing dashboard file at {draft_path}. Deleting to recreate with latest format.")
             self.w.workspace.delete(path=draft_path, recursive=True)
             time.sleep(2)
         except NotFound:
             logger.info("Dashboard file does not yet exist – will create")
     
         q = lambda sql: sql.format(table=results_table_fqn, job=job_name)
-        # Define the datasets that will power the dashboard
+        
+        # Define all datasets needed for the dashboard
         datasets = [
             {"name": "ds_kpi", "displayName": "KPI Metrics (Latest Run)", "queryLines": [q(
                 "WITH latest_run AS (SELECT * FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')) "
@@ -346,24 +347,20 @@ class DataPactClient:
                 "COUNT(IF(status = 'SUCCESS', 1, NULL)) * 100.0 / COUNT(*) as success_rate_percent FROM latest_run"
             )]},
             {"name": "ds_summary", "displayName": "Run Summary", "queryLines": [q(
-                "SELECT status, COUNT(*) as task_count FROM {table} "
-                "WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') GROUP BY status"
+                "SELECT status, COUNT(*) as task_count FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') GROUP BY status"
             )]},
             {"name": "ds_failure_rate", "displayName": "Failure Rate Over Time", "queryLines": [q(
-                "SELECT date(timestamp) as run_date, COUNT(IF(status='FAILURE',1,NULL))*100/COUNT(*) as failure_rate "
-                "FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1"
+                "SELECT date(timestamp) as run_date, COUNT(IF(status='FAILURE',1,NULL))*100/COUNT(*) as failure_rate FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1"
             )]},
             {"name": "ds_top_failures", "displayName": "Top Failing Tasks", "queryLines": [q(
-                "SELECT task_key, COUNT(*) as failure_count FROM {table} "
-                "WHERE status='FAILURE' AND job_name='{job}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10"
+                "SELECT task_key, COUNT(*) as failure_count FROM {table} WHERE status='FAILURE' AND job_name='{job}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10"
             )]},
             {"name": "ds_history", "displayName": "Detailed Run History", "queryLines": [q(
-                "SELECT task_key, status, timestamp, to_json(result_payload) as payload_json "
-                "FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"
+                "SELECT task_key, status, timestamp, to_json(result_payload) as payload_json FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"
             )]}
         ]
-    
-        # Define the widgets that will be placed on the dashboard canvas
+        
+        # Define all widgets for the dashboard layout
         widget_definitions = [
             {"ds_name": "ds_kpi", "type": "COUNTER", "title": "Total Tasks Executed", "pos": {"x": 0, "y": 0, "width": 4, "height": 4}, "value_col": "total_tasks"},
             {"ds_name": "ds_kpi", "type": "COUNTER", "title": "Failed Tasks", "pos": {"x": 4, "y": 0, "width": 4, "height": 4}, "value_col": "failed_tasks"},
@@ -374,7 +371,7 @@ class DataPactClient:
             {"ds_name": "ds_history", "type": "TABLE", "title": "Detailed Run History", "pos": {"x": 6, "y": 12, "width": 6, "height": 8}}
         ]
     
-        layout = []
+        layout_widgets = []
         for i, w_def in enumerate(widget_definitions):
             spec, query_fields = {}, []
             
@@ -382,6 +379,7 @@ class DataPactClient:
                 query_fields = [{"name": w_def['value_col'], "expression": f"`{w_def['value_col']}`"}]
                 spec = {"version": 3, "widgetType": "counter", "encodings": {"value": {"fieldName": w_def['value_col']}}}
                 if "format" in w_def: spec["encodings"]["value"]["numberFormat"] = w_def['format']
+    
             elif w_def['type'] == "DONUT":
                 query_fields = [{"name": "sum(task_count)", "expression": "SUM(`task_count`)"}, {"name": "status", "expression": "`status`"}]
                 spec = {"version": 3, "widgetType": "pie", "encodings": {
@@ -389,18 +387,21 @@ class DataPactClient:
                     "color": {"fieldName": "status", "scale": {"type": "categorical", "customColors": [{"value": "FAILURE", "color": "#D44953"}, {"value": "SUCCESS", "color": "#539F80"}]}},
                     "label": {"show": True}, "innerRadius": 0.6
                 }}
+                
             elif w_def['type'] == "LINE":
                 query_fields = [{"name": "run_date", "expression": "`run_date`"}, {"name": "avg(failure_rate)", "expression": "AVG(`failure_rate`)"}]
                 spec = {"version": 3, "widgetType": "line", "encodings": {
                     "x": {"fieldName": "run_date", "scale": {"type": "temporal"}, "displayName": "Date"},
                     "y": {"fieldName": "avg(failure_rate)", "scale": {"type": "quantitative"}, "displayName": "Failure Rate (%)"}
                 }}
+    
             elif w_def['type'] == "BAR":
                 query_fields = [{"name": "task_key", "expression": "`task_key`"}, {"name": "sum(failure_count)", "expression": "SUM(`failure_count`)"}]
                 spec = {"version": 3, "widgetType": "bar", "encodings": {
                     "x": {"fieldName": "task_key", "scale": {"type": "categorical"}, "displayName": "Failing Task"},
                     "y": {"fieldName": "sum(failure_count)", "scale": {"type": "quantitative"}, "displayName": "Total Failures"}
                 }}
+    
             elif w_def['type'] == "TABLE":
                 query_fields = [{"name": c, "expression": f"`{c}`"} for c in ["task_key", "status", "timestamp", "payload_json"]]
                 spec = {"version": 3, "widgetType": "table", "encodings": {"columns": [
@@ -409,24 +410,29 @@ class DataPactClient:
                 ]}}
     
             spec["frame"] = {"title": w_def['title'], "showTitle": True}
-            layout.append({
+            layout_widgets.append({
                 "widget": { "name": f"w_{i}", "queries": [{"name": "main_query", "query": {"datasetName": w_def['ds_name'], "fields": query_fields, "disaggregated": False}}], "spec": spec },
                 "position": w_def['pos']
             })
     
+        # Assemble the final payload exactly as required
         dashboard_payload = {
-            "displayName": dashboard_name,
-            "parentPath": parent_path,
-            "warehouseId": warehouse_id,
             "datasets": datasets,
-            "pages": [{"name": "main_page", "displayName": "DataPact Validation Results", "layout": layout, "pageType": "PAGE_TYPE_CANVAS"}]
+            "pages": [{"name": "main_page", "displayName": "DataPact Validation Results", "layout": layout_widgets, "pageType": "PAGE_TYPE_CANVAS"}]
         }
     
-        draft = self.w.lakeview.create(
-            serialized_dashboard=json.dumps(dashboard_payload)
-        )
+        draft = self.w.lakeview.create(Dashboard(
+            display_name         = display_name,
+            parent_path          = parent_path,
+            warehouse_id         = warehouse_id,
+            serialized_dashboard = json.dumps(dashboard_payload)
+        ))
     
-        self.w.lakeview.publish(dashboard_id=draft.dashboard_id, embed_credentials=True, warehouse_id=warehouse_id)
+        self.w.lakeview.publish(
+            dashboard_id      = draft.dashboard_id,
+            embed_credentials = True,
+            warehouse_id      = warehouse_id,
+        )
         logger.success(f"✅ Created dashboard: {self.w.config.host}/dashboardsv3/{draft.dashboard_id}/published")
         return draft.dashboard_id
 
