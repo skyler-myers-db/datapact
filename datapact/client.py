@@ -382,30 +382,25 @@ class DataPactClient:
                 query_fields = [{"name": w_def['value_col'], "expression": f"`{w_def['value_col']}`"}]
                 spec = {"version": 3, "widgetType": "counter", "encodings": {"value": {"fieldName": w_def['value_col']}}}
                 if "format" in w_def: spec["encodings"]["value"]["numberFormat"] = w_def['format']
-    
             elif w_def['type'] == "DONUT":
                 query_fields = [{"name": "sum(task_count)", "expression": "SUM(`task_count`)"}, {"name": "status", "expression": "`status`"}]
                 spec = {"version": 3, "widgetType": "pie", "encodings": {
                     "angle": {"fieldName": "sum(task_count)", "scale": {"type": "quantitative"}},
-                    "color": {"fieldName": "status", "scale": {"type": "categorical", "customColors": [
-                        {"value": "FAILURE", "color": "#D44953"}, {"value": "SUCCESS", "color": "#539F80"}
-                    ]}}, "label": {"show": True}, "innerRadius": 0.6
+                    "color": {"fieldName": "status", "scale": {"type": "categorical", "customColors": [{"value": "FAILURE", "color": "#D44953"}, {"value": "SUCCESS", "color": "#539F80"}]}},
+                    "label": {"show": True}, "innerRadius": 0.6
                 }}
-    
             elif w_def['type'] == "LINE":
                 query_fields = [{"name": "run_date", "expression": "`run_date`"}, {"name": "avg(failure_rate)", "expression": "AVG(`failure_rate`)"}]
                 spec = {"version": 3, "widgetType": "line", "encodings": {
                     "x": {"fieldName": "run_date", "scale": {"type": "temporal"}, "displayName": "Date"},
                     "y": {"fieldName": "avg(failure_rate)", "scale": {"type": "quantitative"}, "displayName": "Failure Rate (%)"}
                 }}
-    
             elif w_def['type'] == "BAR":
                 query_fields = [{"name": "task_key", "expression": "`task_key`"}, {"name": "sum(failure_count)", "expression": "SUM(`failure_count`)"}]
                 spec = {"version": 3, "widgetType": "bar", "encodings": {
                     "x": {"fieldName": "task_key", "scale": {"type": "categorical"}, "displayName": "Failing Task"},
                     "y": {"fieldName": "sum(failure_count)", "scale": {"type": "quantitative"}, "displayName": "Total Failures"}
                 }}
-    
             elif w_def['type'] == "TABLE":
                 query_fields = [{"name": c, "expression": f"`{c}`"} for c in ["task_key", "status", "timestamp", "payload_json"]]
                 spec = {"version": 3, "widgetType": "table", "encodings": {"columns": [
@@ -415,23 +410,19 @@ class DataPactClient:
     
             spec["frame"] = {"title": w_def['title'], "showTitle": True}
             layout.append({
-                "widget": {
-                    "name": f"w_{i}",
-                    "queries": [{"name": "main_query", "query": {"datasetName": w_def['ds_name'], "fields": query_fields, "disaggregated": False}}],
-                    "spec": spec
-                },
+                "widget": { "name": f"w_{i}", "queries": [{"name": "main_query", "query": {"datasetName": w_def['ds_name'], "fields": query_fields, "disaggregated": False}}], "spec": spec },
                 "position": w_def['pos']
             })
     
         dashboard_payload = {
             "displayName": dashboard_name,
             "parentPath": parent_path,
+            "warehouseId": warehouse_id,
             "datasets": datasets,
             "pages": [{"name": "main_page", "displayName": "DataPact Validation Results", "layout": layout, "pageType": "PAGE_TYPE_CANVAS"}]
         }
     
         draft = self.w.lakeview.create(
-            warehouse_id=warehouse_id,
             serialized_dashboard=json.dumps(dashboard_payload)
         )
     
