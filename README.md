@@ -1,8 +1,4 @@
-<br/>
-<p align="center">
-  <img src="https://imgur.com/a/7du3cMG" alt="DataPact Animated Demo">
-</p>
-<br/>
+![DataPact Dashboard](https://imgur.com/a/7du3cMG "DataPact Dashboard")
 
 # DataPact 🚀
 
