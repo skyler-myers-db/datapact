@@ -320,13 +320,13 @@ class DataPactClient:
     ) -> str:
         """
         Creates a polished, executive-ready Lakeview dashboard using the proven
-        serialized_dashboard method. This is the definitive, working solution that
-        corrects all previous API errors and layout issues.
+        and correct serialized_dashboard method. This definitive solution fixes all
+        previous API and layout errors.
         Returns the *draft* dashboard_id (needed by the dashboard task).
         """
-        display_name = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
+        dashboard_name = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
         parent_path  = f"{self.root_path}/dashboards"
-        draft_path   = f"{parent_path}/{display_name}.lvdash.json"
+        draft_path   = f"{parent_path}/{dashboard_name}.lvdash.json"
         self.w.workspace.mkdirs(parent_path)
     
         try:
@@ -389,8 +389,7 @@ class DataPactClient:
                     "angle": {"fieldName": "sum(task_count)", "scale": {"type": "quantitative"}},
                     "color": {"fieldName": "status", "scale": {"type": "categorical", "customColors": [
                         {"value": "FAILURE", "color": "#D44953"}, {"value": "SUCCESS", "color": "#539F80"}
-                    ]}},
-                    "label": {"show": True}, "innerRadius": 0.6
+                    ]}}, "label": {"show": True}, "innerRadius": 0.6
                 }}
     
             elif w_def['type'] == "LINE":
@@ -425,12 +424,12 @@ class DataPactClient:
             })
     
         dashboard_payload = {
+            "displayName": dashboard_name,
             "datasets": datasets,
             "pages": [{"name": "main_page", "displayName": "DataPact Validation Results", "layout": layout, "pageType": "PAGE_TYPE_CANVAS"}]
         }
     
         draft = self.w.lakeview.create(
-            display_name=display_name,
             parent_path=parent_path,
             warehouse_id=warehouse_id,
             serialized_dashboard=json.dumps(dashboard_payload)
