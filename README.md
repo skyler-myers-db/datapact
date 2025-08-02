@@ -1,4 +1,4 @@
-![DataPact Dashboard](https://imgur.com/a/7du3cMG "DataPact Dashboard")
+![DataPact Dashboard](https://i.imgur.com/Y4L121k.png "DataPact Dashboard")
 
 # DataPact 🚀
 
