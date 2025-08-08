@@ -52,6 +52,9 @@ jobs:
 
       # 5. Run the automated test suite with pytest
       #    This is the core quality gate. The 'env' section is critical.
+      - name: Install pytest
+        run: pip install pytest
+
       - name: Run Pytest Integration Tests
         env:
           # These secrets MUST be configured in your GitHub repository settings
