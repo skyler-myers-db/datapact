@@ -2,15 +2,18 @@
 # This config validates all 12 tables created by the `setup.py` script.
 # It is designed to showcase every major feature and edge case across multiple business domains.
 
+defaults: &defaults
+  source_catalog: "datapact_demo_catalog"
+  source_schema: "source_data"
+  target_catalog: "datapact_demo_catalog"
+  target_schema: "target_data"
+
 validations:
   # ============================ SALES DOMAIN ============================
   # 1. FAIL: The main 'users' table, testing multiple failure types at once.
   - task_key: "validate_users_comprehensive_FAIL"
-    source_catalog: "datapact_demo_catalog"
-    source_schema: "source_data"
+    <<: *defaults
     source_table: "users"
-    target_catalog: "datapact_demo_catalog"
-    target_schema: "target_data"
     target_table: "users"
     primary_keys: ["user_id"]
     count_tolerance: 0.01 # Fails (net loss of 1.7%)
@@ -24,11 +27,8 @@ validations:
 
   # 2. PASS: A large, 5M row table that is identical. All zero-tolerance checks will pass.
   - task_key: "validate_transactions_identity_PASS"
-    source_catalog: "datapact_demo_catalog"
-    source_schema: "source_data"
+    <<: *defaults
     source_table: "transactions"
-    target_catalog: "datapact_demo_catalog"
-    target_schema: "target_data"
     target_table: "transactions"
     primary_keys: ["transaction_id"]
     count_tolerance: 0.0
@@ -37,11 +37,8 @@ validations:
 
   # 3. PASS: An SCD pattern where 2% of prices change, which is within the 2.5% accepted threshold.
   - task_key: "validate_products_SCD_PASS"
-    source_catalog: "datapact_demo_catalog"
-    source_schema: "source_data"
+    <<: *defaults
     source_table: "products"
-    target_catalog: "datapact_demo_catalog"
-    target_schema: "target_data"
     target_table: "products"
     primary_keys: ["product_id"]
     pk_row_hash_check: true
@@ -50,11 +47,8 @@ validations:
   # ============================ MARKETING DOMAIN ============================
   # 4. FAIL: A small hash mismatch due to status changes. Will fail with a zero threshold.
   - task_key: "validate_campaigns_hash_FAIL"
-    source_catalog: "datapact_demo_catalog"
-    source_schema: "source_data"
+    <<: *defaults
     source_table: "campaigns"
-    target_catalog: "datapact_demo_catalog"
-    target_schema: "target_data"
     target_table: "campaigns"
     primary_keys: ["campaign_id"]
     pk_row_hash_check: true
@@ -62,11 +56,8 @@ validations:
 
   # 5. FAIL: A subtle 0.1% inflation of ad spend will cause the SUM aggregate check to fail.
   - task_key: "validate_ad_spend_agg_FAIL"
-    source_catalog: "datapact_demo_catalog"
-    source_schema: "source_data"
+    <<: *defaults
     source_table: "ad_spend"
-    target_catalog: "datapact_demo_catalog"
-    target_schema: "target_data"
     target_table: "ad_spend"
     primary_keys: ["ad_id"]
     agg_validations:
@@ -76,22 +67,16 @@ validations:
   # ============================ HR DOMAIN ============================
   # 6. FAIL: Count validation will fail due to leavers and new joiners.
   - task_key: "validate_employees_count_FAIL"
-    source_catalog: "datapact_demo_catalog"
-    source_schema: "source_data"
+    <<: *defaults
     source_table: "employees"
-    target_catalog: "datapact_demo_catalog"
-    target_schema: "target_data"
     target_table: "employees"
     primary_keys: ["employee_id"]
     count_tolerance: 0.0
 
   # 7. PASS: A simple, identical reference table.
   - task_key: "validate_salary_bands_PASS"
-    source_catalog: "datapact_demo_catalog"
-    source_schema: "source_data"
+    <<: *defaults
     source_table: "salary_bands"
-    target_catalog: "datapact_demo_catalog"
-    target_schema: "target_data"
     target_table: "salary_bands"
     primary_keys: ["band_id"]
     pk_row_hash_check: true
@@ -100,55 +85,40 @@ validations:
   # ============================ FINANCE DOMAIN ============================
   # 8. FAIL: A batch of 500 records is missing, causing a count failure.
   - task_key: "validate_gl_postings_count_FAIL"
-    source_catalog: "datapact_demo_catalog"
-    source_schema: "source_data"
+    <<: *defaults
     source_table: "gl_postings"
-    target_catalog: "datapact_demo_catalog"
-    target_schema: "target_data"
     target_table: "gl_postings"
     count_tolerance: 0.01 # Fails (2.5% missing)
 
   # ============================ LOGGING & OPS DOMAIN ============================
   # 9. PASS: Selective column hashing ignores the changing `view_ts`, so the test passes.
   - task_key: "validate_page_views_selective_hash_PASS"
-    source_catalog: "datapact_demo_catalog"
-    source_schema: "source_data"
+    <<: *defaults
     source_table: "page_views"
-    target_catalog: "datapact_demo_catalog"
-    target_schema: "target_data"
     target_table: "page_views"
     primary_keys: ["session_id"]
     pk_row_hash_check: true
     pk_hash_threshold: 0.0
     hash_columns: ["user_id", "session_id", "page_path"] # Ignore the changing view_ts
 
-  # 10. FAIL: An edge case with no primary key. The simple count validation will fail.
-  - task_key: "validate_logs_no_pk_FAIL"
-    source_catalog: "datapact_demo_catalog"
-    source_schema: "source_data"
+  # 10. PASS: An edge case with no primary key. The simple count validation will pass.
+  - task_key: "validate_logs_no_pk_PASS"
+    <<: *defaults
     source_table: "log_messages"
-    target_catalog: "datapact_demo_catalog"
-    target_schema: "target_data"
     target_table: "log_messages"
     count_tolerance: 0.0
 
   # 11. PASS: An edge case with two empty tables. Should pass with zero tolerance.
   - task_key: "validate_empty_tables_PASS"
-    source_catalog: "datapact_demo_catalog"
-    source_schema: "source_data"
+    <<: *defaults
     source_table: "empty_audits"
-    target_catalog: "datapact_demo_catalog"
-    target_schema: "target_data"
     target_table: "empty_audits"
     count_tolerance: 0.0
 
   # 12. FAIL: Null validation fails because extra nulls were introduced in the target table.
   - task_key: "validate_status_codes_nulls_FAIL"
-    source_catalog: "datapact_demo_catalog"
-    source_schema: "source_data"
+    <<: *defaults
     source_table: "status_codes"
-    target_catalog: "datapact_demo_catalog"
-    target_schema: "target_data"
     target_table: "status_codes"
     primary_keys: ["code"]
     null_validation_threshold: 0.01

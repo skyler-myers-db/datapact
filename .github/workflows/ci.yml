@@ -1,0 +1,68 @@
+name: DataPact CI/CD
+
+# --- Triggers: When this workflow will run ---
+on:
+  # Run on every push to the main branch
+  push:
+    branches: [main]
+  # Run on every pull request that targets the main branch
+  pull_request:
+    branches: [main]
+
+# --- Jobs: The sequence of tasks to perform ---
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest # Use a standard Linux runner
+    strategy:
+      matrix:
+        python-version: ["3.10.12", "3.11", "3.12", "3.13"]
+
+    steps:
+      # 1. Get the code from the repository
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # 2. Set up the correct Python version
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/pyproject.toml', '**/requirements.txt') }}-${{ matrix.python-version }}
+
+      # 3. Install all dependencies, including the 'dev' group
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      # 4. Run the linter/formatter to check for style issues
+      #    This ensures that even if a developer forgets to run pre-commit locally,
+      #    the pipeline will catch any style or quality issues.
+      - name: Lint and Format Check with pre-commit
+        run: |
+          pre-commit run --all-files
+
+      # 5. Run the automated test suite with pytest
+      #    This is the core quality gate. The 'env' section is critical.
+      - name: Set PYTHONPATH
+        run: echo "PYTHONPATH=$(PWD)" >> $GITHUB_ENV
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run Pytest Integration Tests
+        env:
+          # These secrets MUST be configured in your GitHub repository settings
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
+        run: |
+          pytest tests/
