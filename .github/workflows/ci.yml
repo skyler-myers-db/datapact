@@ -53,7 +53,7 @@ jobs:
       # 5. Run the automated test suite with pytest
       #    This is the core quality gate. The 'env' section is critical.
       - name: Set PYTHONPATH
-        run: echo "PYTHONPATH=$(pwd)/src" >> $GITHUB_ENV
+        run: echo "PYTHONPATH=$(PWD)" >> $GITHUB_ENV
 
       - name: Install pytest
         run: pip install pytest
