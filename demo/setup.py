@@ -141,7 +141,7 @@ def execute_sql_commands(
                 statement=command, warehouse_id=warehouse.id, wait_timeout="0s"
             )
             statement_id = resp.statement_id
-            if not statement_id:
+            if statement_id is None:
                 raise RuntimeError(f"Statement {i + 1} failed to get a statement ID.")
             timeout = timedelta(minutes=10)
             deadline = datetime.now() + timeout
