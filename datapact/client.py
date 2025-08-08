@@ -1015,7 +1015,7 @@ class DataPactClient:
     def _ensure_sql_warehouse(
         self: "DataPactClient",
         name: str,
-    ) -> sql_service.EndpointInfo:
+    ) -> sql_service.GetWarehouseResponse:
         """
         Finds a SQL warehouse by its name, ensures it is running, and returns its details.
 
@@ -1027,7 +1027,7 @@ class DataPactClient:
             name (str): The name of the SQL warehouse to locate and ensure is running.
 
         Returns:
-            sql_service.EndpointInfo: The information object for the located (and running) SQL warehouse.
+            sql_service.GetWarehouseResponse: Warehouse ID for the located (and running) SQL warehouse.
 
         Raises:
             ValueError: If the warehouse with the given name is not found, has no ID, or cannot be started.
@@ -1058,4 +1058,4 @@ class DataPactClient:
 
         if warehouse.id is None:
             raise ValueError(f"Warehouse '{name}' has no ID and cannot be retrieved.")
-        return warehouse
+        return self.w.warehouses.get(warehouse.id)
