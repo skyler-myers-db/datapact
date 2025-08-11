@@ -238,7 +238,7 @@ class DataPactClient:
             dbutils.widgets.text("job_name", "", "Job Name")
             dbutils.widgets.text("results_table_fqn", "", "Results Table FQN")
             dbutils.widgets.text("warehouse_id", "", "Warehouse ID")
-            
+
             job_name = dbutils.widgets.get("job_name")
             results_table_fqn = dbutils.widgets.get("results_table_fqn")
             warehouse_id = dbutils.widgets.get("warehouse_id")
@@ -250,7 +250,7 @@ class DataPactClient:
             w = WorkspaceClient() # Authenticates automatically inside Databricks
 
             dashboard_name = f"DataPact Results: {job_name}"
-            
+
             # Clean up old dashboard and associated queries
             for d in w.dashboards.list(q=dashboard_name):
                 if d.display_name == dashboard_name:
@@ -261,7 +261,7 @@ class DataPactClient:
                             if widget.visualization and widget.visualization.query:
                                 try: w.queries.delete(widget.visualization.query.query_id)
                                 except Exception: pass
-            
+
             queries = {
                 "run_summary": f"SELECT status, COUNT(1) as task_count FROM {results_table_fqn} WHERE run_id = (SELECT MAX(run_id) FROM {results_table_fqn} WHERE job_name = '{job_name}') GROUP BY status",
                 "failure_rate_over_time": f"SELECT to_date(timestamp) as run_date, COUNT(CASE WHEN status = 'FAILURE' THEN 1 END) * 100.0 / COUNT(1) as failure_rate_percent FROM {results_table_fqn} WHERE job_name = '{job_name}' GROUP BY 1 ORDER BY 1",
@@ -278,7 +278,7 @@ class DataPactClient:
                 elif name == "top_failing_tasks": viz_type = "CHART"; viz_options = {"globalSeriesType": "bar"}
                 viz = w.visualizations.create(query_id=query_obj.id, type=viz_type, name=f"Viz-{name}", options=viz_options)
                 widgets.append(sql_service.WidgetCreate(visualization_id=viz.id))
-            
+
             dashboard = w.dashboards.create(name=dashboard_name, warehouse_id=warehouse_id, widgets=widgets)
             dashboard_url = f"{w.config.host}/sql/dashboards/{dashboard.id}"
             logger.success(f"✅ Dashboard is ready! View it here: {dashboard_url}")
@@ -440,6 +440,31 @@ class DataPactClient:
                 ],
             },
             {
+                "name": "ds_failures_by_type",
+                "displayName": "Failures by Validation Type",
+                "queryLines": [
+                    q(
+                        "SELECT validation_type, failure_count FROM (\n"
+                        "  SELECT 'count' AS validation_type,\n"
+                        "         SUM(CASE WHEN get_json_object(to_json(result_payload), '$.count_validation.status') = 'FAIL' THEN 1 ELSE 0 END) AS failure_count\n"
+                        "  FROM {table} WHERE job_name='{job}'\n"
+                        "  UNION ALL\n"
+                        "  SELECT 'row_hash' AS validation_type,\n"
+                        "         SUM(CASE WHEN get_json_object(to_json(result_payload), '$.row_hash_validation.status') = 'FAIL' THEN 1 ELSE 0 END) AS failure_count\n"
+                        "  FROM {table} WHERE job_name='{job}'\n"
+                        "  UNION ALL\n"
+                        "  SELECT 'nulls' AS validation_type,\n"
+                        '         SUM(CASE WHEN to_json(result_payload) LIKE \'%"null_validation_%"%"status":"FAIL"%\' THEN 1 ELSE 0 END) AS failure_count\n'
+                        "  FROM {table} WHERE job_name='{job}'\n"
+                        "  UNION ALL\n"
+                        "  SELECT 'aggregates' AS validation_type,\n"
+                        '         SUM(CASE WHEN to_json(result_payload) LIKE \'%"agg_validation_%"%"status":"FAIL"%\' THEN 1 ELSE 0 END) AS failure_count\n'
+                        "  FROM {table} WHERE job_name='{job}'\n"
+                        ") t WHERE failure_count > 0 ORDER BY failure_count DESC"
+                    )
+                ],
+            },
+            {
                 "name": "ds_history",
                 "displayName": "Detailed Run History",
                 "queryLines": [
@@ -507,12 +532,24 @@ class DataPactClient:
                 "type": "BAR",
                 "title": "Top Failing Tasks",
                 "pos": {"x": 0, "y": 12, "width": 6, "height": 8},
+                "x_field": "task_key",
+                "y_field": "failure_count",
+                "y_agg": "SUM",
             },
             {
                 "ds_name": "ds_history",
                 "type": "TABLE",
                 "title": "Detailed Run History",
                 "pos": {"x": 0, "y": 20, "width": 6, "height": 7},
+            },
+            {
+                "ds_name": "ds_failures_by_type",
+                "type": "BAR",
+                "title": "Failures by Validation Type",
+                "pos": {"x": 0, "y": 27, "width": 6, "height": 7},
+                "x_field": "validation_type",
+                "y_field": "failure_count",
+                "y_agg": "SUM",
             },
         ]
 
@@ -617,26 +654,27 @@ class DataPactClient:
                 }
 
             elif w_def["type"] == "BAR":
+                x_field = w_def.get("x_field", "task_key")
+                y_field = w_def.get("y_field", "failure_count")
+                y_agg = w_def.get("y_agg", "SUM").upper()
+                y_alias = f"{y_agg.lower()}({y_field})"
                 query_fields = [
-                    {"name": "task_key", "expression": "`task_key`"},
-                    {
-                        "name": "sum(failure_count)",
-                        "expression": "SUM(`failure_count`)",
-                    },
+                    {"name": x_field, "expression": f"`{x_field}`"},
+                    {"name": y_alias, "expression": f"{y_agg}(`{y_field}`)"},
                 ]
                 spec = {
                     "version": 3,
                     "widgetType": "bar",
                     "encodings": {
                         "x": {
-                            "fieldName": "task_key",
+                            "fieldName": x_field,
                             "scale": {"type": "categorical"},
-                            "displayName": "Failing Task",
+                            "displayName": w_def.get("x_display", "Category"),
                         },
                         "y": {
-                            "fieldName": "sum(failure_count)",
+                            "fieldName": y_alias,
                             "scale": {"type": "quantitative"},
-                            "displayName": "Total Failures",
+                            "displayName": w_def.get("y_display", "Count"),
                         },
                     },
                 }

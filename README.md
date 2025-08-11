@@ -69,7 +69,7 @@ See DataPact's full potential with a realistic, large-scale demo. This will crea
 2.  **Permissions:** Permissions to create catalogs, schemas, tables, and run jobs.
 3.  **Python >= 3.13.5:** A local Python environment.
 4.  **Databricks CLI:** [Install and configure the Databricks CLI](https://docs.databricks.com/en/dev-tools/cli/install.html). For a seamless experience, we recommend adding a `datapact_warehouse` key to your profile in `~/.databrickscfg`.
-   
+
 ```ini
 [my-profile]
 host = https://dbc-....cloud.databricks.com
@@ -179,18 +179,18 @@ DataPact intelligently finds your SQL warehouse in the following order of preced
     ```bash
     datapact run --config ... --warehouse "my_cli_warehouse"
     ```
-    
+
 3.  **`DATAPACT_WAREHOUSE` Environment Variable:** If the flag is not present, DataPact will look for this environment variable.
 
     ```bash
     export DATAPACT_WAREHOUSE="my_env_var_warehouse"
     datapact run --config ...
     ```
-    
+
 5.  **`.databrickscfg` File (Recommended Default):** If neither of the above is found, DataPact looks for a `datapact_warehouse` key inside your active Databricks CLI profile (`~/.databrickscfg`). This is the recommended way to set your default warehouse.
 
     **Example `~/.databrickscfg` entry:**
-    
+
     ```ini
     [my-profile]
     host = https://dbc-....cloud.databricks.com

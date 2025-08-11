@@ -35,7 +35,7 @@ row_hash_metrics AS (
   SELECT COUNT(1) AS total_compared_rows,
          COALESCE(SUM(CASE WHEN s.row_hash <> t.row_hash THEN 1 ELSE 0 END), 0) AS mismatch_count
   FROM (
-    SELECT 
+    SELECT
       {% for pk in primary_keys %}`{{ pk }}`{% if not loop.last %}, {% endif %}{% endfor %},
       {% if hash_columns %}
       md5(to_json(struct({% for c in hash_columns %}`{{ c }}`{% if not loop.last %}, {% endif %}{% endfor %}))) AS row_hash
@@ -45,7 +45,7 @@ row_hash_metrics AS (
     FROM {{ source_fqn }}
   ) s
   INNER JOIN (
-    SELECT 
+    SELECT
       {% for pk in primary_keys %}`{{ pk }}`{% if not loop.last %}, {% endif %}{% endfor %},
       {% if hash_columns %}
       md5(to_json(struct({% for c in hash_columns %}`{{ c }}`{% if not loop.last %}, {% endif %}{% endfor %}))) AS row_hash
@@ -95,7 +95,7 @@ null_metrics_{{ col }} AS (
 {% else %},
 {% endif %}
 agg_metrics_{{ col }}_{{ agg }} AS (
-  SELECT 
+  SELECT
     TRY_CAST((SELECT {{ agg }}(`{{ col }}`) FROM {{ source_fqn }}) AS DECIMAL(38, 6)) AS source_value_{{ col }}_{{ agg }},
     TRY_CAST((SELECT {{ agg }}(`{{ col }}`) FROM {{ target_fqn }}) AS DECIMAL(38, 6)) AS target_value_{{ col }}_{{ agg }}
 )
@@ -104,10 +104,32 @@ agg_metrics_{{ col }}_{{ agg }} AS (
 {%- endfor -%}
 {%- endif %}
 
+{# Uniqueness validation CTE #}{% if uniqueness_columns and uniqueness_threshold is not none -%}
+{% if ns.first %}WITH
+{% set ns.first = False %}
+{% else %},
+{% endif %}
+uniqueness_metrics AS (
+  SELECT
+    COALESCE(SUM(cnt - 1), 0) AS source_duplicates,
+    (SELECT COALESCE(SUM(cnt - 1), 0) FROM (
+      SELECT COUNT(1) AS cnt FROM {{ target_fqn }}
+      GROUP BY {% for c in uniqueness_columns %}`{{ c }}`{% if not loop.last %}, {% endif %}{% endfor %}
+    ) t WHERE cnt > 1) AS target_duplicates,
+    (SELECT COUNT(1) FROM {{ source_fqn }}) AS source_total,
+    (SELECT COUNT(1) FROM {{ target_fqn }}) AS target_total
+  FROM (
+    SELECT COUNT(1) AS cnt FROM {{ source_fqn }}
+    GROUP BY {% for c in uniqueness_columns %}`{{ c }}`{% if not loop.last %}, {% endif %}{% endfor %}
+  ) s WHERE cnt > 1
+)
+{%- do cte_names.append('uniqueness_metrics') -%}
+{%- endif -%}
+
 {# SELECT with payload struct and overall status #}
-SELECT 
+SELECT
   parse_json(to_json(struct(
-    {%- set comma = joiner(', ') -%}
+  {%- set comma = joiner(',') -%}
     {# Count payload #}
     {%- if count_tolerance is not none -%}
     {{ comma() }}
@@ -165,6 +187,19 @@ SELECT
     {%- endfor -%}
     {%- endfor -%}
     {%- endif -%}
+
+  {# Uniqueness payload #}{% if uniqueness_columns and uniqueness_threshold is not none -%}
+    {{ comma() }}
+    struct(
+      FORMAT_NUMBER(source_duplicates, '#,##0') AS source_duplicates,
+      FORMAT_NUMBER(target_duplicates, '#,##0') AS target_duplicates,
+      FORMAT_STRING('%.2f%%', CAST(COALESCE(source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as source_dupe_percent,
+      FORMAT_STRING('%.2f%%', CAST(COALESCE(target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as target_dupe_percent,
+      FORMAT_STRING('%.2f%%', CAST({{ uniqueness_threshold }} * 100 AS DOUBLE)) AS threshold_percent,
+      CASE WHEN COALESCE(source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0), 0) <= {{ uniqueness_threshold }}
+            AND COALESCE(target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0), 0) <= {{ uniqueness_threshold }} THEN 'PASS' ELSE 'FAIL' END AS status
+    ) AS uniqueness_validation
+  {%- endif -%}
   ))) as result_payload,
   (
     {%- set andsep = joiner(' AND ') -%}
@@ -176,7 +211,7 @@ SELECT
     {%- endif -%}
     {%- if null_validation_columns and null_validation_threshold is not none -%}
     {%- for col in null_validation_columns -%}
-    {{ andsep() }} 
+    {{ andsep() }}
       {%- if primary_keys -%}
       COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(total_compared_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_threshold }}
       {%- else -%}
@@ -191,6 +226,10 @@ SELECT
     {%- endfor -%}
     {%- endfor -%}
     {%- endif -%}
+  {%- if uniqueness_columns and uniqueness_threshold is not none -%}
+  {{ andsep() }} COALESCE(source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0), 0) <= {{ uniqueness_threshold }}
+  {{ andsep() }} COALESCE(target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0), 0) <= {{ uniqueness_threshold }}
+  {%- endif -%}
   ) AS overall_validation_passed
 FROM
 {% if cte_names | length > 0 %}
