@@ -732,7 +732,7 @@ class DataPactClient:
             - Uploads SQL scripts to the workspace.
             - Logs job progress and results.
         """
-        warehouse: sql_service.GetWarehouseResponse = self._ensure_sql_warehouse(
+        warehouse: sql_service.EndpointInfo = self._ensure_sql_warehouse(
             warehouse_name
         )
         final_results_table = (
