@@ -804,7 +804,7 @@ class DataPactClient:
             name (str): The name of the SQL warehouse to locate and ensure is running.
 
         Returns:
-            sql_service.GetWarehouseResponse: Warehouse ID for the located (and running) SQL warehouse.
+            sql_service.GetWarehouseResponse: Details for the located (and running) SQL warehouse.
 
         Raises:
             ValueError: If the warehouse with the given name is not found, has no ID, or cannot be started.
