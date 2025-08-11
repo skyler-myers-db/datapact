@@ -403,30 +403,46 @@ class DataPactClient:
         datasets: list[dict[str, Any]] = [
             {
                 "name": "ds_kpi",
-                "displayName": "KPI Metrics (Latest Run)",
+                "displayName": "Executive KPI Dashboard",
                 "queryLines": [
                     q(
-                        "WITH latest_run AS (SELECT task_key, status FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')) "
-                        "SELECT COUNT(*) as total_tasks, COUNT(IF(status = 'FAILURE', 1, NULL)) as failed_tasks, "
-                        "COUNT(IF(status = 'SUCCESS', 1, NULL)) * 1.0 / COUNT(*) as success_rate_percent FROM latest_run"
+                        "WITH latest_run AS (SELECT task_key, status, started_at, completed_at, source_catalog, source_schema, source_table, result_payload "
+                        "FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')) "
+                        "SELECT COUNT(*) as total_tasks, "
+                        "COUNT(IF(status = 'FAILURE', 1, NULL)) as failed_tasks, "
+                        "ROUND(COUNT(IF(status = 'SUCCESS', 1, NULL)) * 100.0 / COUNT(*), 2) as success_rate_percent, "
+                        "ROUND(COUNT(IF(status = 'SUCCESS', 1, NULL)) * 100.0 / COUNT(*), 2) as data_quality_score, "
+                        "ROUND(AVG(CAST(DATEDIFF(SECOND, started_at, completed_at) AS DOUBLE)), 2) as avg_runtime_seconds, "
+                        "COUNT(DISTINCT CONCAT(source_catalog, '.', source_schema, '.', source_table)) as tables_validated "
+                        "FROM latest_run"
                     )
                 ],
             },
             {
                 "name": "ds_summary",
-                "displayName": "Run Summary",
+                "displayName": "Validation Status Overview",
                 "queryLines": [
                     q(
-                        "SELECT status, COUNT(*) as task_count FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') GROUP BY status"
+                        "SELECT CASE status "
+                        "WHEN 'SUCCESS' THEN 'Passed' "
+                        "WHEN 'FAILURE' THEN 'Failed' "
+                        "ELSE status END as status, "
+                        "COUNT(*) as task_count "
+                        "FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') "
+                        "GROUP BY status"
                     )
                 ],
             },
             {
                 "name": "ds_failure_rate",
-                "displayName": "Failure Rate Over Time",
+                "displayName": "Data Quality Trend Analysis",
                 "queryLines": [
                     q(
-                        "SELECT date(timestamp) as run_date, COUNT(IF(status='FAILURE',1,NULL))*100/COUNT(*) as failure_rate FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1"
+                        "SELECT date(timestamp) as run_date, "
+                        "ROUND(COUNT(IF(status='FAILURE',1,NULL))*100.0/COUNT(*), 2) as failure_rate, "
+                        "ROUND(COUNT(IF(status='SUCCESS',1,NULL))*100.0/COUNT(*), 2) as success_rate, "
+                        "COUNT(*) as validations_run "
+                        "FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1 DESC LIMIT 30"
                     )
                 ],
             },
@@ -441,29 +457,29 @@ class DataPactClient:
             },
             {
                 "name": "ds_failures_by_type",
-                "displayName": "Failures by Validation Type",
+                "displayName": "Issue Classification & Impact Analysis",
                 "queryLines": [
                     q(
                         "SELECT validation_type, failure_count FROM (\n"
-                        "  SELECT 'count' AS validation_type,\n"
+                        "  SELECT 'Row Count Mismatch' AS validation_type,\n"
                         "         SUM(CASE WHEN get_json_object(to_json(result_payload), '$.count_validation.status') = 'FAIL' THEN 1 ELSE 0 END) AS failure_count\n"
-                        "  FROM {table} WHERE job_name='{job}'\n"
+                        "  FROM {table} WHERE job_name='{job}' AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')\n"
                         "  UNION ALL\n"
-                        "  SELECT 'row_hash' AS validation_type,\n"
-                        "         SUM(CASE WHEN get_json_object(to_json(result_payload), '$.row_hash_validation.status') = 'FAIL' THEN 1 ELSE 0 END) AS failure_count\n"
-                        "  FROM {table} WHERE job_name='{job}'\n"
+                        "  SELECT 'Data Integrity Issue' AS validation_type,\n"
+                        "         SUM(CASE WHEN get_json_object(to_json(result_payload), '$.pk_hash_validation.status') = 'FAIL' THEN 1 ELSE 0 END) AS failure_count\n"
+                        "  FROM {table} WHERE job_name='{job}' AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')\n"
                         "  UNION ALL\n"
-                        "  SELECT 'nulls' AS validation_type,\n"
+                        "  SELECT 'Data Completeness' AS validation_type,\n"
                         '         SUM(CASE WHEN to_json(result_payload) LIKE \'%"null_validation_%"%"status":"FAIL"%\' THEN 1 ELSE 0 END) AS failure_count\n'
-                        "  FROM {table} WHERE job_name='{job}'\n"
+                        "  FROM {table} WHERE job_name='{job}' AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')\n"
                         "  UNION ALL\n"
-                        "  SELECT 'uniqueness' AS validation_type,\n"
+                        "  SELECT 'Duplicate Records' AS validation_type,\n"
                         '         SUM(CASE WHEN to_json(result_payload) LIKE \'%"uniqueness_validation_"%"status":"FAIL"%\' THEN 1 ELSE 0 END) AS failure_count\n'
-                        "  FROM {table} WHERE job_name='{job}'\n"
+                        "  FROM {table} WHERE job_name='{job}' AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')\n"
                         "  UNION ALL\n"
-                        "  SELECT 'aggregates' AS validation_type,\n"
+                        "  SELECT 'Business Rule Violation' AS validation_type,\n"
                         '         SUM(CASE WHEN to_json(result_payload) LIKE \'%"agg_validation_%"%"status":"FAIL"%\' THEN 1 ELSE 0 END) AS failure_count\n'
-                        "  FROM {table} WHERE job_name='{job}'\n"
+                        "  FROM {table} WHERE job_name='{job}' AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')\n"
                         ") t WHERE failure_count > 0 ORDER BY failure_count DESC"
                     )
                 ],
@@ -479,10 +495,19 @@ class DataPactClient:
             },
             {
                 "name": "ds_latest_run_details",
-                "displayName": "Latest Run Details",
+                "displayName": "Validation Results Dashboard",
                 "queryLines": [
                     q(
-                        "SELECT task_key, status, timestamp, to_json(result_payload) as payload_json, run_id, job_name FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') ORDER BY status DESC, task_key"
+                        "SELECT task_key, "
+                        "CASE status WHEN 'SUCCESS' THEN 'PASSED' WHEN 'FAILURE' THEN 'FAILED' ELSE status END as status, "
+                        "CONCAT(source_catalog, '.', source_schema, '.', source_table) as source_table, "
+                        "CONCAT(target_catalog, '.', target_schema, '.', target_table) as target_table, "
+                        "DATE_FORMAT(timestamp, 'yyyy-MM-dd HH:mm:ss') as timestamp, "
+                        "ROUND(CAST(DATEDIFF(SECOND, started_at, completed_at) AS DOUBLE), 2) as runtime_seconds, "
+                        "to_json(result_payload) as payload_json, "
+                        "run_id, job_name "
+                        "FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') "
+                        "ORDER BY CASE status WHEN 'FAILURE' THEN 0 ELSE 1 END, task_key"
                     )
                 ],
             },
@@ -495,47 +520,119 @@ class DataPactClient:
                     )
                 ],
             },
+            {
+                "name": "ds_business_impact",
+                "displayName": "Business Impact Assessment",
+                "queryLines": [
+                    q(
+                        "WITH impact_analysis AS ("
+                        "SELECT source_schema, "
+                        "COUNT(*) as total_validations, "
+                        "SUM(CASE WHEN status = 'FAILURE' THEN 1 ELSE 0 END) as failures, "
+                        "ROUND(100.0 * SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) / COUNT(*), 2) as quality_score, "
+                        "MAX(CASE WHEN status = 'FAILURE' THEN timestamp END) as last_failure "
+                        "FROM {table} "
+                        "WHERE job_name = '{job}' "
+                        "AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name = '{job}') "
+                        "GROUP BY source_schema) "
+                        "SELECT source_schema as schema_name, "
+                        "total_validations, failures, quality_score, "
+                        "CASE WHEN failures = 0 THEN 'Excellent' "
+                        "WHEN quality_score >= 95 THEN 'Good' "
+                        "WHEN quality_score >= 90 THEN 'Fair' "
+                        "ELSE 'Needs Attention' END as health_status, "
+                        "COALESCE(DATE_FORMAT(last_failure, 'yyyy-MM-dd HH:mm'), 'No failures') as last_issue "
+                        "FROM impact_analysis "
+                        "ORDER BY failures DESC, quality_score ASC"
+                    )
+                ],
+            },
+            {
+                "name": "ds_pipeline_health",
+                "displayName": "Data Pipeline Health Matrix",
+                "queryLines": [
+                    q(
+                        "SELECT CONCAT(source_schema, '.', source_table) as source_table, "
+                        "CONCAT(target_schema, '.', target_table) as target_table, "
+                        "COUNT(*) as checks_run, "
+                        "SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) as passed, "
+                        "SUM(CASE WHEN status = 'FAILURE' THEN 1 ELSE 0 END) as failed, "
+                        "ROUND(100.0 * SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) / COUNT(*), 2) as success_rate, "
+                        "MAX(timestamp) as last_validated "
+                        "FROM {table} WHERE job_name = '{job}' "
+                        "GROUP BY 1, 2 "
+                        "ORDER BY success_rate ASC, failed DESC"
+                    )
+                ],
+            },
         ]
 
         widget_definitions: list[dict[str, Any]] = [
             {
                 "ds_name": "ds_kpi",
-                "type": "COUNTER",
-                "title": "Total Tasks Executed",
-                "pos": {"x": 0, "y": 0, "width": 2, "height": 4},
-                "value_col": "total_tasks",
+                "type": "SUCCESS_RATE_COUNTER",
+                "title": "Data Quality Score",
+                "pos": {"x": 0, "y": 0, "width": 2, "height": 3},
+                "value_col": "data_quality_score",
             },
             {
                 "ds_name": "ds_kpi",
                 "type": "COUNTER",
-                "title": "Failed Tasks",
-                "pos": {"x": 4, "y": 0, "width": 2, "height": 4},
+                "title": "Critical Issues",
+                "pos": {"x": 2, "y": 0, "width": 2, "height": 3},
                 "value_col": "failed_tasks",
             },
             {
                 "ds_name": "ds_kpi",
-                "type": "SUCCESS_RATE_COUNTER",
-                "title": "Success Rate",
-                "pos": {"x": 2, "y": 0, "width": 2, "height": 4},
-                "value_col": "success_rate_percent",
+                "type": "COUNTER",
+                "title": "Tables Monitored",
+                "pos": {"x": 4, "y": 0, "width": 2, "height": 3},
+                "value_col": "tables_validated",
             },
             {
                 "ds_name": "ds_summary",
                 "type": "DONUT",
-                "title": "Run Summary",
-                "pos": {"x": 0, "y": 4, "width": 3, "height": 8},
+                "title": "Validation Status Distribution",
+                "pos": {"x": 0, "y": 3, "width": 3, "height": 6},
             },
             {
                 "ds_name": "ds_failure_rate",
                 "type": "LINE",
-                "title": "Failure Rate Over Time",
-                "pos": {"x": 3, "y": 4, "width": 3, "height": 8},
+                "title": "Quality Trend (30 Days)",
+                "pos": {"x": 3, "y": 3, "width": 3, "height": 6},
+            },
+            {
+                "ds_name": "ds_failures_by_type",
+                "type": "BAR",
+                "title": "Issue Classification",
+                "pos": {"x": 0, "y": 9, "width": 6, "height": 5},
+                "x_field": "validation_type",
+                "y_field": "failure_count",
+                "y_agg": "SUM",
+            },
+            {
+                "ds_name": "ds_business_impact",
+                "type": "TABLE",
+                "title": "Business Impact Assessment",
+                "pos": {"x": 0, "y": 14, "width": 6, "height": 5},
+            },
+            {
+                "ds_name": "ds_latest_run_details",
+                "type": "TABLE",
+                "title": "Latest Validation Results",
+                "pos": {"x": 0, "y": 19, "width": 6, "height": 6},
+            },
+            {
+                "ds_name": "ds_pipeline_health",
+                "type": "TABLE",
+                "title": "Pipeline Health Matrix",
+                "pos": {"x": 0, "y": 25, "width": 6, "height": 5},
             },
             {
                 "ds_name": "ds_top_failures",
                 "type": "BAR",
-                "title": "Top Failing Tasks",
-                "pos": {"x": 0, "y": 12, "width": 6, "height": 8},
+                "title": "Top Failing Validations",
+                "pos": {"x": 0, "y": 30, "width": 6, "height": 5},
                 "x_field": "task_key",
                 "y_field": "failure_count",
                 "y_agg": "SUM",
@@ -543,17 +640,8 @@ class DataPactClient:
             {
                 "ds_name": "ds_history",
                 "type": "TABLE",
-                "title": "Detailed Run History",
-                "pos": {"x": 0, "y": 20, "width": 6, "height": 7},
-            },
-            {
-                "ds_name": "ds_failures_by_type",
-                "type": "BAR",
-                "title": "Failures by Validation Type",
-                "pos": {"x": 0, "y": 27, "width": 6, "height": 7},
-                "x_field": "validation_type",
-                "y_field": "failure_count",
-                "y_agg": "SUM",
+                "title": "Audit Trail & Compliance Log",
+                "pos": {"x": 0, "y": 35, "width": 6, "height": 5},
             },
         ]
 
@@ -754,7 +842,7 @@ class DataPactClient:
             "pages": [
                 {
                     "name": "main_page",
-                    "displayName": "DataPact Validation Results",
+                    "displayName": "Executive Data Quality Dashboard",
                     "layout": layout_widgets,
                     "filters": [
                         {
@@ -768,7 +856,7 @@ class DataPactClient:
                 },
                 {
                     "name": "details_page",
-                    "displayName": "Run Details",
+                    "displayName": "Detailed Validation Analysis",
                     "layout": [
                         {
                             "widget": {

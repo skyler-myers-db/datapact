@@ -1,6 +1,13 @@
-# DataPact: Comprehensive "Enterprise-in-a-Box" Demo Validation Configuration
-# This config validates all 12 tables created by the `setup.py` script.
-# It is designed to showcase every major feature and edge case across multiple business domains.
+# DataPact: Enterprise Data Quality Validation Suite
+# Executive-Ready Configuration: Demonstrating Enterprise-Scale Data Governance
+# This configuration validates critical business data across multiple domains:
+# - Customer Experience (CRM)
+# - Financial Transactions 
+# - Marketing Operations
+# - Human Capital Management
+# - Financial Reporting & Compliance
+# - Digital Operations
+# - Regulatory Compliance
 
 defaults: &defaults
   source_catalog: "datapact_demo_catalog"
@@ -10,128 +17,184 @@ defaults: &defaults
 
 validations:
   # ============================ SALES DOMAIN ============================
-  # 1. FAIL: The main 'users' table, testing multiple failure types at once.
-  - task_key: "validate_users_comprehensive_FAIL"
+  # 1. CRITICAL: Customer Master Data - Multiple data quality issues detected
+  - task_key: "validate_customer_master_CRITICAL"
     <<: *defaults
     source_table: "users"
     target_table: "users"
     primary_keys: ["user_id"]
-    count_tolerance: 0.01 # Fails (net loss of 1.7%)
+    count_tolerance: 0.01 # FAILS: 1.7% customer records missing
     pk_row_hash_check: true
-    pk_hash_threshold: 0.04 # Fails (5% of emails changed)
-    null_validation_threshold: 0.02 # Fails (signup_date and status nulls increase > 2%)
-    null_validation_columns: ["signup_date", "status"]
+    pk_hash_threshold: 0.04 # FAILS: 5% PII masking errors
+    null_validation_threshold: 0.02 # FAILS: Critical date fields corrupted
+    null_validation_columns: ["signup_date", "status", "satisfaction_score"]
     uniqueness_columns: ["email"]
-    uniqueness_threshold: 0.0 # Enforce unique emails on both sides
+    uniqueness_threshold: 0.0 # FAILS: Duplicate email addresses detected
     agg_validations:
       - column: "total_logins"
-        validations: [{ agg: "SUM", tolerance: 0.05 }] # Fails (logins for CAN users doubled)
+        validations: [{ agg: "SUM", tolerance: 0.05 }] # FAILS: Canadian metrics doubled
+      - column: "lifetime_value"
+        validations: [{ agg: "AVG", tolerance: 0.01 }] # Monitor customer value drift
 
-  # 2. PASS: A large, 5M row table that is identical. All zero-tolerance checks will pass.
-  - task_key: "validate_transactions_identity_PASS"
+  # 2. SUCCESS: Financial Transactions - Perfect replication (5M+ records)
+  - task_key: "validate_financial_transactions_PASS"
     <<: *defaults
     source_table: "transactions"
     target_table: "transactions"
     primary_keys: ["transaction_id"]
-    count_tolerance: 0.0
+    count_tolerance: 0.0  # Zero tolerance for financial data
     pk_row_hash_check: true
-    pk_hash_threshold: 0.0
+    pk_hash_threshold: 0.0  # No changes acceptable
+    agg_validations:
+      - column: "amount"
+        validations: 
+          - { agg: "SUM", tolerance: 0.0 }  # Total revenue must match exactly
+          - { agg: "AVG", tolerance: 0.0 }  # Average transaction size
+      - column: "tax_amount"
+        validations: [{ agg: "SUM", tolerance: 0.0 }]  # Tax reporting critical
 
-  # 3. PASS: An SCD pattern where 2% of prices change, which is within the 2.5% accepted threshold.
-  - task_key: "validate_products_SCD_PASS"
+  # 3. APPROVED: Product Catalog - Price updates within business rules
+  - task_key: "validate_product_catalog_SCD_PASS"
     <<: *defaults
     source_table: "products"
     target_table: "products"
     primary_keys: ["product_id"]
     pk_row_hash_check: true
-    pk_hash_threshold: 0.025 # Allow for up to 2.5% of rows to change.
+    pk_hash_threshold: 0.025  # 2.5% threshold for approved price changes
+    agg_validations:
+      - column: "price"
+        validations: [{ agg: "AVG", tolerance: 0.10 }]  # 10% average price drift acceptable
+      - column: "inventory_count"
+        validations: [{ agg: "SUM", tolerance: 0.05 }]  # 5% inventory variance allowed
 
   # ============================ MARKETING DOMAIN ============================
-  # 4. FAIL: A small hash mismatch due to status changes. Will fail with a zero threshold.
-  - task_key: "validate_campaigns_hash_FAIL"
+  # 4. WARNING: Marketing Campaigns - Status synchronization issues
+  - task_key: "validate_marketing_campaigns_FAIL"
     <<: *defaults
     source_table: "campaigns"
     target_table: "campaigns"
     primary_keys: ["campaign_id"]
     pk_row_hash_check: true
-    pk_hash_threshold: 0.0
+    pk_hash_threshold: 0.0  # FAILS: Campaign status out of sync
+    agg_validations:
+      - column: "budget"
+        validations: [{ agg: "SUM", tolerance: 0.0 }]  # Total budget must match
+      - column: "conversions"
+        validations: [{ agg: "SUM", tolerance: 0.01 }]  # Conversion tracking
 
-  # 5. FAIL: A subtle 0.1% inflation of ad spend will cause the SUM aggregate check to fail.
-  - task_key: "validate_ad_spend_agg_FAIL"
+  # 5. CRITICAL: Digital Ad Spend - Currency conversion causing drift
+  - task_key: "validate_digital_ad_spend_FAIL"
     <<: *defaults
     source_table: "ad_spend"
     target_table: "ad_spend"
     primary_keys: ["ad_id"]
     agg_validations:
       - column: "daily_spend"
-        validations: [{ agg: "SUM", tolerance: 0.0005 }] # Tolerance is 0.05%, change is 0.1%
+        validations: [{ agg: "SUM", tolerance: 0.0005 }]  # FAILS: 0.1% FX drift exceeds 0.05% tolerance
+      - column: "impressions"
+        validations: [{ agg: "SUM", tolerance: 0.0 }]  # Impressions must match exactly
+      - column: "clicks"
+        validations: [{ agg: "SUM", tolerance: 0.0 }]  # Click tracking critical
 
   # ============================ HR DOMAIN ============================
-  # 6. FAIL: Count validation will fail due to leavers and new joiners.
-  - task_key: "validate_employees_count_FAIL"
+  # 6. HR ALERT: Employee Master - Month-end synchronization gap
+  - task_key: "validate_employee_master_FAIL"
     <<: *defaults
     source_table: "employees"
     target_table: "employees"
     primary_keys: ["employee_id"]
-    count_tolerance: 0.0
+    count_tolerance: 0.0  # FAILS: New hires/terminations not synced
+    agg_validations:
+      - column: "base_salary"
+        validations: [{ agg: "SUM", tolerance: 0.001 }]  # Payroll total critical
+      - column: "performance_rating"
+        validations: [{ agg: "AVG", tolerance: 0.05 }]  # Performance metrics
 
-  # 7. PASS: A simple, identical reference table.
-  - task_key: "validate_salary_bands_PASS"
+  # 7. COMPLIANT: Compensation Bands - Master data integrity maintained
+  - task_key: "validate_compensation_bands_PASS"
     <<: *defaults
     source_table: "salary_bands"
     target_table: "salary_bands"
     primary_keys: ["band_id"]
     pk_row_hash_check: true
-    pk_hash_threshold: 0.0
+    pk_hash_threshold: 0.0  # Zero tolerance for compensation data
+    uniqueness_columns: ["band_id", "level"]
+    uniqueness_threshold: 0.0  # No duplicate bands allowed
 
   # ============================ FINANCE DOMAIN ============================
-  # 8. FAIL: A batch of 500 records is missing, causing a count failure.
-  - task_key: "validate_gl_postings_count_FAIL"
+  # 8. SOX CRITICAL: General Ledger - Missing financial records
+  - task_key: "validate_general_ledger_SOX_FAIL"
     <<: *defaults
     source_table: "gl_postings"
     target_table: "gl_postings"
-    count_tolerance: 0.01 # Fails (2.5% missing)
+    primary_keys: ["posting_id"]
+    count_tolerance: 0.01  # FAILS: 2.5% missing exceeds 1% threshold
+    agg_validations:
+      - column: "amount"
+        validations: 
+          - { agg: "SUM", tolerance: 0.0 }  # Total must balance
+    null_validation_threshold: 0.0
+    null_validation_columns: ["account_code", "fiscal_period"]  # Required for reporting
 
   # ============================ LOGGING & OPS DOMAIN ============================
-  # 9. PASS: Selective column hashing ignores the changing `view_ts`, so the test passes.
-  - task_key: "validate_page_views_selective_hash_PASS"
+  # 9. ACCEPTABLE: Web Analytics - Timestamp drift within tolerance
+  - task_key: "validate_web_analytics_PASS"
     <<: *defaults
     source_table: "page_views"
     target_table: "page_views"
     primary_keys: ["session_id"]
     pk_row_hash_check: true
     pk_hash_threshold: 0.0
-    hash_columns: ["user_id", "session_id", "page_path"] # Ignore the changing view_ts
+    hash_columns: ["user_id", "session_id", "page_path", "device_type"]  # Ignore timestamp drift
+    agg_validations:
+      - column: "time_on_page_seconds"
+        validations: [{ agg: "AVG", tolerance: 0.05 }]  # Engagement metrics
 
-  # 10. FAIL: An edge case with no primary key. The simple count validation will fail.
-  - task_key: "validate_logs_no_pk_FAIL"
+  # 10. MONITORING: Application Logs - Volume mismatch detected
+  - task_key: "validate_application_logs_FAIL"
     <<: *defaults
     source_table: "log_messages"
     target_table: "log_messages"
-    count_tolerance: 0.0
+    count_tolerance: 0.0  # FAILS: Additional logs in target
+    # Note: No PK available for row-level validation
 
-  # 11. PASS: An edge case with two empty tables. Should pass with zero tolerance.
-  - task_key: "validate_empty_tables_PASS"
+  # 11. COMPLIANT: Audit Trail - Clean period (no violations)
+  - task_key: "validate_audit_trail_PASS"
     <<: *defaults
     source_table: "empty_audits"
     target_table: "empty_audits"
-    count_tolerance: 0.0
+    count_tolerance: 0.0  # Both empty - compliance period clean
 
-  # 12. FAIL: Null validation fails because extra nulls were introduced in the target table.
-  - task_key: "validate_status_codes_nulls_FAIL"
+  # 12. DATA QUALITY: API Status Codes - Category mapping failures
+  - task_key: "validate_api_status_codes_FAIL"
     <<: *defaults
     source_table: "status_codes"
     target_table: "status_codes"
     primary_keys: ["code"]
-    null_validation_threshold: 0.01
-    null_validation_columns: ["category"]
+    null_validation_threshold: 0.01  # FAILS: Critical codes losing categorization
+    null_validation_columns: ["category", "severity"]
+    pk_row_hash_check: true
+    pk_hash_threshold: 0.0
 
-  # ============================ CROSS-DOMAIN EXAMPLE ============================
-  # 13. PASS: Multi-column uniqueness check: enforces uniqueness on (email, country)
-  # Demonstrates alias naming in payload as `uniqueness_validation_email_country`.
-  - task_key: "validate_users_email_country_uniqueness_PASS"
+  # ============================ CROSS-DOMAIN VALIDATIONS ============================
+  
+  # 13. REGIONAL COMPLIANCE: Customer uniqueness by region
+  - task_key: "validate_customer_regional_uniqueness_PASS"
     <<: *defaults
     source_table: "users"
     target_table: "users"
     uniqueness_columns: ["email", "country"]
-    uniqueness_threshold: 0.0
+    uniqueness_threshold: 0.0  # Enforce regional data integrity
+  
+  # 14. PRIVACY COMPLIANCE: GDPR/CCPA request tracking
+  - task_key: "validate_privacy_requests_FAIL"
+    <<: *defaults
+    source_table: "privacy_requests"
+    target_table: "privacy_requests"
+    primary_keys: ["request_id"]
+    count_tolerance: 0.005  # FAILS: Recent requests missing
+    null_validation_threshold: 0.0
+    null_validation_columns: ["regulation", "status"]
+    agg_validations:
+      - column: "processing_days"
+        validations: [{ agg: "AVG", tolerance: 0.0 }]  # Compliance SLA tracking
