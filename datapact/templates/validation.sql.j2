@@ -194,6 +194,7 @@ SELECT
   ) AS overall_validation_passed
 FROM
 {% if cte_names | length > 0 %}
+{# NOTE: All CTEs in cte_names must return exactly one row. CROSS JOIN is only safe under this assumption. #}
 {{ cte_names | join(' CROSS JOIN ') }}
 {% else %}
 (SELECT 1 AS placeholder)
