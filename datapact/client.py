@@ -126,9 +126,10 @@ class DataPactClient:
     def __enter__(self: "DataPactClient") -> "DataPactClient":
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, exc_type, exc, tb):
         self.close()
-        # Do not suppress exceptions
+        # Do not suppress exceptions; returning False explicitly communicates this.
+        return False
 
     def _execute_sql(
         self: "DataPactClient",

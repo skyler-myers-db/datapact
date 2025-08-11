@@ -155,11 +155,10 @@ class TestSetupInfrastructure:
         client = object.__new__(DataPactClient)
         client.user_name = "test.user@example.com"
         execute_sql_mock = Mock()
-        setattr(client, "_execute_sql", execute_sql_mock)
+        client._execute_sql = execute_sql_mock  # assign mock directly for clarity
 
-        # Access the protected method using getattr to bypass the linting error
-        setup_method = getattr(client, "_setup_default_infrastructure")
-        setup_method("warehouse-123")
+        # Call the protected helper directly in tests
+        client._setup_default_infrastructure("warehouse-123")
 
         expected_calls = [
             call("CREATE CATALOG IF NOT EXISTS `datapact`", "warehouse-123"),
@@ -177,15 +176,16 @@ class TestDashboardNotebook:
 
     def test_generate_dashboard_notebook_content(self):
         """Test _generate_dashboard_notebook_content returns valid Python code."""
-        client = object.__new__(DataPactClient)
-        # Access the protected method using getattr to bypass the linting error
-        content = getattr(client, "_generate_dashboard_notebook_content")()
 
-        # Check that it contains expected imports and code
-        assert "from databricks.sdk import WorkspaceClient" in content
-        assert "dbutils.widgets.text" in content
-        assert 'dashboard_name = f"DataPact Results: {job_name}"' in content
-        assert "w.dashboards.create" in content
+    client = object.__new__(DataPactClient)
+    # Call the protected helper directly in tests
+    content = client._generate_dashboard_notebook_content()
+
+    # Check that it contains expected imports and code
+    assert "from databricks.sdk import WorkspaceClient" in content
+    assert "dbutils.widgets.text" in content
+    assert 'dashboard_name = f"DataPact Results: {job_name}"' in content
+    assert "w.dashboards.create" in content
 
 
 class TestEnsureDashboard:
