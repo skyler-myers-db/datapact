@@ -109,7 +109,8 @@ agg_metrics_{{ col }}_{{ agg }} AS (
 {%- endfor -%}
 {%- endif %}
 
-{# Uniqueness validation CTE #}{% if uniqueness_columns and uniqueness_threshold is not none -%}
+{# Uniqueness validation CTE #}
+{% if uniqueness_columns and uniqueness_threshold is not none -%}
 {% if ns.first %}WITH
 {% set ns.first = False %}
 {% else %},
