@@ -12,7 +12,7 @@
 			],
 			"isBackground": false,
 			"problemMatcher": [
-				"$pytest"
+				"$python"
 			],
 			"group": "build"
 		}
