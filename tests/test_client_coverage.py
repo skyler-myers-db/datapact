@@ -1,5 +1,7 @@
 """Comprehensive tests for DataPactClient to achieve full coverage."""
 
+# pylint: disable=protected-access
+
 from datetime import datetime
 from unittest.mock import Mock, patch, call
 
@@ -154,8 +156,10 @@ class TestSetupInfrastructure:
         """Test _setup_default_infrastructure creates catalog and schema."""
         client = object.__new__(DataPactClient)
         client.user_name = "test.user@example.com"
-        client._execute_sql = Mock()
+        execute_sql_mock = Mock()
+        client._execute_sql = execute_sql_mock  # assign mock directly for clarity
 
+        # Call the protected helper directly in tests
         client._setup_default_infrastructure("warehouse-123")
 
         expected_calls = [
@@ -166,7 +170,7 @@ class TestSetupInfrastructure:
             ),
             call("CREATE SCHEMA IF NOT EXISTS `datapact`.`results`", "warehouse-123"),
         ]
-        client._execute_sql.assert_has_calls(expected_calls)
+        execute_sql_mock.assert_has_calls(expected_calls)
 
 
 class TestDashboardNotebook:
@@ -175,6 +179,7 @@ class TestDashboardNotebook:
     def test_generate_dashboard_notebook_content(self):
         """Test _generate_dashboard_notebook_content returns valid Python code."""
         client = object.__new__(DataPactClient)
+        # Call the protected helper directly in tests
         content = client._generate_dashboard_notebook_content()
 
         # Check that it contains expected imports and code
@@ -312,7 +317,7 @@ class TestRunValidation:
 
     @patch("datapact.client.datetime")
     @patch("time.sleep")
-    def test_run_validation_success(self, mock_sleep, mock_datetime):
+    def test_run_validation_success(self, _mock_sleep, mock_datetime):
         """Test successful validation run."""
         # Setup time mocking
         mock_datetime.now.side_effect = [
@@ -629,12 +634,18 @@ class TestEnsureSqlWarehouse:
 
     def test_ensure_sql_warehouse_not_found(self):
         """Test when warehouse doesn't exist."""
-        client = object.__new__(DataPactClient)
-        client.w = Mock()
-        client.w.warehouses.list.return_value = []
+        with patch("datapact.client.WorkspaceClient") as mock_ws_class:
+            mock_ws = Mock()
+            mock_ws_class.return_value = mock_ws
+            mock_user = Mock()
+            mock_user.user_name = "test@example.com"
+            mock_ws.current_user.me.return_value = mock_user
+            mock_ws.warehouses.list.return_value = []
 
-        with pytest.raises(ValueError, match="SQL Warehouse 'missing' not found"):
-            client._ensure_sql_warehouse("missing")
+            client = DataPactClient(profile="TEST")
+
+            with pytest.raises(ValueError, match="SQL Warehouse 'missing' not found"):
+                client._ensure_sql_warehouse("missing")
 
     def test_ensure_sql_warehouse_no_id(self):
         """Test when warehouse has no ID."""

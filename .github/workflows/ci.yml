@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest # Use a standard Linux runner
     strategy:
       matrix:
-        python-version: ["3.10.12", "3.11", "3.12", "3.13"]
+        python-version: ["3.13.5"]
 
     steps:
       # 1. Get the code from the repository
@@ -27,6 +27,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+
+      - name: Verify Python version
+        run: python --version
 
       - name: Cache pip dependencies
         uses: actions/cache@v4
@@ -53,7 +56,7 @@ jobs:
       # 5. Run the automated test suite with pytest
       #    This is the core quality gate. The 'env' section is critical.
       - name: Set PYTHONPATH
-        run: echo "PYTHONPATH=$(PWD)" >> $GITHUB_ENV
+        run: echo "PYTHONPATH=$PWD" >> $GITHUB_ENV
 
       - name: Install pytest
         run: pip install pytest

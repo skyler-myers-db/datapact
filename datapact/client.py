@@ -15,24 +15,23 @@ from datetime import timedelta, datetime
 from typing import Any, Final
 
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service import jobs, sql as sql_service, workspace
+from databricks.sdk.service import sql as sql_service, workspace
 from databricks.sdk.service.jobs import (
     RunLifeCycleState,
-    Source,
-    JobRunAs,
-    JobSettings,
     Task,
-    SqlTask,
-    SqlTaskFile,
-    TaskDependency,
-    RunIf,
-    DashboardTask,
 )
 from databricks.sdk.service.dashboards import Dashboard
 from databricks.sdk.errors import NotFound
 from loguru import logger
 from jinja2 import Environment, PackageLoader
 from .config import DataPactConfig, ValidationTask
+from .sql_generator import render_validation_sql, render_aggregate_sql
+from .job_orchestrator import (
+    build_tasks,
+    add_dashboard_refresh_task,
+    ensure_job,
+    run_and_wait,
+)
 
 TERMINAL_STATES: list[RunLifeCycleState] = [
     RunLifeCycleState.TERMINATED,
@@ -102,15 +101,18 @@ class DataPactClient:
 
     def _jinja_env(self: "DataPactClient") -> Environment:
         """Return a cached Jinja2 environment configured for SQL template rendering."""
-        if self._env is None:
-            self._env = Environment(
+        env = getattr(self, "_env", None)
+        if env is None:
+            env = Environment(
                 loader=PackageLoader("datapact", "templates"),
                 autoescape=False,
                 trim_blocks=True,
                 lstrip_blocks=True,
                 extensions=["jinja2.ext.do"],
             )
-        return self._env
+            # Cache on self for subsequent calls (works even if __init__ was bypassed)
+            self._env = env
+        return env
 
     # Resource management helpers
     def close(self: "DataPactClient") -> None:
@@ -124,9 +126,9 @@ class DataPactClient:
     def __enter__(self: "DataPactClient") -> "DataPactClient":
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(self, exc_type, exc, tb):
         self.close()
-        # Do not suppress exceptions
+        # Do not suppress exceptions; returning False explicitly communicates this.
         return False
 
     def _execute_sql(
@@ -220,26 +222,8 @@ class DataPactClient:
         results_table: str,
         job_name: str,
     ) -> str:
-        """
-        Generates a complete, multi-statement SQL script for one validation task.
-
-        Args:
-            config: The config dictionary for a single validation task.
-            results_table: The FQN of the results table to insert into.
-            job_name: The name of the parent job, for logging.
-
-        Returns:
-            A string containing the complete, executable SQL for one validation task.
-        """
-        env = self._jinja_env()
-        template = env.get_template("validation.sql.j2")
-
-        # Convert the ValidationTask to a dictionary and add the additional fields
-        payload = config.model_dump()
-        payload["results_table"] = results_table
-        payload["job_name"] = job_name
-
-        return template.render(**payload).strip()
+        """Render validation SQL for a single task via the SQL generator module."""
+        return render_validation_sql(self._jinja_env(), config, results_table, job_name)
 
     def _generate_dashboard_notebook_content(self: "DataPactClient") -> str:
         """Generates the Python code for the dashboard-creation notebook."""
@@ -308,11 +292,18 @@ class DataPactClient:
         results_table: str,
         job_name: str,
     ) -> dict[str, str]:
-        """Generates and uploads all SQL files and the dashboard notebook for the job."""
+        """Generate and upload all SQL files required for the job.
+
+        This renders each validation task SQL from the Jinja templates and uploads
+        them to the Databricks workspace. It also renders the aggregate results SQL
+        from the dedicated template to avoid duplication and keep behavior consistent.
+        """
         logger.info("Generating and uploading job assets...")
         asset_paths: dict[str, str] = {}
         job_assets_path: str = f"{self.root_path}/job_assets/{job_name}"
         self.w.workspace.mkdirs(job_assets_path)
+
+        env = self._jinja_env()
 
         for task_config in config.validations:
             task_key: str = task_config.task_key
@@ -331,23 +322,8 @@ class DataPactClient:
             asset_paths[task_key] = script_path
 
         agg_script_path: str = f"{job_assets_path}/aggregate_results.sql"
-        agg_sql_script: str = textwrap.dedent(
-            f"""
-            WITH run_results AS (
-                SELECT task_key, status FROM {results_table} WHERE run_id = :run_id
-            ),
-            agg_metrics AS (
-                SELECT
-                  (SELECT COUNT(1) FROM run_results WHERE status = 'FAILURE') AS failure_count,
-                  (SELECT COLLECT_LIST(task_key) FROM run_results WHERE status = 'FAILURE') as failed_tasks
-            )
-            SELECT CASE
-                WHEN (SELECT failure_count FROM agg_metrics) > 0
-                THEN RAISE_ERROR(CONCAT('DataPact validation tasks failed: ', to_json((SELECT failed_tasks FROM agg_metrics))))
-                ELSE 'All DataPact validations passed successfully!'
-            END;
-        """
-        )
+        # Render from the shared Jinja template to keep content in sync with tests/assets
+        agg_sql_script: str = render_aggregate_sql(env, results_table)
         self.w.workspace.upload(
             path=agg_script_path,
             content=agg_sql_script.encode("utf-8"),
@@ -753,7 +729,9 @@ class DataPactClient:
             - Uploads SQL scripts to the workspace.
             - Logs job progress and results.
         """
-        warehouse: sql_service.EndpointInfo = self._ensure_sql_warehouse(warehouse_name)
+        warehouse: sql_service.GetWarehouseResponse = self._ensure_sql_warehouse(
+            warehouse_name
+        )
         final_results_table = (
             f"`{results_table}`"
             if results_table
@@ -788,122 +766,28 @@ class DataPactClient:
             "job_id": "{{job.id}}",
         }
 
-        tasks: list[Task] = [
-            Task(
-                task_key=tk,
-                sql_task=SqlTask(
-                    file=SqlTaskFile(path=asset_paths[tk], source=Source.WORKSPACE),
-                    warehouse_id=warehouse.id,
-                    parameters=sql_params,
-                ),
-            )
-            for tk in validation_task_keys
-        ]
-
-        tasks.append(
-            Task(
-                task_key="aggregate_results",
-                depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys],
-                run_if=RunIf.ALL_DONE,
-                sql_task=SqlTask(
-                    file=SqlTaskFile(
-                        path=asset_paths["aggregate_results"], source=Source.WORKSPACE
-                    ),
-                    warehouse_id=warehouse.id,
-                    parameters=sql_params,
-                ),
-            )
+        tasks: list[Task] = build_tasks(
+            asset_paths=asset_paths,
+            warehouse_id=warehouse.id,
+            validation_task_keys=validation_task_keys,
+            sql_params=sql_params,
+        )
+        add_dashboard_refresh_task(
+            tasks, dashboard_id=dashboard_id, warehouse_id=warehouse.id
         )
 
-        tasks.append(
-            Task(
-                task_key="refresh_dashboard",
-                depends_on=[TaskDependency(task_key="aggregate_results")],
-                run_if=RunIf.ALL_DONE,
-                dashboard_task=DashboardTask(
-                    dashboard_id=dashboard_id,
-                    warehouse_id=warehouse.id,
-                ),
-            )
+        job_id: int = ensure_job(
+            self.w, job_name=job_name, tasks=tasks, user_name=self.user_name
         )
-
-        runner_is_service_principal: bool = bool(
-            self.user_name and len(self.user_name) == 36 and "@" not in self.user_name
-        )
-        logger.info(
-            "Program is being run as a service principal"
-            if runner_is_service_principal
-            else "Program is not being run as a service principal"
-        )
-
-        job_settings: JobSettings = JobSettings(
-            name=job_name,
+        # Inject time providers so tests can patch datapact.client.datetime and time.sleep
+        run_and_wait(
+            self.w,
+            job_id=job_id,
             tasks=tasks,
-            run_as=JobRunAs(
-                service_principal_name=(
-                    self.user_name if runner_is_service_principal else None
-                ),
-                user_name=self.user_name if not runner_is_service_principal else None,
-            ),
+            timeout_hours=1,
+            now_fn=datetime.now,
+            sleep_fn=time.sleep,
         )
-
-        existing_job = next(iter(self.w.jobs.list(name=job_name)), None)
-        job_id: int | None = (
-            existing_job.job_id
-            if existing_job
-            else self.w.jobs.create(
-                name=job_settings.name,
-                tasks=job_settings.tasks,
-                run_as=job_settings.run_as,
-            ).job_id
-        )
-        if existing_job and job_id is not None:
-            self.w.jobs.reset(job_id=job_id, new_settings=job_settings)
-
-        if job_id is None:
-            raise ValueError("Job ID is None. Cannot launch job run.")
-        logger.info(f"Launching job {job_id}...")
-        run_info = self.w.jobs.run_now(job_id=job_id)
-        run_metadata = self.w.jobs.get_run(run_info.run_id)
-        logger.info(f"Run started! View progress here: {run_metadata.run_page_url}")
-
-        timeout: timedelta = timedelta(hours=1)
-        deadline: datetime = datetime.now() + timeout
-        while datetime.now() < deadline:
-            if run_metadata.run_id is None:
-                raise ValueError("Run ID is None. Cannot poll job run status.")
-            run = self.w.jobs.get_run(run_metadata.run_id)
-            life_cycle_state = getattr(run.state, "life_cycle_state", None)
-            if life_cycle_state is not None and life_cycle_state in TERMINAL_STATES:
-                break
-            finished_tasks = sum(
-                1
-                for t in (run.tasks or [])
-                if getattr(getattr(t, "state", None), "life_cycle_state", None)
-                in TERMINAL_STATES
-            )
-            logger.info(
-                f"Job state: {life_cycle_state}. Tasks finished: {finished_tasks}/{len(tasks)}"
-            )
-            time.sleep(30)
-        else:
-            raise TimeoutError("Job run timed out.")
-
-        if run.state is not None:
-            logger.info(f"Run finished with state: {run.state.result_state}")
-
-            if run.state.result_state == jobs.RunResultState.SUCCESS:
-                logger.success("✅ DataPact job completed successfully.")
-            else:
-                error_message = (
-                    run.state.state_message or "Job failed without a specific message."
-                )
-                logger.warning(
-                    f"DataPact job finished with failing tasks. Final state: {run.state.result_state}. Reason: {error_message} View details at {run.run_page_url}"
-                )
-        else:
-            logger.error("Run state is None. Unable to determine job result.")
-            raise RuntimeError("Run state is None. Unable to determine job result.")
 
     def _ensure_sql_warehouse(
         self: "DataPactClient",
@@ -920,7 +804,7 @@ class DataPactClient:
             name (str): The name of the SQL warehouse to locate and ensure is running.
 
         Returns:
-            sql_service.GetWarehouseResponse: Warehouse ID for the located (and running) SQL warehouse.
+            sql_service.GetWarehouseResponse: Details for the located (and running) SQL warehouse.
 
         Raises:
             ValueError: If the warehouse with the given name is not found, has no ID, or cannot be started.

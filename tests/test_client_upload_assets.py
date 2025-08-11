@@ -1,7 +1,14 @@
 import importlib
 
 from datapact.client import DataPactClient
-from datapact.config import DataPactConfig, ValidationTask
+
+# pylint: disable=protected-access
+from datapact.config import (
+    DataPactConfig,
+    ValidationTask,
+    AggValidation,
+    AggValidationDetail,
+)
 
 
 class _DummyWorkspace:
@@ -50,19 +57,19 @@ def test_upload_sql_scripts_renders_and_uploads_expected_files() -> None:
         null_validation_threshold=0.02,
         null_validation_columns=["v"],
         agg_validations=[
-            {
-                "column": "v",
-                "validations": [
-                    {"agg": "sum", "tolerance": 0.05},
+            AggValidation(
+                column="v",
+                validations=[
+                    AggValidationDetail(agg="sum", tolerance=0.05),
                 ],
-            }
+            )
         ],
     )
     config = DataPactConfig(validations=[task])
 
     # Bypass __init__ and attach a dummy workspace
     client = object.__new__(DataPactClient)
-    client.w = _DummyW()
+    client.w = _DummyW()  # type: ignore[assignment]
     client.root_path = "/tmp/datapact"
 
     results_table = "`datapact`.`results`.`run_history`"
@@ -72,7 +79,7 @@ def test_upload_sql_scripts_renders_and_uploads_expected_files() -> None:
     # Assert paths include both task and aggregate
     assert set(assets.keys()) == {"t_upload", "aggregate_results"}
 
-    dw = client.w.workspace
+    dw = client.w.workspace  # type: ignore[assignment]
     # Validate uploaded content for task matches the template render
     env = _make_env()
     validation_template = env.get_template("validation.sql.j2")
@@ -82,13 +89,13 @@ def test_upload_sql_scripts_renders_and_uploads_expected_files() -> None:
     expected_validation_sql = validation_template.render(**payload).strip()
 
     task_path = assets["t_upload"]
-    assert task_path in dw.uploads
-    assert dw.uploads[task_path].strip() == expected_validation_sql
+    assert task_path in dw.uploads  # type: ignore[attr-defined]
+    assert dw.uploads[task_path].strip() == expected_validation_sql  # type: ignore[attr-defined]
 
     # Validate aggregate_results content
     agg_template = env.get_template("aggregate_results.sql.j2")
     expected_agg_sql = agg_template.render(results_table=results_table).strip()
 
     agg_path = assets["aggregate_results"]
-    assert agg_path in dw.uploads
-    assert dw.uploads[agg_path].strip() == expected_agg_sql
+    assert agg_path in dw.uploads  # type: ignore[attr-defined]
+    assert dw.uploads[agg_path].strip() == expected_agg_sql  # type: ignore[attr-defined]
