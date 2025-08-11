@@ -12,9 +12,9 @@ import sys
 MIN_PY = (3, 13, 5)
 
 if sys.version_info < MIN_PY:
-	ver = ".".join(map(str, MIN_PY))
-	raise RuntimeError(
-		f"datapact requires Python {ver}+; found {sys.version.split()[0]}"
-	)
+    ver = ".".join(map(str, MIN_PY))
+    raise RuntimeError(
+        f"datapact requires Python {ver}+; found {sys.version.split()[0]}"
+    )
 
 # Public package API could be exported here in the future.

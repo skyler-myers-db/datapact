@@ -2,6 +2,7 @@
 
 This ensures tests run only on supported Python versions.
 """
+
 from __future__ import annotations
 
 import sys

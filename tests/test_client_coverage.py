@@ -155,10 +155,10 @@ class TestSetupInfrastructure:
         client = object.__new__(DataPactClient)
         client.user_name = "test.user@example.com"
         execute_sql_mock = Mock()
-        setattr(client, '_execute_sql', execute_sql_mock)
+        setattr(client, "_execute_sql", execute_sql_mock)
 
         # Access the protected method using getattr to bypass the linting error
-        setup_method = getattr(client, '_setup_default_infrastructure')
+        setup_method = getattr(client, "_setup_default_infrastructure")
         setup_method("warehouse-123")
 
         expected_calls = [
@@ -179,7 +179,7 @@ class TestDashboardNotebook:
         """Test _generate_dashboard_notebook_content returns valid Python code."""
         client = object.__new__(DataPactClient)
         # Access the protected method using getattr to bypass the linting error
-        content = getattr(client, '_generate_dashboard_notebook_content')()
+        content = getattr(client, "_generate_dashboard_notebook_content")()
 
         # Check that it contains expected imports and code
         assert "from databricks.sdk import WorkspaceClient" in content
@@ -633,14 +633,14 @@ class TestEnsureSqlWarehouse:
 
     def test_ensure_sql_warehouse_not_found(self):
         """Test when warehouse doesn't exist."""
-        with patch('datapact.client.WorkspaceClient') as mock_ws_class:
+        with patch("datapact.client.WorkspaceClient") as mock_ws_class:
             mock_ws = Mock()
             mock_ws_class.return_value = mock_ws
             mock_user = Mock()
             mock_user.user_name = "test@example.com"
             mock_ws.current_user.me.return_value = mock_user
             mock_ws.warehouses.list.return_value = []
-            
+
             client = DataPactClient(profile="TEST")
 
             with pytest.raises(ValueError, match="SQL Warehouse 'missing' not found"):
