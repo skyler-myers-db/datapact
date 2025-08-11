@@ -1,0 +1,13 @@
+WITH run_results AS (
+    SELECT * FROM {{ results_table }} WHERE run_id = :run_id
+),
+agg_metrics AS (
+    SELECT
+      (SELECT COUNT(1) FROM run_results WHERE status = 'FAILURE') AS failure_count,
+      (SELECT COLLECT_LIST(task_key) FROM run_results WHERE status = 'FAILURE') as failed_tasks
+)
+SELECT CASE
+    WHEN (SELECT failure_count FROM agg_metrics) > 0
+    THEN RAISE_ERROR(CONCAT('DataPact validation tasks failed: ', to_json((SELECT failed_tasks FROM agg_metrics))))
+    ELSE 'All DataPact validations passed successfully!'
+END;

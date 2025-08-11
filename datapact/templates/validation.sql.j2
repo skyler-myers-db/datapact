@@ -1,0 +1,211 @@
+{# Inputs and helpers #}
+{% set task_key_ = task_key %}
+{% set source_fqn = '`' ~ source_catalog ~ '`.`' ~ source_schema ~ '`.`' ~ source_table ~ '`' %}
+{% set target_fqn = '`' ~ target_catalog ~ '`.`' ~ target_schema ~ '`.`' ~ target_table ~ '`' %}
+{% set cte_names = [] %}
+
+{# Begin view creation #}
+{% set has_any = (count_tolerance is not none) or (pk_row_hash_check and primary_keys) or (null_validation_columns and null_validation_threshold is not none) or (agg_validations) %}
+{% if not has_any %}
+CREATE OR REPLACE TEMP VIEW final_metrics_view AS SELECT true as overall_validation_passed, parse_json(to_json(struct('No validations configured for task {{ task_key_ }}' as message))) as result_payload;
+{% else %}
+CREATE OR REPLACE TEMP VIEW final_metrics_view AS
+{% set ns = namespace(first=True) %}
+{# Count metrics CTE #}
+{% if count_tolerance is not none %}
+{% if ns.first %}WITH
+{% set ns.first = False %}
+{% else %},
+{% endif %}
+count_metrics AS (
+  SELECT
+    (SELECT COUNT(1) FROM {{ source_fqn }}) AS source_count,
+    (SELECT COUNT(1) FROM {{ target_fqn }}) AS target_count
+)
+{%- do cte_names.append('count_metrics') -%}
+{%- endif %}
+
+{# Row hash CTE #}
+{% if pk_row_hash_check and primary_keys %}
+{% if ns.first %}WITH
+{% set ns.first = False %}
+{% else %},
+{% endif %}
+row_hash_metrics AS (
+  SELECT COUNT(1) AS total_compared_rows,
+         COALESCE(SUM(CASE WHEN s.row_hash <> t.row_hash THEN 1 ELSE 0 END), 0) AS mismatch_count
+  FROM (
+    SELECT 
+      {% for pk in primary_keys %}`{{ pk }}`{% if not loop.last %}, {% endif %}{% endfor %},
+      {% if hash_columns %}
+      md5(to_json(struct({% for c in hash_columns %}`{{ c }}`{% if not loop.last %}, {% endif %}{% endfor %}))) AS row_hash
+      {% else %}
+      md5(to_json(struct(*))) AS row_hash
+      {% endif %}
+    FROM {{ source_fqn }}
+  ) s
+  INNER JOIN (
+    SELECT 
+      {% for pk in primary_keys %}`{{ pk }}`{% if not loop.last %}, {% endif %}{% endfor %},
+      {% if hash_columns %}
+      md5(to_json(struct({% for c in hash_columns %}`{{ c }}`{% if not loop.last %}, {% endif %}{% endfor %}))) AS row_hash
+      {% else %}
+      md5(to_json(struct(*))) AS row_hash
+      {% endif %}
+    FROM {{ target_fqn }}
+  ) t
+  ON {% for pk in primary_keys %}s.`{{ pk }}` = t.`{{ pk }}`{% if not loop.last %} AND {% endif %}{% endfor %}
+)
+{%- do cte_names.append('row_hash_metrics') -%}
+{%- endif %}
+
+{# Null validations CTEs #}
+{% if null_validation_columns and null_validation_threshold is not none %}
+{% for col in null_validation_columns %}
+{% if ns.first %}WITH
+{% set ns.first = False %}
+{% else %},
+{% endif %}
+null_metrics_{{ col }} AS (
+  {% if primary_keys %}
+  SELECT
+    SUM(CASE WHEN s.`{{ col }}` IS NULL THEN 1 ELSE 0 END) as source_nulls_{{ col }},
+    SUM(CASE WHEN t.`{{ col }}` IS NULL THEN 1 ELSE 0 END) as target_nulls_{{ col }},
+    COUNT(1) as total_compared_{{ col }}
+  FROM {{ source_fqn }} s JOIN {{ target_fqn }} t
+    ON {% for pk in primary_keys %}s.`{{ pk }}` = t.`{{ pk }}`{% if not loop.last %} AND {% endif %}{% endfor %}
+  {% else %}
+  SELECT
+    (SELECT COUNT(1) FROM {{ source_fqn }} WHERE `{{ col }}` IS NULL) as source_nulls_{{ col }},
+    (SELECT COUNT(1) FROM {{ target_fqn }} WHERE `{{ col }}` IS NULL) as target_nulls_{{ col }}
+  {% endif %}
+)
+{%- do cte_names.append('null_metrics_' ~ col) -%}
+{%- endfor -%}
+{%- endif %}
+
+{# Aggregate validations CTEs #}
+{% if agg_validations %}
+{% for av in agg_validations %}
+{% set col = av.column %}
+{% for v in av.validations %}
+{% set agg = v.agg.upper() %}
+{% if ns.first %}WITH
+{% set ns.first = False %}
+{% else %},
+{% endif %}
+agg_metrics_{{ col }}_{{ agg }} AS (
+  SELECT 
+    TRY_CAST((SELECT {{ agg }}(`{{ col }}`) FROM {{ source_fqn }}) AS DECIMAL(38, 6)) AS source_value_{{ col }}_{{ agg }},
+    TRY_CAST((SELECT {{ agg }}(`{{ col }}`) FROM {{ target_fqn }}) AS DECIMAL(38, 6)) AS target_value_{{ col }}_{{ agg }}
+)
+{%- do cte_names.append('agg_metrics_' ~ col ~ '_' ~ agg) -%}
+{%- endfor -%}
+{%- endfor -%}
+{%- endif %}
+
+{# SELECT with payload struct and overall status #}
+SELECT 
+  parse_json(to_json(struct(
+    {%- set comma = joiner(', ') -%}
+    {# Count payload #}
+    {%- if count_tolerance is not none -%}
+    {{ comma() }}
+    struct(
+      FORMAT_NUMBER(source_count, '#,##0') AS source_count,
+      FORMAT_NUMBER(target_count, '#,##0') AS target_count,
+      FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
+      FORMAT_STRING('%.2f%%', CAST({{ count_tolerance }} * 100 AS DOUBLE)) AS tolerance_percent,
+      CASE WHEN COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= {{ count_tolerance }} THEN 'PASS' ELSE 'FAIL' END AS status
+    ) AS count_validation
+    {%- endif -%}
+
+    {# Row hash payload #}
+    {%- if pk_row_hash_check and primary_keys -%}
+    {{ comma() }}
+    struct(
+      FORMAT_NUMBER(total_compared_rows, '#,##0') AS compared_rows,
+      FORMAT_NUMBER(mismatch_count, '#,##0') AS mismatch_count,
+      FORMAT_STRING('%.2f%%', CAST(COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) * 100 AS DOUBLE)) as mismatch_percent,
+      FORMAT_STRING('%.2f%%', CAST({{ pk_hash_threshold if pk_hash_threshold is not none else 0.0 }} * 100 AS DOUBLE)) AS threshold_percent,
+      CASE WHEN COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= {{ pk_hash_threshold if pk_hash_threshold is not none else 0.0 }} THEN 'PASS' ELSE 'FAIL' END AS status
+    ) AS row_hash_validation
+    {%- endif -%}
+
+    {# Null payloads #}
+    {%- if null_validation_columns and null_validation_threshold is not none -%}
+    {%- for col in null_validation_columns -%}
+    {{ comma() }}
+    struct(
+      FORMAT_NUMBER(source_nulls_{{ col }}, '#,##0') AS source_nulls,
+      FORMAT_NUMBER(target_nulls_{{ col }}, '#,##0') AS target_nulls,
+      {%- if primary_keys -%}
+      FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(total_compared_{{ col }} AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
+      {%- else -%}
+      FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
+      {%- endif -%}
+      FORMAT_STRING('%.2f%%', CAST({{ null_validation_threshold }} * 100 AS DOUBLE)) AS threshold_percent,
+  CASE WHEN {% if primary_keys %}COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(total_compared_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_threshold }}{% else %}CASE WHEN source_nulls_{{ col }} = 0 THEN target_nulls_{{ col }} = 0 ELSE COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_threshold }} END{% endif %} THEN 'PASS' ELSE 'FAIL' END AS status
+    ) AS null_validation_{{ col }}
+    {%- endfor -%}
+    {%- endif -%}
+
+    {# Aggregate payloads #}
+    {%- if agg_validations -%}
+    {%- for av in agg_validations -%}
+    {%- for v in av.validations -%}
+    {{ comma() }}
+    struct(
+      FORMAT_NUMBER(source_value_{{ av.column }}_{{ v.agg.upper() }}, '#,##0.00') as source_value,
+      FORMAT_NUMBER(target_value_{{ av.column }}_{{ v.agg.upper() }}, '#,##0.00') as target_value,
+      FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_value_{{ av.column }}_{{ v.agg.upper() }} - target_value_{{ av.column }}_{{ v.agg.upper() }}) / NULLIF(ABS(CAST(source_value_{{ av.column }}_{{ v.agg.upper() }} AS DOUBLE)), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
+      FORMAT_STRING('%.2f%%', CAST({{ v.tolerance }} * 100 AS DOUBLE)) AS tolerance_percent,
+      CASE WHEN COALESCE(ABS(source_value_{{ av.column }}_{{ v.agg.upper() }} - target_value_{{ av.column }}_{{ v.agg.upper() }}) / NULLIF(ABS(CAST(source_value_{{ av.column }}_{{ v.agg.upper() }} AS DOUBLE)), 0), 0) <= {{ v.tolerance }} THEN 'PASS' ELSE 'FAIL' END AS status
+    ) AS agg_validation_{{ av.column }}_{{ v.agg.upper() }}
+    {%- endfor -%}
+    {%- endfor -%}
+    {%- endif -%}
+  ))) as result_payload,
+  (
+    {%- set andsep = joiner(' AND ') -%}
+    {%- if count_tolerance is not none -%}
+    {{ andsep() }} COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= {{ count_tolerance }}
+    {%- endif -%}
+    {%- if pk_row_hash_check and primary_keys -%}
+    {{ andsep() }} COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= {{ pk_hash_threshold if pk_hash_threshold is not none else 0.0 }}
+    {%- endif -%}
+    {%- if null_validation_columns and null_validation_threshold is not none -%}
+    {%- for col in null_validation_columns -%}
+    {{ andsep() }} 
+      {%- if primary_keys -%}
+      COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(total_compared_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_threshold }}
+      {%- else -%}
+      CASE WHEN source_nulls_{{ col }} = 0 THEN target_nulls_{{ col }} = 0 ELSE COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_threshold }} END
+      {%- endif -%}
+    {%- endfor -%}
+    {%- endif -%}
+    {%- if agg_validations -%}
+    {%- for av in agg_validations -%}
+    {%- for v in av.validations -%}
+    {{ andsep() }} COALESCE(ABS(source_value_{{ av.column }}_{{ v.agg.upper() }} - target_value_{{ av.column }}_{{ v.agg.upper() }}) / NULLIF(ABS(CAST(source_value_{{ av.column }}_{{ v.agg.upper() }} AS DOUBLE)), 0), 0) <= {{ v.tolerance }}
+    {%- endfor -%}
+    {%- endfor -%}
+    {%- endif -%}
+  ) AS overall_validation_passed
+FROM
+{% if cte_names | length > 0 %}
+{# NOTE: All CTEs in cte_names must return exactly one row. CROSS JOIN is only safe under this assumption. #}
+{{ cte_names | join(' CROSS JOIN ') }}
+{% else %}
+(SELECT 1 AS placeholder)
+{% endif %}
+;
+{% endif %}
+
+INSERT INTO {{ results_table }} (task_key, status, run_id, job_id, job_name, timestamp, result_payload)
+SELECT '{{ task_key_ }}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
+:run_id, :job_id, '{{ job_name }}', current_timestamp(), result_payload FROM final_metrics_view;
+
+SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: {{ task_key_ }}. Payload: \n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false;
+
+SELECT to_json(result_payload, map('pretty', 'true')) AS result FROM final_metrics_view WHERE overall_validation_passed = true;

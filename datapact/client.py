@@ -31,6 +31,7 @@ from databricks.sdk.service.jobs import (
 from databricks.sdk.service.dashboards import Dashboard
 from databricks.sdk.errors import NotFound
 from loguru import logger
+from jinja2 import Environment, PackageLoader
 from .config import DataPactConfig, ValidationTask
 
 TERMINAL_STATES: list[RunLifeCycleState] = [
@@ -96,6 +97,37 @@ class DataPactClient:
         self.user_name: str | None = self.w.current_user.me().user_name
         self.root_path: str = f"/Users/{self.user_name}/datapact"
         self.w.workspace.mkdirs(self.root_path)
+        # Cache for Jinja2 Environment to avoid re-instantiation per render
+        self._env: Environment | None = None
+
+    def _jinja_env(self: "DataPactClient") -> Environment:
+        """Return a cached Jinja2 environment configured for SQL template rendering."""
+        if self._env is None:
+            self._env = Environment(
+                loader=PackageLoader("datapact", "templates"),
+                autoescape=False,
+                trim_blocks=True,
+                lstrip_blocks=True,
+                extensions=["jinja2.ext.do"],
+            )
+        return self._env
+
+    # Resource management helpers
+    def close(self: "DataPactClient") -> None:
+        """Release cached resources held by this client.
+
+        Currently clears the cached Jinja2 Environment to avoid keeping template
+        loader references alive for long-lived client instances.
+        """
+        self._env = None
+
+    def __enter__(self: "DataPactClient") -> "DataPactClient":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self.close()
+        # Do not suppress exceptions
+        return False
 
     def _execute_sql(
         self: "DataPactClient",
@@ -199,154 +231,15 @@ class DataPactClient:
         Returns:
             A string containing the complete, executable SQL for one validation task.
         """
-        task_key: str = config.task_key
-        source_fqn = f"`{config.source_catalog}`.`{config.source_schema}`.`{config.source_table}`"
-        target_fqn = f"`{config.target_catalog}`.`{config.target_schema}`.`{config.target_table}`"
-        ctes, payload_structs, overall_clauses = [], [], []
+        env = self._jinja_env()
+        template = env.get_template("validation.sql.j2")
 
-        if config.count_tolerance is not None:
-            tolerance: float = config.count_tolerance
-            ctes.append(
-                f"count_metrics AS (SELECT (SELECT COUNT(1) FROM {source_fqn}) AS source_count, (SELECT COUNT(1) FROM {target_fqn}) AS target_count)"
-            )
-            check = f"COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= {tolerance}"
-            payload_structs.append(
-                textwrap.dedent(
-                    f"""
-            struct(
-                FORMAT_NUMBER(source_count, '#,##0') AS source_count,
-                FORMAT_NUMBER(target_count, '#,##0') AS target_count,
-                FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
-                FORMAT_STRING('%.2f%%', CAST({tolerance} * 100 AS DOUBLE)) AS tolerance_percent,
-                CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
-            ) AS count_validation"""
-                )
-            )
-            overall_clauses.append(check)
+        # Convert the ValidationTask to a dictionary and add the additional fields
+        payload = config.model_dump()
+        payload["results_table"] = results_table
+        payload["job_name"] = job_name
 
-        if config.pk_row_hash_check and config.primary_keys:
-            hash_pks: list[str] = config.primary_keys
-            hash_threshold: float = config.pk_hash_threshold or 0.0
-            hash_cols: list[str] | None = config.hash_columns
-            hash_expr = f"md5(to_json(struct({', '.join([f'`{c}`' for c in hash_cols]) if hash_cols else '*'})))"
-            pk_cols_str = ", ".join([f"`{pk}`" for pk in hash_pks])
-            join_expr = " AND ".join([f"s.`{pk}` = t.`{pk}`" for pk in hash_pks])
-            ctes.append(
-                f"row_hash_metrics AS (SELECT COUNT(1) AS total_compared_rows, COALESCE(SUM(CASE WHEN s.row_hash <> t.row_hash THEN 1 ELSE 0 END), 0) AS mismatch_count FROM (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {source_fqn}) s INNER JOIN (SELECT {pk_cols_str}, {hash_expr} AS row_hash FROM {target_fqn}) t ON {join_expr})"
-            )
-            check = f"COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= {hash_threshold}"
-            payload_structs.append(
-                textwrap.dedent(
-                    f"""
-            struct(
-                FORMAT_NUMBER(total_compared_rows, '#,##0') AS compared_rows,
-                FORMAT_NUMBER(mismatch_count, '#,##0') AS mismatch_count,
-                FORMAT_STRING('%.2f%%', CAST(COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) * 100 AS DOUBLE)) as mismatch_percent,
-                FORMAT_STRING('%.2f%%', CAST({hash_threshold} * 100 AS DOUBLE)) AS threshold_percent,
-                CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
-            ) AS row_hash_validation"""
-                )
-            )
-            overall_clauses.append(check)
-
-        if config.null_validation_columns and config.null_validation_threshold:
-            null_threshold: float = config.null_validation_threshold
-            null_pks: list[str] | None = config.primary_keys
-            for col in config.null_validation_columns:
-                cte_key: str = f"null_metrics_{col}"
-                src_null_alias: str = f"source_nulls_{col}"
-                tgt_null_alias: str = f"target_nulls_{col}"
-                total_alias: str = f"total_compared_{col}"
-                diff_calculation: str = ""
-
-                if null_pks:
-                    join_expr = " AND ".join(
-                        [f"s.`{pk}` = t.`{pk}`" for pk in null_pks]
-                    )
-                    ctes.append(
-                        f"""{cte_key} AS (SELECT
-                        SUM(CASE WHEN s.`{col}` IS NULL THEN 1 ELSE 0 END) as {src_null_alias},
-                        SUM(CASE WHEN t.`{col}` IS NULL THEN 1 ELSE 0 END) as {tgt_null_alias},
-                        COUNT(1) as {total_alias}
-                        FROM {source_fqn} s JOIN {target_fqn} t ON {join_expr})"""
-                    )
-                    check = f"COALESCE(ABS({src_null_alias} - {tgt_null_alias}) / NULLIF(CAST({total_alias} AS DOUBLE), 0), 0) <= {null_threshold}"
-                    diff_calculation = f"COALESCE(ABS({src_null_alias} - {tgt_null_alias}) / NULLIF(CAST({total_alias} AS DOUBLE), 0), 0)"
-                else:
-                    ctes.append(
-                        f"""{cte_key} AS (SELECT
-                        (SELECT COUNT(1) FROM {source_fqn} WHERE `{col}` IS NULL) as {src_null_alias},
-                        (SELECT COUNT(1) FROM {target_fqn} WHERE `{col}` IS NULL) as {tgt_null_alias})"""
-                    )
-                    check = f"CASE WHEN {src_null_alias} = 0 THEN {tgt_null_alias} = 0 ELSE COALESCE(ABS({tgt_null_alias} - {src_null_alias}) / NULLIF(CAST({src_null_alias} AS DOUBLE), 0), 0) <= {null_threshold} END"
-                    diff_calculation = f"COALESCE(ABS({tgt_null_alias} - {src_null_alias}) / NULLIF(CAST({src_null_alias} AS DOUBLE), 0), 0)"
-
-                payload_structs.append(
-                    textwrap.dedent(
-                        f"""
-                struct(
-                    FORMAT_NUMBER({src_null_alias}, '#,##0') AS source_nulls,
-                    FORMAT_NUMBER({tgt_null_alias}, '#,##0') AS target_nulls,
-                    FORMAT_STRING('%.2f%%', CAST({diff_calculation} * 100 AS DOUBLE)) as relative_diff_percent,
-                    FORMAT_STRING('%.2f%%', CAST({null_threshold} * 100 AS DOUBLE)) AS threshold_percent,
-                    CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
-                ) AS null_validation_{col}"""
-                    )
-                )
-                overall_clauses.append(check)
-
-        if config.agg_validations:
-            for agg_config in config.agg_validations:
-                col, validations = agg_config.column, agg_config.validations
-                for val in validations:
-                    agg, tolerance = val.agg.upper(), val.tolerance
-                    src_val_alias, tgt_val_alias = (
-                        f"source_value_{col}_{agg}",
-                        f"target_value_{col}_{agg}",
-                    )
-                    ctes.append(
-                        f"agg_metrics_{col}_{agg} AS (SELECT TRY_CAST((SELECT {agg}(`{col}`) FROM {source_fqn}) AS DECIMAL(38, 6)) AS {src_val_alias}, TRY_CAST((SELECT {agg}(`{col}`) FROM {target_fqn}) AS DECIMAL(38, 6)) AS {tgt_val_alias})"
-                    )
-                    check = f"COALESCE(ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0), 0) <= {tolerance}"
-                    payload_structs.append(
-                        textwrap.dedent(
-                            f"""
-                    struct(
-                        FORMAT_NUMBER({src_val_alias}, '#,##0.00') as source_value,
-                        FORMAT_NUMBER({tgt_val_alias}, '#,##0.00') as target_value,
-                        FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS({src_val_alias} - {tgt_val_alias}) / NULLIF(ABS(CAST({src_val_alias} AS DOUBLE)), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
-                        FORMAT_STRING('%.2f%%', CAST({tolerance} * 100 AS DOUBLE)) AS tolerance_percent,
-                        CASE WHEN {check} THEN 'PASS' ELSE 'FAIL' END AS status
-                    ) AS agg_validation_{col}_{agg}"""
-                        )
-                    )
-                    overall_clauses.append(check)
-
-        if not payload_structs:
-            view_creation_sql = f"CREATE OR REPLACE TEMP VIEW final_metrics_view AS SELECT true as overall_validation_passed, parse_json(to_json(struct('No validations configured for task {task_key}' as message))) as result_payload"
-        else:
-            view_creation_sql = "CREATE OR REPLACE TEMP VIEW final_metrics_view AS\n"
-            if ctes:
-                view_creation_sql += "WITH\n" + ",\n".join(ctes) + "\n"
-            from_clause = (
-                " CROSS JOIN ".join([cte.split(" AS ")[0].strip() for cte in ctes])
-                if ctes
-                else "(SELECT 1 AS placeholder)"
-            )
-            select_payload = f"parse_json(to_json(struct({', '.join(payload_structs)}))) as result_payload"
-            select_status = f"{' AND '.join(overall_clauses) if overall_clauses else 'true'} AS overall_validation_passed"
-            view_creation_sql += (
-                f"SELECT {select_payload}, {select_status} FROM {from_clause};"
-            )
-
-        insert_sql = (
-            f"INSERT INTO {results_table} (task_key, status, run_id, job_id, job_name, timestamp, result_payload) "
-            f"SELECT '{task_key}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END, "
-            f":run_id, :job_id, '{job_name}', current_timestamp(), result_payload FROM final_metrics_view"
-        )
-        fail_sql = f"SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: {task_key}. Payload: \\n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false"
-        pass_sql = "SELECT to_json(result_payload, map('pretty', 'true')) AS result FROM final_metrics_view WHERE overall_validation_passed = true"
-        return ";\n\n".join([view_creation_sql, insert_sql, fail_sql, pass_sql])
+        return template.render(**payload).strip()
 
     def _generate_dashboard_notebook_content(self: "DataPactClient") -> str:
         """Generates the Python code for the dashboard-creation notebook."""
@@ -389,7 +282,7 @@ class DataPactClient:
                 "run_summary": f"SELECT status, COUNT(1) as task_count FROM {results_table_fqn} WHERE run_id = (SELECT MAX(run_id) FROM {results_table_fqn} WHERE job_name = '{job_name}') GROUP BY status",
                 "failure_rate_over_time": f"SELECT to_date(timestamp) as run_date, COUNT(CASE WHEN status = 'FAILURE' THEN 1 END) * 100.0 / COUNT(1) as failure_rate_percent FROM {results_table_fqn} WHERE job_name = '{job_name}' GROUP BY 1 ORDER BY 1",
                 "top_failing_tasks": f"SELECT task_key, COUNT(1) as failure_count FROM {results_table_fqn} WHERE status = 'FAILURE' AND job_name = '{job_name}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10",
-                "raw_history": f"SELECT * FROM {results_table_fqn} WHERE job_name = '{job_name}' ORDER BY timestamp DESC, task_key"
+                "raw_history": f"SELECT task_key, status, run_id, job_id, job_name, timestamp, result_payload FROM {results_table_fqn} WHERE job_name = '{job_name}' ORDER BY timestamp DESC, task_key"
             }
 
             widgets = []
@@ -441,7 +334,7 @@ class DataPactClient:
         agg_sql_script: str = textwrap.dedent(
             f"""
             WITH run_results AS (
-                SELECT * FROM {results_table} WHERE run_id = :run_id
+                SELECT task_key, status FROM {results_table} WHERE run_id = :run_id
             ),
             agg_metrics AS (
                 SELECT
@@ -537,9 +430,9 @@ class DataPactClient:
                 "displayName": "KPI Metrics (Latest Run)",
                 "queryLines": [
                     q(
-                        "WITH latest_run AS (SELECT * FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')) "
+                        "WITH latest_run AS (SELECT task_key, status FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')) "
                         "SELECT COUNT(*) as total_tasks, COUNT(IF(status = 'FAILURE', 1, NULL)) as failed_tasks, "
-                        "COUNT(IF(status = 'SUCCESS', 1, NULL)) * 1.0 / COUNT(*) as success_rate_percent FROM latest_run"  # Corrected: Removed * 100
+                        "COUNT(IF(status = 'SUCCESS', 1, NULL)) * 1.0 / COUNT(*) as success_rate_percent FROM latest_run"
                     )
                 ],
             },

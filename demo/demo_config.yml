@@ -101,8 +101,8 @@ validations:
     pk_hash_threshold: 0.0
     hash_columns: ["user_id", "session_id", "page_path"] # Ignore the changing view_ts
 
-  # 10. PASS: An edge case with no primary key. The simple count validation will pass.
-  - task_key: "validate_logs_no_pk_PASS"
+  # 10. FAIL: An edge case with no primary key. The simple count validation will fail.
+  - task_key: "validate_logs_no_pk_FAIL"
     <<: *defaults
     source_table: "log_messages"
     target_table: "log_messages"
