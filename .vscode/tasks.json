@@ -15,6 +15,18 @@
 				"$python"
 			],
 			"group": "build"
+		},
+		{
+			"label": "pytest",
+			"type": "shell",
+			"command": "${command:python.interpreterPath}",
+			"args": [
+				"-m",
+				"pytest",
+				"-q"
+			],
+			"isBackground": false,
+			"group": "build"
 		}
 	]
 }
