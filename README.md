@@ -67,7 +67,7 @@ See DataPact's full potential with a realistic, large-scale demo. This will crea
 
 1.  **Databricks Workspace:** A Databricks workspace with Unity Catalog enabled.
 2.  **Permissions:** Permissions to create catalogs, schemas, tables, and run jobs.
-3.  **Python >= 3.10:** A local Python environment.
+3.  **Python >= 3.13.5:** A local Python environment.
 4.  **Databricks CLI:** [Install and configure the Databricks CLI](https://docs.databricks.com/en/dev-tools/cli/install.html). For a seamless experience, we recommend adding a `datapact_warehouse` key to your profile in `~/.databrickscfg`.
    
 ```ini
@@ -84,7 +84,7 @@ git clone https://github.com/skyler-myers-db/datapact.git
 cd datapact
 ```
 
-#### Step 2: Create and Activate a Virtual Environment
+#### Step 2: Create and Activate a Virtual Environment (Python 3.13.5+)
 
 This creates a self-contained environment to avoid conflicts with other Python projects.
 
@@ -252,7 +252,7 @@ export DATAPACT_WAREHOUSE="my_env_var_warehouse"`
 
 ### Results & Reporting
 
-If you provide the `--results-table` argument, DataPact will write a detailed summary of every validation task to the specified Delta table. This allows you to build dashboards in Databricks SQL to monitor data quality trends over time. Otherwise, it will write to a default location.
+If you provide the `--results-table` argument, DataPact will write a detailed summary of every validation task to the specified Delta table. This allows you to build dashboards in Databricks SQL to monitor data quality trends over time. Otherwise, it will write to the default location: `datapact.results.run_history`.
 
 #### Simplified Configuration with Environment Variables
 

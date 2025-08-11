@@ -448,6 +448,24 @@ class DataPactClient:
                     )
                 ],
             },
+            {
+                "name": "ds_latest_run_details",
+                "displayName": "Latest Run Details",
+                "queryLines": [
+                    q(
+                        "SELECT task_key, status, timestamp, to_json(result_payload) as payload_json FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') ORDER BY status DESC, task_key"
+                    )
+                ],
+            },
+            {
+                "name": "ds_success_trend",
+                "displayName": "Success Rate Over Time",
+                "queryLines": [
+                    q(
+                        "SELECT date(timestamp) as run_date, COUNT(IF(status='SUCCESS',1,NULL))*100/COUNT(*) as success_rate FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1"
+                    )
+                ],
+            },
         ]
 
         widget_definitions: list[dict[str, Any]] = [
@@ -673,7 +691,120 @@ class DataPactClient:
                     "displayName": "DataPact Validation Results",
                     "layout": layout_widgets,
                     "pageType": "PAGE_TYPE_CANVAS",
-                }
+                },
+                {
+                    "name": "details_page",
+                    "displayName": "Run Details",
+                    "layout": [
+                        {
+                            "widget": {
+                                "name": "details_table",
+                                "queries": [
+                                    {
+                                        "name": "main_query",
+                                        "query": {
+                                            "datasetName": "ds_latest_run_details",
+                                            "fields": [
+                                                {
+                                                    "name": "task_key",
+                                                    "expression": "`task_key`",
+                                                },
+                                                {
+                                                    "name": "status",
+                                                    "expression": "`status`",
+                                                },
+                                                {
+                                                    "name": "timestamp",
+                                                    "expression": "`timestamp`",
+                                                },
+                                                {
+                                                    "name": "payload_json",
+                                                    "expression": "`payload_json`",
+                                                },
+                                            ],
+                                            "disaggregated": False,
+                                        },
+                                    }
+                                ],
+                                "spec": {
+                                    "version": 3,
+                                    "widgetType": "table",
+                                    "encodings": {
+                                        "columns": [
+                                            {
+                                                "fieldName": "task_key",
+                                                "displayName": "Task Key",
+                                            },
+                                            {
+                                                "fieldName": "status",
+                                                "displayName": "Status",
+                                            },
+                                            {
+                                                "fieldName": "timestamp",
+                                                "displayName": "Timestamp",
+                                            },
+                                            {
+                                                "fieldName": "payload_json",
+                                                "displayName": "Result Payload",
+                                            },
+                                        ]
+                                    },
+                                    "frame": {
+                                        "title": "Latest Run Details",
+                                        "showTitle": True,
+                                    },
+                                },
+                            },
+                            "position": {"x": 0, "y": 0, "width": 6, "height": 18},
+                        },
+                        {
+                            "widget": {
+                                "name": "success_trend",
+                                "queries": [
+                                    {
+                                        "name": "main_query",
+                                        "query": {
+                                            "datasetName": "ds_success_trend",
+                                            "fields": [
+                                                {
+                                                    "name": "run_date",
+                                                    "expression": "`run_date`",
+                                                },
+                                                {
+                                                    "name": "avg(success_rate)",
+                                                    "expression": "AVG(`success_rate`)",
+                                                },
+                                            ],
+                                            "disaggregated": False,
+                                        },
+                                    }
+                                ],
+                                "spec": {
+                                    "version": 3,
+                                    "widgetType": "line",
+                                    "encodings": {
+                                        "x": {
+                                            "fieldName": "run_date",
+                                            "scale": {"type": "temporal"},
+                                            "displayName": "Date",
+                                        },
+                                        "y": {
+                                            "fieldName": "avg(success_rate)",
+                                            "scale": {"type": "quantitative"},
+                                            "displayName": "Success Rate (%)",
+                                        },
+                                    },
+                                    "frame": {
+                                        "title": "Success Rate Over Time",
+                                        "showTitle": True,
+                                    },
+                                },
+                            },
+                            "position": {"x": 0, "y": 18, "width": 6, "height": 9},
+                        },
+                    ],
+                    "pageType": "PAGE_TYPE_CANVAS",
+                },
             ],
         }
 
