@@ -1,5 +1,7 @@
 """Comprehensive tests for DataPactClient to achieve full coverage."""
 
+# pylint: disable=protected-access
+
 from datetime import datetime
 from unittest.mock import Mock, patch, call
 
@@ -176,16 +178,15 @@ class TestDashboardNotebook:
 
     def test_generate_dashboard_notebook_content(self):
         """Test _generate_dashboard_notebook_content returns valid Python code."""
+        client = object.__new__(DataPactClient)
+        # Call the protected helper directly in tests
+        content = client._generate_dashboard_notebook_content()
 
-    client = object.__new__(DataPactClient)
-    # Call the protected helper directly in tests
-    content = client._generate_dashboard_notebook_content()
-
-    # Check that it contains expected imports and code
-    assert "from databricks.sdk import WorkspaceClient" in content
-    assert "dbutils.widgets.text" in content
-    assert 'dashboard_name = f"DataPact Results: {job_name}"' in content
-    assert "w.dashboards.create" in content
+        # Check that it contains expected imports and code
+        assert "from databricks.sdk import WorkspaceClient" in content
+        assert "dbutils.widgets.text" in content
+        assert 'dashboard_name = f"DataPact Results: {job_name}"' in content
+        assert "w.dashboards.create" in content
 
 
 class TestEnsureDashboard:
@@ -316,7 +317,7 @@ class TestRunValidation:
 
     @patch("datapact.client.datetime")
     @patch("time.sleep")
-    def test_run_validation_success(self, mock_sleep, mock_datetime):
+    def test_run_validation_success(self, _mock_sleep, mock_datetime):
         """Test successful validation run."""
         # Setup time mocking
         mock_datetime.now.side_effect = [

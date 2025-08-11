@@ -2,6 +2,8 @@ import importlib
 from textwrap import dedent
 
 from datapact.client import DataPactClient
+
+# pylint: disable=protected-access
 from datapact.config import ValidationTask
 
 
@@ -23,23 +25,23 @@ def _render_expected(payload: dict) -> str:
 
 
 def _minimal_task(**overrides) -> ValidationTask:
-    base = dict(
-        task_key="t",
-        source_catalog="c",
-        source_schema="s",
-        source_table="a",
-        target_catalog="c",
-        target_schema="s",
-        target_table="b",
-        primary_keys=[],
-        count_tolerance=0.01,
-        pk_row_hash_check=False,
-        pk_hash_threshold=None,
-        hash_columns=[],
-        null_validation_threshold=None,
-        null_validation_columns=[],
-        agg_validations=[],
-    )
+    base: dict = {
+        "task_key": "t",
+        "source_catalog": "c",
+        "source_schema": "s",
+        "source_table": "a",
+        "target_catalog": "c",
+        "target_schema": "s",
+        "target_table": "b",
+        "primary_keys": [],
+        "count_tolerance": 0.01,
+        "pk_row_hash_check": False,
+        "pk_hash_threshold": None,
+        "hash_columns": [],
+        "null_validation_threshold": None,
+        "null_validation_columns": [],
+        "agg_validations": [],
+    }
     base.update(overrides)
     return ValidationTask(**base)
 
