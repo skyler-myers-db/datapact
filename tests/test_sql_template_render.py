@@ -206,7 +206,7 @@ def test_uniqueness_only_block_exact_fragments():
     assert "uniqueness_metrics AS (" in sql
     assert "GROUP BY `email`" in sql
     # Payload fields
-    assert "AS uniqueness_validation" in sql
+    assert "AS uniqueness_validation_email" in sql
     assert "FORMAT_NUMBER(source_duplicates, '#,##0') AS source_duplicates," in sql
     assert "FORMAT_NUMBER(target_duplicates, '#,##0') AS target_duplicates," in sql
     assert "source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0)" in sql
@@ -248,3 +248,15 @@ def test_full_combo_includes_uniqueness_cross_join_order():
         "count_metrics CROSS JOIN row_hash_metrics CROSS JOIN null_metrics_v CROSS JOIN agg_metrics_v_SUM CROSS JOIN uniqueness_metrics"
         in cj_block
     )
+
+
+def test_uniqueness_multi_columns_alias():
+    p = _base_payload()
+    p.update(
+        {
+            "uniqueness_columns": ["email", "domain"],
+            "uniqueness_threshold": 0.0,
+        }
+    )
+    sql = _render(p)
+    assert "AS uniqueness_validation_email_domain" in sql

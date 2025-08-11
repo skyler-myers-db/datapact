@@ -277,6 +277,10 @@ class DataPactClient:
                 elif name == "failure_rate_over_time": viz_type = "CHART"; viz_options = {"globalSeriesType": "line"}
                 elif name == "top_failing_tasks": viz_type = "CHART"; viz_options = {"globalSeriesType": "bar"}
                 viz = w.visualizations.create(query_id=query_obj.id, type=viz_type, name=f"Viz-{name}", options=viz_options)
+                        "  SELECT 'uniqueness' AS validation_type,\n"
+                        '         SUM(CASE WHEN to_json(result_payload) LIKE \'%"uniqueness_validation_"%"status":"FAIL"%\' THEN 1 ELSE 0 END) AS failure_count\n'
+                        "  FROM {table} WHERE job_name='{job}'\n"
+                        "  UNION ALL\n"
                 widgets.append(sql_service.WidgetCreate(visualization_id=viz.id))
 
             dashboard = w.dashboards.create(name=dashboard_name, warehouse_id=warehouse_id, widgets=widgets)
@@ -678,6 +682,21 @@ class DataPactClient:
                         },
                     },
                 }
+                # Best-effort drill-through: clicking a bar navigates to details page filtered by task_key
+                if w_def.get("ds_name") == "ds_top_failures":
+                    spec["interactions"] = [
+                        {
+                            "type": "drillthrough",
+                            "targetPage": "details_page",
+                            "filters": [
+                                {
+                                    "dataset": "ds_latest_run_details",
+                                    "targetField": "task_key",
+                                    "sourceField": x_field,
+                                }
+                            ],
+                        }
+                    ]
 
             elif w_def["type"] == "TABLE":
                 query_fields = [

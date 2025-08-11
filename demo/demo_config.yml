@@ -125,3 +125,13 @@ validations:
     primary_keys: ["code"]
     null_validation_threshold: 0.01
     null_validation_columns: ["category"]
+
+  # ============================ CROSS-DOMAIN EXAMPLE ============================
+  # 13. FAIL: Multi-column uniqueness check: enforces uniqueness on (email, country)
+  # Demonstrates alias naming in payload as `uniqueness_validation_email_country`.
+  - task_key: "validate_users_email_country_uniqueness_FAIL"
+    <<: *defaults
+    source_table: "users"
+    target_table: "users"
+    uniqueness_columns: ["email", "country"]
+    uniqueness_threshold: 0.0

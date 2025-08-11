@@ -203,7 +203,7 @@ SELECT
       FORMAT_STRING('%.2f%%', CAST({{ uniqueness_threshold }} * 100 AS DOUBLE)) AS threshold_percent,
       CASE WHEN COALESCE(source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0), 0) <= {{ uniqueness_threshold }}
             AND COALESCE(target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0), 0) <= {{ uniqueness_threshold }} THEN 'PASS' ELSE 'FAIL' END AS status
-    ) AS uniqueness_validation
+  ) AS uniqueness_validation_{{ uniqueness_columns|join('_') }}
   {%- endif -%}
   ))) as result_payload,
   (
