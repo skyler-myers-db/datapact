@@ -21,6 +21,8 @@ validations:
     pk_hash_threshold: 0.04 # Fails (5% of emails changed)
     null_validation_threshold: 0.02 # Fails (signup_date and status nulls increase > 2%)
     null_validation_columns: ["signup_date", "status"]
+    uniqueness_columns: ["email"]
+    uniqueness_threshold: 0.0 # Enforce unique emails on both sides
     agg_validations:
       - column: "total_logins"
         validations: [{ agg: "SUM", tolerance: 0.05 }] # Fails (logins for CAN users doubled)
@@ -123,3 +125,13 @@ validations:
     primary_keys: ["code"]
     null_validation_threshold: 0.01
     null_validation_columns: ["category"]
+
+  # ============================ CROSS-DOMAIN EXAMPLE ============================
+  # 13. PASS: Multi-column uniqueness check: enforces uniqueness on (email, country)
+  # Demonstrates alias naming in payload as `uniqueness_validation_email_country`.
+  - task_key: "validate_users_email_country_uniqueness_PASS"
+    <<: *defaults
+    source_table: "users"
+    target_table: "users"
+    uniqueness_columns: ["email", "country"]
+    uniqueness_threshold: 0.0

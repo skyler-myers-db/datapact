@@ -10,13 +10,13 @@ row_hash_metrics AS (
   SELECT COUNT(1) AS total_compared_rows,
          COALESCE(SUM(CASE WHEN s.row_hash <> t.row_hash THEN 1 ELSE 0 END), 0) AS mismatch_count
   FROM (
-    SELECT 
+    SELECT
 `id1`, `id2`,
       md5(to_json(struct(*))) AS row_hash
     FROM `cat`.`sch`.`src`
   ) s
   INNER JOIN (
-    SELECT 
+    SELECT
 `id1`, `id2`,
       md5(to_json(struct(*))) AS row_hash
     FROM `cat`.`sch`.`tgt`
@@ -39,21 +39,21 @@ null_metrics_v2 AS (
     ON s.`id1` = t.`id1` AND s.`id2` = t.`id2`)
 ,
 agg_metrics_v1_SUM AS (
-  SELECT 
+  SELECT
     TRY_CAST((SELECT SUM(`v1`) FROM `cat`.`sch`.`src`) AS DECIMAL(38, 6)) AS source_value_v1_SUM,
     TRY_CAST((SELECT SUM(`v1`) FROM `cat`.`sch`.`tgt`) AS DECIMAL(38, 6)) AS target_value_v1_SUM
 ),
 agg_metrics_v1_AVG AS (
-  SELECT 
+  SELECT
     TRY_CAST((SELECT AVG(`v1`) FROM `cat`.`sch`.`src`) AS DECIMAL(38, 6)) AS source_value_v1_AVG,
     TRY_CAST((SELECT AVG(`v1`) FROM `cat`.`sch`.`tgt`) AS DECIMAL(38, 6)) AS target_value_v1_AVG
 ),
 agg_metrics_v2_SUM AS (
-  SELECT 
+  SELECT
     TRY_CAST((SELECT SUM(`v2`) FROM `cat`.`sch`.`src`) AS DECIMAL(38, 6)) AS source_value_v2_SUM,
     TRY_CAST((SELECT SUM(`v2`) FROM `cat`.`sch`.`tgt`) AS DECIMAL(38, 6)) AS target_value_v2_SUM
 )
-SELECT 
+SELECT
   parse_json(to_json(struct(
     struct(
       FORMAT_NUMBER(source_count, '#,##0') AS source_count,
@@ -61,38 +61,38 @@ SELECT
       FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
       FORMAT_STRING('%.2f%%', CAST(0.05 * 100 AS DOUBLE)) AS tolerance_percent,
       CASE WHEN COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= 0.05 THEN 'PASS' ELSE 'FAIL' END AS status
-    ) AS count_validation, 
+    ) AS count_validation,
     struct(
       FORMAT_NUMBER(total_compared_rows, '#,##0') AS compared_rows,
       FORMAT_NUMBER(mismatch_count, '#,##0') AS mismatch_count,
       FORMAT_STRING('%.2f%%', CAST(COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) * 100 AS DOUBLE)) as mismatch_percent,
       FORMAT_STRING('%.2f%%', CAST(1e-06 * 100 AS DOUBLE)) AS threshold_percent,
       CASE WHEN COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= 1e-06 THEN 'PASS' ELSE 'FAIL' END AS status
-    ) AS row_hash_validation, 
+    ) AS row_hash_validation,
     struct(
       FORMAT_NUMBER(source_nulls_v1, '#,##0') AS source_nulls,
       FORMAT_NUMBER(target_nulls_v1, '#,##0') AS target_nulls,FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_nulls_v1 - target_nulls_v1) / NULLIF(CAST(total_compared_v1 AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,FORMAT_STRING('%.2f%%', CAST(0.0 * 100 AS DOUBLE)) AS threshold_percent,
   CASE WHEN COALESCE(ABS(source_nulls_v1 - target_nulls_v1) / NULLIF(CAST(total_compared_v1 AS DOUBLE), 0), 0) <= 0.0 THEN 'PASS' ELSE 'FAIL' END AS status
-    ) AS null_validation_v1, 
+    ) AS null_validation_v1,
     struct(
       FORMAT_NUMBER(source_nulls_v2, '#,##0') AS source_nulls,
       FORMAT_NUMBER(target_nulls_v2, '#,##0') AS target_nulls,FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_nulls_v2 - target_nulls_v2) / NULLIF(CAST(total_compared_v2 AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,FORMAT_STRING('%.2f%%', CAST(0.0 * 100 AS DOUBLE)) AS threshold_percent,
   CASE WHEN COALESCE(ABS(source_nulls_v2 - target_nulls_v2) / NULLIF(CAST(total_compared_v2 AS DOUBLE), 0), 0) <= 0.0 THEN 'PASS' ELSE 'FAIL' END AS status
-    ) AS null_validation_v2, 
+    ) AS null_validation_v2,
     struct(
       FORMAT_NUMBER(source_value_v1_SUM, '#,##0.00') as source_value,
       FORMAT_NUMBER(target_value_v1_SUM, '#,##0.00') as target_value,
       FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_value_v1_SUM - target_value_v1_SUM) / NULLIF(ABS(CAST(source_value_v1_SUM AS DOUBLE)), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
       FORMAT_STRING('%.2f%%', CAST(0.0 * 100 AS DOUBLE)) AS tolerance_percent,
       CASE WHEN COALESCE(ABS(source_value_v1_SUM - target_value_v1_SUM) / NULLIF(ABS(CAST(source_value_v1_SUM AS DOUBLE)), 0), 0) <= 0.0 THEN 'PASS' ELSE 'FAIL' END AS status
-    ) AS agg_validation_v1_SUM, 
+    ) AS agg_validation_v1_SUM,
     struct(
       FORMAT_NUMBER(source_value_v1_AVG, '#,##0.00') as source_value,
       FORMAT_NUMBER(target_value_v1_AVG, '#,##0.00') as target_value,
       FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_value_v1_AVG - target_value_v1_AVG) / NULLIF(ABS(CAST(source_value_v1_AVG AS DOUBLE)), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
       FORMAT_STRING('%.2f%%', CAST(1e-06 * 100 AS DOUBLE)) AS tolerance_percent,
       CASE WHEN COALESCE(ABS(source_value_v1_AVG - target_value_v1_AVG) / NULLIF(ABS(CAST(source_value_v1_AVG AS DOUBLE)), 0), 0) <= 1e-06 THEN 'PASS' ELSE 'FAIL' END AS status
-    ) AS agg_validation_v1_AVG, 
+    ) AS agg_validation_v1_AVG,
     struct(
       FORMAT_NUMBER(source_value_v2_SUM, '#,##0.00') as source_value,
       FORMAT_NUMBER(target_value_v2_SUM, '#,##0.00') as target_value,

@@ -238,7 +238,7 @@ class DataPactClient:
             dbutils.widgets.text("job_name", "", "Job Name")
             dbutils.widgets.text("results_table_fqn", "", "Results Table FQN")
             dbutils.widgets.text("warehouse_id", "", "Warehouse ID")
-            
+
             job_name = dbutils.widgets.get("job_name")
             results_table_fqn = dbutils.widgets.get("results_table_fqn")
             warehouse_id = dbutils.widgets.get("warehouse_id")
@@ -250,7 +250,7 @@ class DataPactClient:
             w = WorkspaceClient() # Authenticates automatically inside Databricks
 
             dashboard_name = f"DataPact Results: {job_name}"
-            
+
             # Clean up old dashboard and associated queries
             for d in w.dashboards.list(q=dashboard_name):
                 if d.display_name == dashboard_name:
@@ -261,7 +261,7 @@ class DataPactClient:
                             if widget.visualization and widget.visualization.query:
                                 try: w.queries.delete(widget.visualization.query.query_id)
                                 except Exception: pass
-            
+
             queries = {
                 "run_summary": f"SELECT status, COUNT(1) as task_count FROM {results_table_fqn} WHERE run_id = (SELECT MAX(run_id) FROM {results_table_fqn} WHERE job_name = '{job_name}') GROUP BY status",
                 "failure_rate_over_time": f"SELECT to_date(timestamp) as run_date, COUNT(CASE WHEN status = 'FAILURE' THEN 1 END) * 100.0 / COUNT(1) as failure_rate_percent FROM {results_table_fqn} WHERE job_name = '{job_name}' GROUP BY 1 ORDER BY 1",
@@ -278,7 +278,7 @@ class DataPactClient:
                 elif name == "top_failing_tasks": viz_type = "CHART"; viz_options = {"globalSeriesType": "bar"}
                 viz = w.visualizations.create(query_id=query_obj.id, type=viz_type, name=f"Viz-{name}", options=viz_options)
                 widgets.append(sql_service.WidgetCreate(visualization_id=viz.id))
-            
+
             dashboard = w.dashboards.create(name=dashboard_name, warehouse_id=warehouse_id, widgets=widgets)
             dashboard_url = f"{w.config.host}/sql/dashboards/{dashboard.id}"
             logger.success(f"✅ Dashboard is ready! View it here: {dashboard_url}")
@@ -440,11 +440,58 @@ class DataPactClient:
                 ],
             },
             {
+                "name": "ds_failures_by_type",
+                "displayName": "Failures by Validation Type",
+                "queryLines": [
+                    q(
+                        "SELECT validation_type, failure_count FROM (\n"
+                        "  SELECT 'count' AS validation_type,\n"
+                        "         SUM(CASE WHEN get_json_object(to_json(result_payload), '$.count_validation.status') = 'FAIL' THEN 1 ELSE 0 END) AS failure_count\n"
+                        "  FROM {table} WHERE job_name='{job}'\n"
+                        "  UNION ALL\n"
+                        "  SELECT 'row_hash' AS validation_type,\n"
+                        "         SUM(CASE WHEN get_json_object(to_json(result_payload), '$.row_hash_validation.status') = 'FAIL' THEN 1 ELSE 0 END) AS failure_count\n"
+                        "  FROM {table} WHERE job_name='{job}'\n"
+                        "  UNION ALL\n"
+                        "  SELECT 'nulls' AS validation_type,\n"
+                        '         SUM(CASE WHEN to_json(result_payload) LIKE \'%"null_validation_%"%"status":"FAIL"%\' THEN 1 ELSE 0 END) AS failure_count\n'
+                        "  FROM {table} WHERE job_name='{job}'\n"
+                        "  UNION ALL\n"
+                        "  SELECT 'uniqueness' AS validation_type,\n"
+                        '         SUM(CASE WHEN to_json(result_payload) LIKE \'%"uniqueness_validation_"%"status":"FAIL"%\' THEN 1 ELSE 0 END) AS failure_count\n'
+                        "  FROM {table} WHERE job_name='{job}'\n"
+                        "  UNION ALL\n"
+                        "  SELECT 'aggregates' AS validation_type,\n"
+                        '         SUM(CASE WHEN to_json(result_payload) LIKE \'%"agg_validation_%"%"status":"FAIL"%\' THEN 1 ELSE 0 END) AS failure_count\n'
+                        "  FROM {table} WHERE job_name='{job}'\n"
+                        ") t WHERE failure_count > 0 ORDER BY failure_count DESC"
+                    )
+                ],
+            },
+            {
                 "name": "ds_history",
                 "displayName": "Detailed Run History",
                 "queryLines": [
                     q(
-                        "SELECT task_key, status, timestamp, to_json(result_payload) as payload_json FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"
+                        "SELECT task_key, status, timestamp, to_json(result_payload) as payload_json, run_id, job_name FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"
+                    )
+                ],
+            },
+            {
+                "name": "ds_latest_run_details",
+                "displayName": "Latest Run Details",
+                "queryLines": [
+                    q(
+                        "SELECT task_key, status, timestamp, to_json(result_payload) as payload_json, run_id, job_name FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') ORDER BY status DESC, task_key"
+                    )
+                ],
+            },
+            {
+                "name": "ds_success_trend",
+                "displayName": "Success Rate Over Time",
+                "queryLines": [
+                    q(
+                        "SELECT date(timestamp) as run_date, COUNT(IF(status='SUCCESS',1,NULL))*100/COUNT(*) as success_rate FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1"
                     )
                 ],
             },
@@ -489,12 +536,24 @@ class DataPactClient:
                 "type": "BAR",
                 "title": "Top Failing Tasks",
                 "pos": {"x": 0, "y": 12, "width": 6, "height": 8},
+                "x_field": "task_key",
+                "y_field": "failure_count",
+                "y_agg": "SUM",
             },
             {
                 "ds_name": "ds_history",
                 "type": "TABLE",
                 "title": "Detailed Run History",
                 "pos": {"x": 0, "y": 20, "width": 6, "height": 7},
+            },
+            {
+                "ds_name": "ds_failures_by_type",
+                "type": "BAR",
+                "title": "Failures by Validation Type",
+                "pos": {"x": 0, "y": 27, "width": 6, "height": 7},
+                "x_field": "validation_type",
+                "y_field": "failure_count",
+                "y_agg": "SUM",
             },
         ]
 
@@ -599,34 +658,57 @@ class DataPactClient:
                 }
 
             elif w_def["type"] == "BAR":
+                x_field = w_def.get("x_field", "task_key")
+                y_field = w_def.get("y_field", "failure_count")
+                y_agg = w_def.get("y_agg", "SUM").upper()
+                y_alias = f"{y_agg.lower()}({y_field})"
                 query_fields = [
-                    {"name": "task_key", "expression": "`task_key`"},
-                    {
-                        "name": "sum(failure_count)",
-                        "expression": "SUM(`failure_count`)",
-                    },
+                    {"name": x_field, "expression": f"`{x_field}`"},
+                    {"name": y_alias, "expression": f"{y_agg}(`{y_field}`)"},
                 ]
                 spec = {
                     "version": 3,
                     "widgetType": "bar",
                     "encodings": {
                         "x": {
-                            "fieldName": "task_key",
+                            "fieldName": x_field,
                             "scale": {"type": "categorical"},
-                            "displayName": "Failing Task",
+                            "displayName": w_def.get("x_display", "Category"),
                         },
                         "y": {
-                            "fieldName": "sum(failure_count)",
+                            "fieldName": y_alias,
                             "scale": {"type": "quantitative"},
-                            "displayName": "Total Failures",
+                            "displayName": w_def.get("y_display", "Count"),
                         },
                     },
                 }
+                # Best-effort drill-through: clicking a bar navigates to details page filtered by task_key
+                if w_def.get("ds_name") == "ds_top_failures":
+                    spec["interactions"] = [
+                        {
+                            "type": "drillthrough",
+                            "targetPage": "details_page",
+                            "filters": [
+                                {
+                                    "dataset": "ds_latest_run_details",
+                                    "targetField": "task_key",
+                                    "sourceField": x_field,
+                                }
+                            ],
+                        }
+                    ]
 
             elif w_def["type"] == "TABLE":
                 query_fields = [
                     {"name": c, "expression": f"`{c}`"}
-                    for c in ["task_key", "status", "timestamp", "payload_json"]
+                    for c in [
+                        "task_key",
+                        "status",
+                        "timestamp",
+                        "payload_json",
+                        "run_id",
+                        "job_name",
+                    ]
                 ]
                 spec = {
                     "version": 3,
@@ -640,6 +722,8 @@ class DataPactClient:
                                 "fieldName": "payload_json",
                                 "displayName": "Result Payload",
                             },
+                            {"fieldName": "run_id", "displayName": "Run ID"},
+                            {"fieldName": "job_name", "displayName": "Job Name"},
                         ]
                     },
                 }
@@ -672,8 +756,157 @@ class DataPactClient:
                     "name": "main_page",
                     "displayName": "DataPact Validation Results",
                     "layout": layout_widgets,
+                    "filters": [
+                        {
+                            "name": "job_name",
+                            "dataset": "ds_history",
+                            "field": "job_name",
+                        },
+                        {"name": "run_id", "dataset": "ds_history", "field": "run_id"},
+                    ],
                     "pageType": "PAGE_TYPE_CANVAS",
-                }
+                },
+                {
+                    "name": "details_page",
+                    "displayName": "Run Details",
+                    "layout": [
+                        {
+                            "widget": {
+                                "name": "details_table",
+                                "queries": [
+                                    {
+                                        "name": "main_query",
+                                        "query": {
+                                            "datasetName": "ds_latest_run_details",
+                                            "fields": [
+                                                {
+                                                    "name": "task_key",
+                                                    "expression": "`task_key`",
+                                                },
+                                                {
+                                                    "name": "status",
+                                                    "expression": "`status`",
+                                                },
+                                                {
+                                                    "name": "timestamp",
+                                                    "expression": "`timestamp`",
+                                                },
+                                                {
+                                                    "name": "payload_json",
+                                                    "expression": "`payload_json`",
+                                                },
+                                                {
+                                                    "name": "run_id",
+                                                    "expression": "`run_id`",
+                                                },
+                                                {
+                                                    "name": "job_name",
+                                                    "expression": "`job_name`",
+                                                },
+                                            ],
+                                            "disaggregated": False,
+                                        },
+                                    }
+                                ],
+                                "spec": {
+                                    "version": 3,
+                                    "widgetType": "table",
+                                    "encodings": {
+                                        "columns": [
+                                            {
+                                                "fieldName": "task_key",
+                                                "displayName": "Task Key",
+                                            },
+                                            {
+                                                "fieldName": "status",
+                                                "displayName": "Status",
+                                            },
+                                            {
+                                                "fieldName": "timestamp",
+                                                "displayName": "Timestamp",
+                                            },
+                                            {
+                                                "fieldName": "payload_json",
+                                                "displayName": "Result Payload",
+                                            },
+                                            {
+                                                "fieldName": "run_id",
+                                                "displayName": "Run ID",
+                                            },
+                                            {
+                                                "fieldName": "job_name",
+                                                "displayName": "Job Name",
+                                            },
+                                        ]
+                                    },
+                                    "frame": {
+                                        "title": "Latest Run Details",
+                                        "showTitle": True,
+                                    },
+                                },
+                            },
+                            "position": {"x": 0, "y": 0, "width": 6, "height": 18},
+                        },
+                        {
+                            "widget": {
+                                "name": "success_trend",
+                                "queries": [
+                                    {
+                                        "name": "main_query",
+                                        "query": {
+                                            "datasetName": "ds_success_trend",
+                                            "fields": [
+                                                {
+                                                    "name": "run_date",
+                                                    "expression": "`run_date`",
+                                                },
+                                                {
+                                                    "name": "avg(success_rate)",
+                                                    "expression": "AVG(`success_rate`)",
+                                                },
+                                            ],
+                                            "disaggregated": False,
+                                        },
+                                    }
+                                ],
+                                "spec": {
+                                    "version": 3,
+                                    "widgetType": "line",
+                                    "encodings": {
+                                        "x": {
+                                            "fieldName": "run_date",
+                                            "scale": {"type": "temporal"},
+                                            "displayName": "Date",
+                                        },
+                                        "y": {
+                                            "fieldName": "avg(success_rate)",
+                                            "scale": {"type": "quantitative"},
+                                            "displayName": "Success Rate (%)",
+                                        },
+                                    },
+                                    "frame": {
+                                        "title": "Success Rate Over Time",
+                                        "showTitle": True,
+                                    },
+                                },
+                            },
+                            "position": {"x": 0, "y": 18, "width": 6, "height": 9},
+                        },
+                    ],
+                    "filters": [
+                        {
+                            "name": "job_name",
+                            "dataset": "ds_latest_run_details",
+                            "field": "job_name",
+                        },
+                        {
+                            "name": "run_id",
+                            "dataset": "ds_latest_run_details",
+                            "field": "run_id",
+                        },
+                    ],
+                    "pageType": "PAGE_TYPE_CANVAS",
+                },
             ],
         }
 

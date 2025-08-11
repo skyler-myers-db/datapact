@@ -8,7 +8,7 @@ count_metrics AS (
 
 
 
-SELECT 
+SELECT
   parse_json(to_json(struct(
     struct(
       FORMAT_NUMBER(source_count, '#,##0') AS source_count,

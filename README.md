@@ -23,11 +23,16 @@ DataPact is an enterprise-grade, programmatic data validation accelerator for Da
 | **Efficient & Scalable**     | Built for performance and cost-efficiency. DataPact leverages the power of Databricks SQL Serverless, automatically scaling to handle billions of rows while minimizing operational overhead.                   |
 | **Persistent Reporting**     | Automatically log detailed validation results to a Delta table. The results are stored in a `VARIANT` column, allowing for easy, powerful, and native querying of your data quality history.                  |
 
----
 
 ### Core Validation Suite
 
 DataPact provides a rich suite of validations to cover the most critical data quality dimensions.
+### Demo highlights
+
+- Multi-column uniqueness aliasing:
+  - Config entry: `validate_users_email_country_uniqueness_FAIL` in `demo/demo_config.yml`.
+  - What it does: Enforces uniqueness on the composite key `(email, country)` with a strict `uniqueness_threshold: 0.0`.
+  - Where to see it: In the results payload, look for `uniqueness_validation_email_country` within the latest run’s details table on the “Run Details” page. The “Failures by Validation Type” chart also includes a “uniqueness” bucket.
 
 | Validation               | **Business Question It Answers**                                                              | **Example Configuration**                                                                                                                                |
 | ------------------------ | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -36,6 +41,7 @@ DataPact provides a rich suite of validations to cover the most critical data qu
 | **Selective Hashing**    | _"How can we check for data integrity on critical columns while ignoring frequently changing ones like timestamps?"_ | <pre lang="yaml">task_key: validate_events<br>...<br>primary_keys: [event_id]<br> pk_row_hash_check: true<br> hash_columns: [user_id, event_type]</pre> |
 | **Aggregate Validation** | _"Has the total revenue, average order value, or max transaction ID changed beyond an acceptable threshold?"_ | <pre lang="yaml">task_key: validate_finance<br>...<br>agg_validations:<br>  - column: "total_revenue"<br>    validations: [{agg: SUM, tolerance: 0.005}]</pre>   |
 | **Null Count Validation**| _"Has a recent upstream change caused a spike in NULL values in our critical identifier or attribute columns?"_ | <pre lang="yaml">task_key: validate_customers<br>...<br> null_validation_threshold: 0.02<br> null_validation_columns: [email, country]</pre>       |
+| **Uniqueness Validation**| _"Are key columns unique (e.g., no duplicate emails or IDs) within each side?"_ | <pre lang="yaml">task_key: validate_users<br>...<br> uniqueness_columns: [email]<br> uniqueness_threshold: 0.0</pre> |
 
 ---
 
@@ -67,9 +73,9 @@ See DataPact's full potential with a realistic, large-scale demo. This will crea
 
 1.  **Databricks Workspace:** A Databricks workspace with Unity Catalog enabled.
 2.  **Permissions:** Permissions to create catalogs, schemas, tables, and run jobs.
-3.  **Python >= 3.10:** A local Python environment.
+3.  **Python >= 3.13.5:** A local Python environment.
 4.  **Databricks CLI:** [Install and configure the Databricks CLI](https://docs.databricks.com/en/dev-tools/cli/install.html). For a seamless experience, we recommend adding a `datapact_warehouse` key to your profile in `~/.databrickscfg`.
-   
+
 ```ini
 [my-profile]
 host = https://dbc-....cloud.databricks.com
@@ -84,7 +90,7 @@ git clone https://github.com/skyler-myers-db/datapact.git
 cd datapact
 ```
 
-#### Step 2: Create and Activate a Virtual Environment
+#### Step 2: Create and Activate a Virtual Environment (Python 3.13.5+)
 
 This creates a self-contained environment to avoid conflicts with other Python projects.
 
@@ -134,6 +140,7 @@ datapact run \
 * ✅ Performance tuning with selective column hashing (hash_columns).
 * ✅ Detailed aggregate validations (SUM, MAX).
 * ✅ In-depth null-count validation (null_validation_columns).
+* ✅ Optional uniqueness checks for key columns (uniqueness_columns, threshold).
 * ✅ Graceful handling of edge cases like empty tables and tables without primary keys.
 
 ---
@@ -179,18 +186,18 @@ DataPact intelligently finds your SQL warehouse in the following order of preced
     ```bash
     datapact run --config ... --warehouse "my_cli_warehouse"
     ```
-    
+
 3.  **`DATAPACT_WAREHOUSE` Environment Variable:** If the flag is not present, DataPact will look for this environment variable.
 
     ```bash
     export DATAPACT_WAREHOUSE="my_env_var_warehouse"
     datapact run --config ...
     ```
-    
+
 5.  **`.databrickscfg` File (Recommended Default):** If neither of the above is found, DataPact looks for a `datapact_warehouse` key inside your active Databricks CLI profile (`~/.databrickscfg`). This is the recommended way to set your default warehouse.
 
     **Example `~/.databrickscfg` entry:**
-    
+
     ```ini
     [my-profile]
     host = https://dbc-....cloud.databricks.com
@@ -221,6 +228,8 @@ Below are all available parameters for each task in your `validation_config.yml`
 | `null_validation_threshold` | float        | No       | Allowed relative difference for null counts in a column.                             |
 | `null_validation_columns` | list[string] | No       | List of columns to perform null count validation on. Requires `null_validation_threshold`. |
 | `agg_validations`         | list[dict]   | No       | A list of aggregate validations to perform. See structure in examples.               |
+| `uniqueness_columns`      | list[string] | No       | Columns that must be unique within source and within target.                         |
+| `uniqueness_threshold`    | float        | No       | Allowed duplicate ratio (e.g., 0.0 = strict no duplicates).                          |
 | `results-table` | string | No | FQN of the results table. If omitted, `datapact_main.results.run_history` is used. |
 
 ---
@@ -252,7 +261,105 @@ export DATAPACT_WAREHOUSE="my_env_var_warehouse"`
 
 ### Results & Reporting
 
-If you provide the `--results-table` argument, DataPact will write a detailed summary of every validation task to the specified Delta table. This allows you to build dashboards in Databricks SQL to monitor data quality trends over time. Otherwise, it will write to a default location.
+If you provide the `--results-table` argument, DataPact will write a detailed summary of every validation task to the specified Delta table. This allows you to build dashboards in Databricks SQL to monitor data quality trends over time. Otherwise, it will write to the default location: `datapact.results.run_history`.
+
+The autogenerated Lakeview dashboard now includes basic filters for job_name and run_id on both pages. Use these to quickly narrow the view to a specific job or run.
+
+Uniqueness payload aliasing: The result payload for uniqueness is stored under a field name that encodes the validated columns, e.g., `uniqueness_validation_email` for a single field or `uniqueness_validation_email_domain` for multiple fields. This avoids collisions when multiple uniqueness checks exist in one task.
+
+#### How to read payloads
+
+Each validation task writes a JSON payload under `result_payload` with named sections. Examples:
+
+```json
+{
+  "count_validation": {
+    "source_count": "10,000",
+    "target_count": "9,830",
+    "relative_diff_percent": "1.70%",
+    "tolerance_percent": "1.00%",
+    "status": "FAIL"
+  },
+  "null_validation_status": {
+    "source_nulls": "0",
+    "target_nulls": "200",
+    "relative_diff_percent": "—",
+    "threshold_percent": "2.00%",
+    "status": "FAIL"
+  },
+  "agg_validation_total_logins_SUM": {
+    "source_value": "100.00",
+    "target_value": "110.00",
+    "relative_diff_percent": "10.00%",
+    "tolerance_percent": "5.00%",
+    "status": "FAIL"
+  },
+  "uniqueness_validation_email_country": {
+    "source_duplicates": "0",
+    "target_duplicates": "25",
+    "source_dupe_percent": "0.00%",
+    "target_dupe_percent": "0.25%",
+    "threshold_percent": "0.00%",
+    "status": "FAIL"
+  }
+}
+```
+
+Notes:
+- Aggregate aliases include the column + aggregate name, e.g., `agg_validation_total_logins_SUM`.
+- Null validation aliases include the column validated, e.g., `null_validation_status`.
+- Uniqueness aliases include the concatenated columns, e.g., `uniqueness_validation_email_country`.
+
+#### Querying payloads (SQL snippets)
+
+Use Databricks SQL to pull specific validation details from `result_payload`.
+
+Example: latest run for a job with selected fields
+
+```sql
+WITH latest AS (
+  SELECT MAX(run_id) AS run_id
+  FROM datapact.results.run_history
+  WHERE job_name = 'DataPact Enterprise Demo'
+)
+SELECT
+  task_key,
+  status,
+  get_json_object(to_json(result_payload), '$.count_validation.relative_diff_percent') AS count_diff_pct,
+  get_json_object(to_json(result_payload), '$.agg_validation_total_logins_SUM.status') AS agg_sum_status,
+  get_json_object(to_json(result_payload), '$.null_validation_status.status') AS null_status,
+  get_json_object(to_json(result_payload), '$.uniqueness_validation_email_country.status') AS uniqueness_status
+FROM datapact.results.run_history r
+JOIN latest ON r.run_id = latest.run_id
+WHERE job_name = 'DataPact Enterprise Demo'
+ORDER BY task_key;
+```
+
+Example: trend of uniqueness failures over time
+
+```sql
+SELECT
+  date(timestamp) AS run_date,
+  COUNT(CASE WHEN to_json(result_payload) LIKE '%"uniqueness_validation_"%"status":"FAIL"%' THEN 1 END) AS uniqueness_failures
+FROM datapact.results.run_history
+WHERE job_name = 'DataPact Enterprise Demo'
+GROUP BY 1
+ORDER BY 1;
+```
+
+Example: list tasks failing any aggregate (SUM) on `total_logins`
+
+```sql
+SELECT
+  run_id,
+  task_key,
+  get_json_object(to_json(result_payload), '$.agg_validation_total_logins_SUM.status') AS status,
+  get_json_object(to_json(result_payload), '$.agg_validation_total_logins_SUM.relative_diff_percent') AS diff_pct
+FROM datapact.results.run_history
+WHERE job_name = 'DataPact Enterprise Demo'
+  AND get_json_object(to_json(result_payload), '$.agg_validation_total_logins_SUM.status') = 'FAIL'
+ORDER BY run_id DESC, task_key;
+```
 
 #### Simplified Configuration with Environment Variables
 

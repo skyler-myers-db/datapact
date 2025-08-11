@@ -191,3 +191,72 @@ def test_full_combo_contains_all_sections_and_cross_joins_in_order():
     )  # pk hash
     assert "total_compared_v" in sql  # nulls joined
     assert "source_value_v_SUM - target_value_v_SUM" in sql  # agg
+
+
+def test_uniqueness_only_block_exact_fragments():
+    p = _base_payload()
+    p.update(
+        {
+            "uniqueness_columns": ["email"],
+            "uniqueness_threshold": 0.0,
+        }
+    )
+    sql = _render(p)
+    # CTE structure
+    assert "uniqueness_metrics AS (" in sql
+    assert "GROUP BY `email`" in sql
+    # Payload fields
+    assert "AS uniqueness_validation_email" in sql
+    assert "FORMAT_NUMBER(source_duplicates, '#,##0') AS source_duplicates," in sql
+    assert "FORMAT_NUMBER(target_duplicates, '#,##0') AS target_duplicates," in sql
+    assert "source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0)" in sql
+    assert "target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0)" in sql
+    # Overall pass condition includes both source and target constraints
+    assert (
+        "COALESCE(source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0), 0) <= 0.0"
+        in sql
+    )
+    assert (
+        "COALESCE(target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0), 0) <= 0.0"
+        in sql
+    )
+
+
+def test_full_combo_includes_uniqueness_cross_join_order():
+    p = _base_payload()
+    p.update(
+        {
+            "count_tolerance": 0.01,
+            "primary_keys": ["id"],
+            "pk_row_hash_check": True,
+            "pk_hash_threshold": 0.0,
+            "hash_columns": ["id", "v"],
+            "null_validation_threshold": 0.02,
+            "null_validation_columns": ["v"],
+            "agg_validations": [
+                {"column": "v", "validations": [{"agg": "sum", "tolerance": 0.05}]}
+            ],
+            "uniqueness_columns": ["email"],
+            "uniqueness_threshold": 0.0,
+        }
+    )
+    sql = _render(p)
+    cj_idx = sql.index("FROM\n")
+    cj_block = sql[cj_idx : cj_idx + 600]
+    # Order should match append sequence; uniqueness_metrics comes last
+    assert (
+        "count_metrics CROSS JOIN row_hash_metrics CROSS JOIN null_metrics_v CROSS JOIN agg_metrics_v_SUM CROSS JOIN uniqueness_metrics"
+        in cj_block
+    )
+
+
+def test_uniqueness_multi_columns_alias():
+    p = _base_payload()
+    p.update(
+        {
+            "uniqueness_columns": ["email", "domain"],
+            "uniqueness_threshold": 0.0,
+        }
+    )
+    sql = _render(p)
+    assert "AS uniqueness_validation_email_domain" in sql

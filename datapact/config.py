@@ -78,11 +78,15 @@ class ValidationTask(BaseModel):
     null_validation_threshold: float | None = None
     null_validation_columns: list[str] | None = None
     agg_validations: list[AggValidation] | None = None
+    # New optional validations
+    uniqueness_columns: list[str] | None = None
+    uniqueness_threshold: float | None = None
 
     @field_validator(
         "count_tolerance",
         "pk_hash_threshold",
         "null_validation_threshold",
+        "uniqueness_threshold",
     )
     @classmethod
     def tolerance_must_be_a_ratio(cls, v: float | None) -> float | None:
