@@ -194,7 +194,8 @@ SELECT
     {%- endfor -%}
     {%- endif -%}
 
-  {# Uniqueness payload #}{% if uniqueness_columns and uniqueness_threshold is not none -%}
+  {# Uniqueness payload #}
+  {% if uniqueness_columns and uniqueness_threshold is not none -%}
     {{ comma() }}
     struct(
       FORMAT_NUMBER(source_duplicates, '#,##0') AS source_duplicates,
