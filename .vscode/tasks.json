@@ -1,0 +1,155 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "pytest",
+			"type": "shell",
+			"command": "/Users/smyers/datapact/.venv/bin/python",
+			"args": [
+				"-m",
+				"pytest",
+				"-q"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$pytest"
+			],
+			"group": "build"
+		},
+		{
+			"label": "pytest",
+			"type": "shell",
+			"command": "/Users/smyers/datapact/.venv/bin/python",
+			"args": [
+				"-m",
+				"pytest",
+				"-q"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$pytest"
+			],
+			"group": "build"
+		},
+		{
+			"label": "pytest",
+			"type": "shell",
+			"command": "/Users/smyers/datapact/.venv/bin/python",
+			"args": [
+				"-m",
+				"pytest",
+				"-q"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$pytest"
+			],
+			"group": "build"
+		},
+		{
+			"label": "pytest",
+			"type": "shell",
+			"command": "/Users/smyers/datapact/.venv/bin/python",
+			"args": [
+				"-m",
+				"pytest",
+				"-q"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$pytest"
+			],
+			"group": "build"
+		},
+		{
+			"label": "pytest",
+			"type": "shell",
+			"command": "/Users/smyers/datapact/.venv/bin/python",
+			"args": [
+				"-m",
+				"pytest",
+				"-q"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$pytest"
+			],
+			"group": "build"
+		},
+		{
+			"label": "pytest",
+			"type": "shell",
+			"command": "/Users/smyers/datapact/.venv/bin/python",
+			"args": [
+				"-m",
+				"pytest",
+				"-q"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$pytest"
+			],
+			"group": "build"
+		},
+		{
+			"label": "pytest",
+			"type": "shell",
+			"command": "/Users/smyers/datapact/.venv/bin/python",
+			"args": [
+				"-m",
+				"pytest",
+				"-q"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$pytest"
+			],
+			"group": "build"
+		},
+		{
+			"label": "pytest",
+			"type": "shell",
+			"command": "/Users/smyers/datapact/.venv/bin/python",
+			"args": [
+				"-m",
+				"pytest",
+				"-q"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$pytest"
+			],
+			"group": "build"
+		},
+		{
+			"label": "pytest",
+			"type": "shell",
+			"command": "/Users/smyers/datapact/.venv/bin/python",
+			"args": [
+				"-m",
+				"pytest",
+				"-q"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$pytest"
+			],
+			"group": "build"
+		},
+		{
+			"label": "pytest",
+			"type": "shell",
+			"command": "/Users/smyers/datapact/.venv/bin/python",
+			"args": [
+				"-m",
+				"pytest",
+				"-q"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$pytest"
+			],
+			"group": "build"
+		}
+	]
+}
