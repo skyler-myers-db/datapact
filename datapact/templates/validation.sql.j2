@@ -5,7 +5,12 @@
 {% set cte_names = [] %}
 
 {# Begin view creation #}
-{% set has_any = (count_tolerance is not none) or (pk_row_hash_check and primary_keys) or (null_validation_columns and null_validation_threshold is not none) or (agg_validations) %}
+{% set has_any = (count_tolerance is not none)
+  or (pk_row_hash_check and primary_keys)
+  or (null_validation_columns and null_validation_threshold is not none)
+  or (agg_validations)
+  or (uniqueness_columns and uniqueness_threshold is not none)
+%}
 {% if not has_any %}
 CREATE OR REPLACE TEMP VIEW final_metrics_view AS SELECT true as overall_validation_passed, parse_json(to_json(struct('No validations configured for task {{ task_key_ }}' as message))) as result_payload;
 {% else %}

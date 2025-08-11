@@ -469,7 +469,7 @@ class DataPactClient:
                 "displayName": "Detailed Run History",
                 "queryLines": [
                     q(
-                        "SELECT task_key, status, timestamp, to_json(result_payload) as payload_json FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"
+                        "SELECT task_key, status, timestamp, to_json(result_payload) as payload_json, run_id, job_name FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"
                     )
                 ],
             },
@@ -478,7 +478,7 @@ class DataPactClient:
                 "displayName": "Latest Run Details",
                 "queryLines": [
                     q(
-                        "SELECT task_key, status, timestamp, to_json(result_payload) as payload_json FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') ORDER BY status DESC, task_key"
+                        "SELECT task_key, status, timestamp, to_json(result_payload) as payload_json, run_id, job_name FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') ORDER BY status DESC, task_key"
                     )
                 ],
             },
@@ -682,7 +682,14 @@ class DataPactClient:
             elif w_def["type"] == "TABLE":
                 query_fields = [
                     {"name": c, "expression": f"`{c}`"}
-                    for c in ["task_key", "status", "timestamp", "payload_json"]
+                    for c in [
+                        "task_key",
+                        "status",
+                        "timestamp",
+                        "payload_json",
+                        "run_id",
+                        "job_name",
+                    ]
                 ]
                 spec = {
                     "version": 3,
@@ -696,6 +703,8 @@ class DataPactClient:
                                 "fieldName": "payload_json",
                                 "displayName": "Result Payload",
                             },
+                            {"fieldName": "run_id", "displayName": "Run ID"},
+                            {"fieldName": "job_name", "displayName": "Job Name"},
                         ]
                     },
                 }
@@ -728,6 +737,14 @@ class DataPactClient:
                     "name": "main_page",
                     "displayName": "DataPact Validation Results",
                     "layout": layout_widgets,
+                    "filters": [
+                        {
+                            "name": "job_name",
+                            "dataset": "ds_history",
+                            "field": "job_name",
+                        },
+                        {"name": "run_id", "dataset": "ds_history", "field": "run_id"},
+                    ],
                     "pageType": "PAGE_TYPE_CANVAS",
                 },
                 {
@@ -759,6 +776,14 @@ class DataPactClient:
                                                     "name": "payload_json",
                                                     "expression": "`payload_json`",
                                                 },
+                                                {
+                                                    "name": "run_id",
+                                                    "expression": "`run_id`",
+                                                },
+                                                {
+                                                    "name": "job_name",
+                                                    "expression": "`job_name`",
+                                                },
                                             ],
                                             "disaggregated": False,
                                         },
@@ -784,6 +809,14 @@ class DataPactClient:
                                             {
                                                 "fieldName": "payload_json",
                                                 "displayName": "Result Payload",
+                                            },
+                                            {
+                                                "fieldName": "run_id",
+                                                "displayName": "Run ID",
+                                            },
+                                            {
+                                                "fieldName": "job_name",
+                                                "displayName": "Job Name",
                                             },
                                         ]
                                     },
@@ -839,6 +872,18 @@ class DataPactClient:
                                 },
                             },
                             "position": {"x": 0, "y": 18, "width": 6, "height": 9},
+                        },
+                    ],
+                    "filters": [
+                        {
+                            "name": "job_name",
+                            "dataset": "ds_latest_run_details",
+                            "field": "job_name",
+                        },
+                        {
+                            "name": "run_id",
+                            "dataset": "ds_latest_run_details",
+                            "field": "run_id",
                         },
                     ],
                     "pageType": "PAGE_TYPE_CANVAS",
