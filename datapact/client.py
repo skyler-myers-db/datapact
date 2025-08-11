@@ -277,10 +277,6 @@ class DataPactClient:
                 elif name == "failure_rate_over_time": viz_type = "CHART"; viz_options = {"globalSeriesType": "line"}
                 elif name == "top_failing_tasks": viz_type = "CHART"; viz_options = {"globalSeriesType": "bar"}
                 viz = w.visualizations.create(query_id=query_obj.id, type=viz_type, name=f"Viz-{name}", options=viz_options)
-                        "  SELECT 'uniqueness' AS validation_type,\n"
-                        '         SUM(CASE WHEN to_json(result_payload) LIKE \'%"uniqueness_validation_"%"status":"FAIL"%\' THEN 1 ELSE 0 END) AS failure_count\n'
-                        "  FROM {table} WHERE job_name='{job}'\n"
-                        "  UNION ALL\n"
                 widgets.append(sql_service.WidgetCreate(visualization_id=viz.id))
 
             dashboard = w.dashboards.create(name=dashboard_name, warehouse_id=warehouse_id, widgets=widgets)
@@ -459,6 +455,10 @@ class DataPactClient:
                         "  UNION ALL\n"
                         "  SELECT 'nulls' AS validation_type,\n"
                         '         SUM(CASE WHEN to_json(result_payload) LIKE \'%"null_validation_%"%"status":"FAIL"%\' THEN 1 ELSE 0 END) AS failure_count\n'
+                        "  FROM {table} WHERE job_name='{job}'\n"
+                        "  UNION ALL\n"
+                        "  SELECT 'uniqueness' AS validation_type,\n"
+                        '         SUM(CASE WHEN to_json(result_payload) LIKE \'%"uniqueness_validation_"%"status":"FAIL"%\' THEN 1 ELSE 0 END) AS failure_count\n'
                         "  FROM {table} WHERE job_name='{job}'\n"
                         "  UNION ALL\n"
                         "  SELECT 'aggregates' AS validation_type,\n"
