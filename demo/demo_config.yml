@@ -127,9 +127,9 @@ validations:
     null_validation_columns: ["category"]
 
   # ============================ CROSS-DOMAIN EXAMPLE ============================
-  # 13. FAIL: Multi-column uniqueness check: enforces uniqueness on (email, country)
+  # 13. PASS: Multi-column uniqueness check: enforces uniqueness on (email, country)
   # Demonstrates alias naming in payload as `uniqueness_validation_email_country`.
-  - task_key: "validate_users_email_country_uniqueness_FAIL"
+  - task_key: "validate_users_email_country_uniqueness_PASS"
     <<: *defaults
     source_table: "users"
     target_table: "users"
