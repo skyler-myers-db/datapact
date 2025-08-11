@@ -112,6 +112,23 @@ class DataPactClient:
             )
         return self._env
 
+    # Resource management helpers
+    def close(self: "DataPactClient") -> None:
+        """Release cached resources held by this client.
+
+        Currently clears the cached Jinja2 Environment to avoid keeping template
+        loader references alive for long-lived client instances.
+        """
+        self._env = None
+
+    def __enter__(self: "DataPactClient") -> "DataPactClient":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        self.close()
+        # Do not suppress exceptions
+        return False
+
     def _execute_sql(
         self: "DataPactClient",
         sql: str,
