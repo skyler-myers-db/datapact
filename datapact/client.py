@@ -97,16 +97,20 @@ class DataPactClient:
         self.user_name: str | None = self.w.current_user.me().user_name
         self.root_path: str = f"/Users/{self.user_name}/datapact"
         self.w.workspace.mkdirs(self.root_path)
+        # Cache for Jinja2 Environment to avoid re-instantiation per render
+        self._env: Environment | None = None
 
     def _jinja_env(self: "DataPactClient") -> Environment:
-        """Creates and returns a Jinja2 environment configured for SQL template rendering."""
-        return Environment(
-            loader=PackageLoader("datapact", "templates"),
-            autoescape=False,
-            trim_blocks=True,
-            lstrip_blocks=True,
-            extensions=["jinja2.ext.do"],
-        )
+        """Return a cached Jinja2 environment configured for SQL template rendering."""
+        if self._env is None:
+            self._env = Environment(
+                loader=PackageLoader("datapact", "templates"),
+                autoescape=False,
+                trim_blocks=True,
+                lstrip_blocks=True,
+                extensions=["jinja2.ext.do"],
+            )
+        return self._env
 
     def _execute_sql(
         self: "DataPactClient",
@@ -261,7 +265,7 @@ class DataPactClient:
                 "run_summary": f"SELECT status, COUNT(1) as task_count FROM {results_table_fqn} WHERE run_id = (SELECT MAX(run_id) FROM {results_table_fqn} WHERE job_name = '{job_name}') GROUP BY status",
                 "failure_rate_over_time": f"SELECT to_date(timestamp) as run_date, COUNT(CASE WHEN status = 'FAILURE' THEN 1 END) * 100.0 / COUNT(1) as failure_rate_percent FROM {results_table_fqn} WHERE job_name = '{job_name}' GROUP BY 1 ORDER BY 1",
                 "top_failing_tasks": f"SELECT task_key, COUNT(1) as failure_count FROM {results_table_fqn} WHERE status = 'FAILURE' AND job_name = '{job_name}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10",
-                "raw_history": f"SELECT * FROM {results_table_fqn} WHERE job_name = '{job_name}' ORDER BY timestamp DESC, task_key"
+                "raw_history": f"SELECT task_key, status, run_id, job_id, job_name, timestamp, result_payload FROM {results_table_fqn} WHERE job_name = '{job_name}' ORDER BY timestamp DESC, task_key"
             }
 
             widgets = []
@@ -313,7 +317,7 @@ class DataPactClient:
         agg_sql_script: str = textwrap.dedent(
             f"""
             WITH run_results AS (
-                SELECT * FROM {results_table} WHERE run_id = :run_id
+                SELECT task_key, status FROM {results_table} WHERE run_id = :run_id
             ),
             agg_metrics AS (
                 SELECT
@@ -409,9 +413,9 @@ class DataPactClient:
                 "displayName": "KPI Metrics (Latest Run)",
                 "queryLines": [
                     q(
-                        "WITH latest_run AS (SELECT * FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')) "
+                        "WITH latest_run AS (SELECT task_key, status FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')) "
                         "SELECT COUNT(*) as total_tasks, COUNT(IF(status = 'FAILURE', 1, NULL)) as failed_tasks, "
-                        "COUNT(IF(status = 'SUCCESS', 1, NULL)) * 1.0 / COUNT(*) as success_rate_percent FROM latest_run"  # Corrected: Removed * 100
+                        "COUNT(IF(status = 'SUCCESS', 1, NULL)) * 1.0 / COUNT(*) as success_rate_percent FROM latest_run"
                     )
                 ],
             },
@@ -732,9 +736,7 @@ class DataPactClient:
             - Uploads SQL scripts to the workspace.
             - Logs job progress and results.
         """
-        warehouse: sql_service.EndpointInfo = self._ensure_sql_warehouse(
-            warehouse_name
-        )
+        warehouse: sql_service.EndpointInfo = self._ensure_sql_warehouse(warehouse_name)
         final_results_table = (
             f"`{results_table}`"
             if results_table
