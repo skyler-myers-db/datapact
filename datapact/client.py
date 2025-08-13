@@ -26,9 +26,11 @@ from loguru import logger
 from jinja2 import Environment, PackageLoader
 from .config import DataPactConfig, ValidationTask
 from .sql_generator import render_validation_sql, render_aggregate_sql
+from .sql_utils import escape_sql_string, validate_job_name
 from .job_orchestrator import (
     build_tasks,
     add_dashboard_refresh_task,
+    add_genie_room_task,
     ensure_job,
     run_and_wait,
 )
@@ -92,7 +94,17 @@ class DataPactClient:
             Creates the datapact root directory in the user's Databricks workspace if it does not already exist.
         """
         logger.info(f"Initializing WorkspaceClient with profile '{profile}'...")
-        self.w: WorkspaceClient = WorkspaceClient(profile=profile)
+        # Configure for enterprise-scale operations with extended timeout
+        try:
+            from databricks.sdk.config import Config
+
+            config = Config(
+                profile=profile, http_timeout_seconds=1200
+            )  # 20 minute timeout
+            self.w: WorkspaceClient = WorkspaceClient(config=config)
+        except ValueError:
+            # Fallback for tests or environments without profile configured
+            self.w: WorkspaceClient = WorkspaceClient(profile=profile)
         self.user_name: str | None = self.w.current_user.me().user_name
         self.root_path: str = f"/Users/{self.user_name}/datapact"
         self.w.workspace.mkdirs(self.root_path)
@@ -225,6 +237,113 @@ class DataPactClient:
         """Render validation SQL for a single task via the SQL generator module."""
         return render_validation_sql(self._jinja_env(), config, results_table, job_name)
 
+    def _generate_genie_room_sql(
+        self: "DataPactClient",
+        results_table: str,
+        job_name: str,
+    ) -> str:
+        """Generate SQL script for creating curated datasets for Genie room.
+
+        This creates materialized views of the validation results optimized for
+        natural language querying through Databricks AI/BI Genie.
+        """
+        # Safely escape SQL values to prevent injection
+        safe_job_name = escape_sql_string(validate_job_name(job_name))
+
+        return f"""-- DataPact Genie Room Data Preparation
+-- Creates curated datasets for natural language analysis in Databricks AI/BI Genie
+-- After this runs, create a Genie space in the UI using these tables
+
+-- 1. Current validation status summary
+CREATE OR REPLACE TABLE datapact_genie_current_status AS
+SELECT
+    task_key as validation_name,
+    CASE status
+        WHEN 'SUCCESS' THEN 'Passed'
+        WHEN 'FAILURE' THEN 'Failed'
+        ELSE status
+    END as validation_status,
+    get_json_object(to_json(result_payload), '$.source_catalog') || '.' ||
+    get_json_object(to_json(result_payload), '$.source_schema') || '.' ||
+    get_json_object(to_json(result_payload), '$.source_table') as source_table,
+    get_json_object(to_json(result_payload), '$.target_catalog') || '.' ||
+    get_json_object(to_json(result_payload), '$.target_schema') || '.' ||
+    get_json_object(to_json(result_payload), '$.target_table') as target_table,
+    timestamp as last_validated,
+    CASE
+        WHEN get_json_object(to_json(result_payload), '$.count_validation.status') = 'FAIL' THEN 'Row count mismatch'
+        WHEN get_json_object(to_json(result_payload), '$.row_hash_validation.status') = 'FAIL' THEN 'Data integrity issue'
+        WHEN to_json(result_payload) LIKE '%null_validation%FAIL%' THEN 'Missing required data'
+        WHEN to_json(result_payload) LIKE '%uniqueness_validation%FAIL%' THEN 'Duplicate records found'
+        WHEN to_json(result_payload) LIKE '%agg_validation%FAIL%' THEN 'Business rule violation'
+        WHEN status = 'SUCCESS' THEN 'All checks passed'
+        ELSE 'Unknown issue'
+    END as issue_type,
+    get_json_object(to_json(result_payload), '$.count_validation.source_count') as source_row_count,
+    get_json_object(to_json(result_payload), '$.count_validation.target_count') as target_row_count,
+    run_id,
+    job_name
+FROM {results_table}
+WHERE job_name = {safe_job_name}
+AND run_id = (SELECT MAX(run_id) FROM {results_table} WHERE job_name = {safe_job_name});
+
+-- 2. Data quality metrics by table
+CREATE OR REPLACE TABLE datapact_genie_table_quality AS
+SELECT
+    CONCAT(get_json_object(to_json(result_payload), '$.source_schema'), '.',
+           get_json_object(to_json(result_payload), '$.source_table')) as table_name,
+    COUNT(*) as total_validations,
+    SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) as passed_validations,
+    SUM(CASE WHEN status = 'FAILURE' THEN 1 ELSE 0 END) as failed_validations,
+    ROUND(100.0 * SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) / COUNT(*), 2) as quality_score,
+    MAX(timestamp) as last_checked
+FROM {results_table}
+WHERE job_name = {safe_job_name}
+AND run_id = (SELECT MAX(run_id) FROM {results_table} WHERE job_name = {safe_job_name})
+GROUP BY 1;
+
+-- 3. Issue details for failed validations
+CREATE OR REPLACE TABLE datapact_genie_issues AS
+SELECT
+    task_key as validation_name,
+    get_json_object(to_json(result_payload), '$.source_table') as table_name,
+    CASE
+        WHEN get_json_object(to_json(result_payload), '$.count_validation.status') = 'FAIL' THEN
+            CONCAT('Expected ', get_json_object(to_json(result_payload), '$.count_validation.source_count'),
+                   ' rows but found ', get_json_object(to_json(result_payload), '$.count_validation.target_count'))
+        WHEN get_json_object(to_json(result_payload), '$.row_hash_validation.status') = 'FAIL' THEN
+            CONCAT('Data integrity check failed for ',
+                   get_json_object(to_json(result_payload), '$.row_hash_validation.failed_count'), ' records')
+        ELSE 'Validation failed - check details'
+    END as issue_description,
+    timestamp as detected_at,
+    'High' as severity
+FROM {results_table}
+WHERE job_name = {safe_job_name}
+AND status = 'FAILURE'
+AND run_id = (SELECT MAX(run_id) FROM {results_table} WHERE job_name = {safe_job_name});
+
+-- Display instructions for setting up Genie space
+SELECT '🚀 GENIE ROOM SETUP INSTRUCTIONS' as title,
+'Your data quality datasets have been created! To enable natural language analysis:
+
+1. Go to Databricks AI/BI → Create → Genie Space
+2. Add these tables as data sources:
+   • datapact_genie_current_status - Current validation results
+   • datapact_genie_table_quality - Quality scores by table
+   • datapact_genie_issues - Detailed issue tracking
+3. Set the space description: "Data quality validation results for ' || {safe_job_name} || '"
+4. Add sample questions:
+   • What tables have data quality issues?
+   • Show me all failed validations
+   • Which tables have the lowest quality scores?
+   • What are the most common types of validation failures?
+   • How many records are affected by data integrity issues?
+5. Save and share the Genie space with your team
+
+Once created, users can ask questions in natural language to analyze data quality!' as instructions;
+"""
+
     def _generate_dashboard_notebook_content(self: "DataPactClient") -> str:
         """Generates the Python code for the dashboard-creation notebook."""
         return textwrap.dedent(
@@ -331,6 +450,18 @@ class DataPactClient:
             format=workspace.ImportFormat.RAW,
         )
         asset_paths["aggregate_results"] = agg_script_path
+
+        # Generate and upload Genie room setup SQL
+        genie_script_path: str = f"{job_assets_path}/setup_genie_datasets.sql"
+        genie_sql_script: str = self._generate_genie_room_sql(results_table, job_name)
+        self.w.workspace.upload(
+            path=genie_script_path,
+            content=genie_sql_script.encode("utf-8"),
+            overwrite=True,
+            format=workspace.ImportFormat.RAW,
+        )
+        asset_paths["setup_genie_datasets"] = genie_script_path
+
         logger.success("All SQL scripts uploaded successfully.")
         return asset_paths
 
@@ -393,11 +524,14 @@ class DataPactClient:
             )
             self.w.workspace.delete(path=draft_path, recursive=True)
             time.sleep(2)
-        except NotFound:
+        except (NotFound, Exception):
+            # NotFound or any other exception means the file doesn't exist
             logger.info("Dashboard file does not yet exist – will create")
 
         def q(sql):
-            return sql.format(table=results_table_fqn, job=job_name)
+            # Safely escape job name to prevent SQL injection
+            safe_job_name = escape_sql_string(validate_job_name(job_name))
+            return sql.format(table=results_table_fqn, job=safe_job_name)
 
         # Define all datasets needed for the dashboard
         datasets: list[dict[str, Any]] = [
@@ -406,14 +540,17 @@ class DataPactClient:
                 "displayName": "Executive KPI Dashboard",
                 "queryLines": [
                     q(
-                        "WITH latest_run AS (SELECT task_key, status, started_at, completed_at, source_catalog, source_schema, source_table, result_payload "
-                        "FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')) "
+                        "WITH latest_run AS (SELECT task_key, status, "
+                        "get_json_object(to_json(result_payload), '$.source_catalog') as source_catalog, "
+                        "get_json_object(to_json(result_payload), '$.source_schema') as source_schema, "
+                        "get_json_object(to_json(result_payload), '$.source_table') as source_table, "
+                        "result_payload "
+                        "FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name={job})) "
                         "SELECT COUNT(*) as total_tasks, "
                         "COUNT(IF(status = 'FAILURE', 1, NULL)) as failed_tasks, "
                         "ROUND(COUNT(IF(status = 'SUCCESS', 1, NULL)) * 100.0 / COUNT(*), 2) as success_rate_percent, "
-                        "ROUND(COUNT(IF(status = 'SUCCESS', 1, NULL)) * 100.0 / COUNT(*), 2) as data_quality_score, "
-                        "ROUND(AVG(CAST(DATEDIFF(SECOND, started_at, completed_at) AS DOUBLE)), 2) as avg_runtime_seconds, "
-                        "COUNT(DISTINCT CONCAT(source_catalog, '.', source_schema, '.', source_table)) as tables_validated "
+                        "ROUND(COUNT(IF(status = 'SUCCESS', 1, NULL)) * 1.0 / COUNT(*), 4) as data_quality_score, "
+                        "COUNT(*) as tables_validated "
                         "FROM latest_run"
                     )
                 ],
@@ -428,7 +565,7 @@ class DataPactClient:
                         "WHEN 'FAILURE' THEN 'Failed' "
                         "ELSE status END as status, "
                         "COUNT(*) as task_count "
-                        "FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') "
+                        "FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name={job}) "
                         "GROUP BY status"
                     )
                 ],
@@ -442,7 +579,7 @@ class DataPactClient:
                         "ROUND(COUNT(IF(status='FAILURE',1,NULL))*100.0/COUNT(*), 2) as failure_rate, "
                         "ROUND(COUNT(IF(status='SUCCESS',1,NULL))*100.0/COUNT(*), 2) as success_rate, "
                         "COUNT(*) as validations_run "
-                        "FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1 DESC LIMIT 30"
+                        "FROM {table} WHERE job_name={job} GROUP BY 1 ORDER BY 1 DESC LIMIT 30"
                     )
                 ],
             },
@@ -451,7 +588,7 @@ class DataPactClient:
                 "displayName": "Top Failing Tasks",
                 "queryLines": [
                     q(
-                        "SELECT task_key, COUNT(*) as failure_count FROM {table} WHERE status='FAILURE' AND job_name='{job}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10"
+                        "SELECT task_key, COUNT(*) as failure_count FROM {table} WHERE status='FAILURE' AND job_name={job} GROUP BY 1 ORDER BY 2 DESC LIMIT 10"
                     )
                 ],
             },
@@ -460,27 +597,35 @@ class DataPactClient:
                 "displayName": "Issue Classification & Impact Analysis",
                 "queryLines": [
                     q(
-                        "SELECT validation_type, failure_count FROM (\n"
-                        "  SELECT 'Row Count Mismatch' AS validation_type,\n"
-                        "         SUM(CASE WHEN get_json_object(to_json(result_payload), '$.count_validation.status') = 'FAIL' THEN 1 ELSE 0 END) AS failure_count\n"
-                        "  FROM {table} WHERE job_name='{job}' AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')\n"
+                        "WITH failure_details AS (\n"
+                        "  SELECT task_key, result_payload\n"
+                        "  FROM {table}\n"
+                        "  WHERE job_name={job} AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name={job})\n"
+                        "    AND status = 'FAILURE'\n"
+                        ")\n"
+                        "SELECT validation_type, COUNT(DISTINCT task_key) as failure_count FROM (\n"
+                        "  SELECT task_key, 'Row Count Mismatch' AS validation_type\n"
+                        "  FROM failure_details\n"
+                        "  WHERE get_json_object(to_json(result_payload), '$.count_validation.status') = 'FAIL'\n"
                         "  UNION ALL\n"
-                        "  SELECT 'Data Integrity Issue' AS validation_type,\n"
-                        "         SUM(CASE WHEN get_json_object(to_json(result_payload), '$.pk_hash_validation.status') = 'FAIL' THEN 1 ELSE 0 END) AS failure_count\n"
-                        "  FROM {table} WHERE job_name='{job}' AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')\n"
+                        "  SELECT task_key, 'Data Integrity Issue' AS validation_type\n"
+                        "  FROM failure_details\n"
+                        "  WHERE get_json_object(to_json(result_payload), '$.row_hash_validation.status') = 'FAIL'\n"
                         "  UNION ALL\n"
-                        "  SELECT 'Data Completeness' AS validation_type,\n"
-                        '         SUM(CASE WHEN to_json(result_payload) LIKE \'%"null_validation_%"%"status":"FAIL"%\' THEN 1 ELSE 0 END) AS failure_count\n'
-                        "  FROM {table} WHERE job_name='{job}' AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')\n"
+                        "  SELECT task_key, 'Data Completeness' AS validation_type\n"
+                        "  FROM failure_details\n"
+                        "  WHERE to_json(result_payload) LIKE '%null_validation_%status%FAIL%'\n"
                         "  UNION ALL\n"
-                        "  SELECT 'Duplicate Records' AS validation_type,\n"
-                        '         SUM(CASE WHEN to_json(result_payload) LIKE \'%"uniqueness_validation_"%"status":"FAIL"%\' THEN 1 ELSE 0 END) AS failure_count\n'
-                        "  FROM {table} WHERE job_name='{job}' AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')\n"
+                        "  SELECT task_key, 'Duplicate Records' AS validation_type\n"
+                        "  FROM failure_details\n"
+                        "  WHERE to_json(result_payload) LIKE '%uniqueness_validation_%status%FAIL%'\n"
                         "  UNION ALL\n"
-                        "  SELECT 'Business Rule Violation' AS validation_type,\n"
-                        '         SUM(CASE WHEN to_json(result_payload) LIKE \'%"agg_validation_%"%"status":"FAIL"%\' THEN 1 ELSE 0 END) AS failure_count\n'
-                        "  FROM {table} WHERE job_name='{job}' AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}')\n"
-                        ") t WHERE failure_count > 0 ORDER BY failure_count DESC"
+                        "  SELECT task_key, 'Business Rule Violation' AS validation_type\n"
+                        "  FROM failure_details\n"
+                        "  WHERE to_json(result_payload) LIKE '%agg_validation_%status%FAIL%'\n"
+                        ") t\n"
+                        "GROUP BY validation_type\n"
+                        "ORDER BY failure_count DESC"
                     )
                 ],
             },
@@ -489,24 +634,27 @@ class DataPactClient:
                 "displayName": "Detailed Run History",
                 "queryLines": [
                     q(
-                        "SELECT task_key, status, timestamp, to_json(result_payload) as payload_json, run_id, job_name FROM {table} WHERE job_name='{job}' ORDER BY timestamp DESC, task_key"
+                        "SELECT task_key, status, timestamp, to_json(result_payload) as payload_json, run_id, job_name FROM {table} WHERE job_name={job} ORDER BY timestamp DESC, task_key"
                     )
                 ],
             },
             {
                 "name": "ds_latest_run_details",
-                "displayName": "Validation Results Dashboard",
+                "displayName": "All Run Details",
                 "queryLines": [
                     q(
                         "SELECT task_key, "
-                        "CASE status WHEN 'SUCCESS' THEN 'PASSED' WHEN 'FAILURE' THEN 'FAILED' ELSE status END as status, "
-                        "CONCAT(source_catalog, '.', source_schema, '.', source_table) as source_table, "
-                        "CONCAT(target_catalog, '.', target_schema, '.', target_table) as target_table, "
+                        "CASE status WHEN 'SUCCESS' THEN '✅ PASSED' WHEN 'FAILURE' THEN '❌ FAILED' ELSE status END as status, "
+                        "CONCAT(get_json_object(to_json(result_payload), '$.source_catalog'), '.', "
+                        "       get_json_object(to_json(result_payload), '$.source_schema'), '.', "
+                        "       get_json_object(to_json(result_payload), '$.source_table')) as source_table, "
+                        "CONCAT(get_json_object(to_json(result_payload), '$.target_catalog'), '.', "
+                        "       get_json_object(to_json(result_payload), '$.target_schema'), '.', "
+                        "       get_json_object(to_json(result_payload), '$.target_table')) as target_table, "
                         "DATE_FORMAT(timestamp, 'yyyy-MM-dd HH:mm:ss') as timestamp, "
-                        "ROUND(CAST(DATEDIFF(SECOND, started_at, completed_at) AS DOUBLE), 2) as runtime_seconds, "
-                        "to_json(result_payload) as payload_json, "
+                        "to_json(result_payload) as result_payload, "
                         "run_id, job_name "
-                        "FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name='{job}') "
+                        "FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name={job}) "
                         "ORDER BY CASE status WHEN 'FAILURE' THEN 0 ELSE 1 END, task_key"
                     )
                 ],
@@ -516,7 +664,7 @@ class DataPactClient:
                 "displayName": "Success Rate Over Time",
                 "queryLines": [
                     q(
-                        "SELECT date(timestamp) as run_date, COUNT(IF(status='SUCCESS',1,NULL))*100/COUNT(*) as success_rate FROM {table} WHERE job_name='{job}' GROUP BY 1 ORDER BY 1"
+                        "SELECT date(timestamp) as run_date, COUNT(IF(status='SUCCESS',1,NULL))*100/COUNT(*) as success_rate FROM {table} WHERE job_name={job} GROUP BY 1 ORDER BY 1"
                     )
                 ],
             },
@@ -526,21 +674,21 @@ class DataPactClient:
                 "queryLines": [
                     q(
                         "WITH impact_analysis AS ("
-                        "SELECT source_schema, "
+                        "SELECT COALESCE(get_json_object(to_json(result_payload), '$.source_schema'), 'Unknown Schema') as source_schema, "
                         "COUNT(*) as total_validations, "
                         "SUM(CASE WHEN status = 'FAILURE' THEN 1 ELSE 0 END) as failures, "
                         "ROUND(100.0 * SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) / COUNT(*), 2) as quality_score, "
                         "MAX(CASE WHEN status = 'FAILURE' THEN timestamp END) as last_failure "
                         "FROM {table} "
-                        "WHERE job_name = '{job}' "
-                        "AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name = '{job}') "
-                        "GROUP BY source_schema) "
+                        "WHERE job_name = {job} "
+                        "AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name = {job}) "
+                        "GROUP BY COALESCE(get_json_object(to_json(result_payload), '$.source_schema'), 'Unknown Schema')) "
                         "SELECT source_schema as schema_name, "
                         "total_validations, failures, quality_score, "
-                        "CASE WHEN failures = 0 THEN 'Excellent' "
-                        "WHEN quality_score >= 95 THEN 'Good' "
-                        "WHEN quality_score >= 90 THEN 'Fair' "
-                        "ELSE 'Needs Attention' END as health_status, "
+                        "CASE WHEN failures = 0 THEN '🟢 Excellent' "
+                        "WHEN quality_score >= 95 THEN '🟡 Good' "
+                        "WHEN quality_score >= 90 THEN '🟠 Fair' "
+                        "ELSE '🔴 Needs Attention' END as health_status, "
                         "COALESCE(DATE_FORMAT(last_failure, 'yyyy-MM-dd HH:mm'), 'No failures') as last_issue "
                         "FROM impact_analysis "
                         "ORDER BY failures DESC, quality_score ASC"
@@ -548,20 +696,108 @@ class DataPactClient:
                 ],
             },
             {
-                "name": "ds_pipeline_health",
-                "displayName": "Data Pipeline Health Matrix",
+                "name": "ds_exploded_checks",
+                "displayName": "Exploded View of All Validation Checks",
                 "queryLines": [
                     q(
-                        "SELECT CONCAT(source_schema, '.', source_table) as source_table, "
-                        "CONCAT(target_schema, '.', target_table) as target_table, "
-                        "COUNT(*) as checks_run, "
-                        "SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) as passed, "
-                        "SUM(CASE WHEN status = 'FAILURE' THEN 1 ELSE 0 END) as failed, "
-                        "ROUND(100.0 * SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) / COUNT(*), 2) as success_rate, "
-                        "MAX(timestamp) as last_validated "
-                        "FROM {table} WHERE job_name = '{job}' "
-                        "GROUP BY 1, 2 "
-                        "ORDER BY success_rate ASC, failed DESC"
+                        "WITH base_data AS ( "
+                        "  SELECT task_key, status, result_payload, run_id, job_name "
+                        "  FROM {table} "
+                        "  WHERE job_name = {job} "
+                        "  AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name = {job}) "
+                        "), "
+                        "expanded_checks AS ( "
+                        "  SELECT task_key, 'Count Validation' as check_type, "
+                        "    get_json_object(to_json(result_payload), '$.count_validation.status') as check_status, "
+                        "    CONCAT('Source: ', get_json_object(to_json(result_payload), '$.count_validation.source_count'), "
+                        "           ', Target: ', get_json_object(to_json(result_payload), '$.count_validation.target_count'), "
+                        "           ', Diff: ', get_json_object(to_json(result_payload), '$.count_validation.relative_diff_percent')) as details "
+                        "  FROM base_data "
+                        "  WHERE get_json_object(to_json(result_payload), '$.count_validation') IS NOT NULL "
+                        "  UNION ALL "
+                        "  SELECT task_key, 'Row Hash Validation' as check_type, "
+                        "    get_json_object(to_json(result_payload), '$.row_hash_validation.status') as check_status, "
+                        "    CONCAT('Compared: ', get_json_object(to_json(result_payload), '$.row_hash_validation.compared_rows'), "
+                        "           ', Mismatches: ', get_json_object(to_json(result_payload), '$.row_hash_validation.mismatch_count'), "
+                        "           ' (', get_json_object(to_json(result_payload), '$.row_hash_validation.mismatch_percent'), ')') as details "
+                        "  FROM base_data "
+                        "  WHERE get_json_object(to_json(result_payload), '$.row_hash_validation') IS NOT NULL "
+                        "  UNION ALL "
+                        "  SELECT task_key, CONCAT('Null Check: ', col_name) as check_type, "
+                        "    get_json_object(to_json(result_payload), CONCAT('$.null_validation_', col_name, '.status')) as check_status, "
+                        "    CONCAT('Source nulls: ', get_json_object(to_json(result_payload), CONCAT('$.null_validation_', col_name, '.source_nulls')), "
+                        "           ', Target nulls: ', get_json_object(to_json(result_payload), CONCAT('$.null_validation_', col_name, '.target_nulls'))) as details "
+                        "  FROM base_data "
+                        "  LATERAL VIEW explode(array('v1', 'v2', 'email', 'phone', 'price', 'stock_quantity')) t AS col_name "
+                        "  WHERE get_json_object(to_json(result_payload), CONCAT('$.null_validation_', col_name)) IS NOT NULL "
+                        "  UNION ALL "
+                        "  SELECT task_key, CONCAT('Uniqueness Check: ', col_name) as check_type, "
+                        "    get_json_object(to_json(result_payload), CONCAT('$.uniqueness_validation_', col_name, '.status')) as check_status, "
+                        "    CONCAT('Duplicates found: ', get_json_object(to_json(result_payload), CONCAT('$.uniqueness_validation_', col_name, '.duplicate_count'))) as details "
+                        "  FROM base_data "
+                        "  LATERAL VIEW explode(array('email', 'id', 'customer_id', 'order_id')) t AS col_name "
+                        "  WHERE get_json_object(to_json(result_payload), CONCAT('$.uniqueness_validation_', col_name)) IS NOT NULL "
+                        "  UNION ALL "
+                        "  SELECT task_key, CONCAT('Aggregation Check: ', col_agg) as check_type, "
+                        "    get_json_object(to_json(result_payload), CONCAT('$.agg_validation_', col_agg, '.status')) as check_status, "
+                        "    CONCAT('Source: ', get_json_object(to_json(result_payload), CONCAT('$.agg_validation_', col_agg, '.source_value')), "
+                        "           ', Target: ', get_json_object(to_json(result_payload), CONCAT('$.agg_validation_', col_agg, '.target_value')), "
+                        "           ', Diff: ', get_json_object(to_json(result_payload), CONCAT('$.agg_validation_', col_agg, '.relative_diff_percent'))) as details "
+                        "  FROM base_data "
+                        "  LATERAL VIEW explode(array('v1_SUM', 'v1_AVG', 'v2_SUM', 'total_spent_SUM', 'revenue_SUM', 'amount_SUM')) t AS col_agg "
+                        "  WHERE length(col_agg) > 0 AND get_json_object(to_json(result_payload), CONCAT('$.agg_validation_', col_agg)) IS NOT NULL "
+                        ") "
+                        "SELECT task_key as validation_name, "
+                        "  check_type, "
+                        "  CASE check_status "
+                        "    WHEN 'PASS' THEN '✅ PASS' "
+                        "    WHEN 'FAIL' THEN '❌ FAIL' "
+                        "    ELSE '⚠️ ' || COALESCE(check_status, 'UNKNOWN') "
+                        "  END as status, "
+                        "  details "
+                        "FROM expanded_checks "
+                        "ORDER BY task_key, check_type"
+                    )
+                ],
+            },
+            {
+                "name": "ds_validation_details",
+                "displayName": "Detailed Validation Results with Individual Check Status",
+                "queryLines": [
+                    q(
+                        "SELECT task_key as validation_name, "
+                        "CASE status "
+                        "  WHEN 'SUCCESS' THEN '✅' "
+                        "  WHEN 'FAILURE' THEN '❌' "
+                        "  ELSE '❓' END as overall_status, "
+                        "CASE WHEN get_json_object(to_json(result_payload), '$.count_validation.status') = 'PASS' THEN '✅ Count' "
+                        "     WHEN get_json_object(to_json(result_payload), '$.count_validation.status') = 'FAIL' THEN '❌ Count' "
+                        "     ELSE '➖' END as count_check, "
+                        "CASE WHEN get_json_object(to_json(result_payload), '$.row_hash_validation.status') = 'PASS' THEN '✅ Hash' "
+                        "     WHEN get_json_object(to_json(result_payload), '$.row_hash_validation.status') = 'FAIL' THEN '❌ Hash' "
+                        "     ELSE '➖' END as hash_check, "
+                        "CASE WHEN to_json(result_payload) LIKE '%null_validation%' AND to_json(result_payload) NOT LIKE '%null_validation%FAIL%' THEN '✅ Nulls' "
+                        "     WHEN to_json(result_payload) LIKE '%null_validation%FAIL%' THEN '❌ Nulls' "
+                        "     ELSE '➖' END as null_check, "
+                        "CASE WHEN to_json(result_payload) LIKE '%uniqueness_validation%' AND to_json(result_payload) NOT LIKE '%uniqueness_validation%FAIL%' THEN '✅ Unique' "
+                        "     WHEN to_json(result_payload) LIKE '%uniqueness_validation%FAIL%' THEN '❌ Unique' "
+                        "     ELSE '➖' END as unique_check, "
+                        "CASE WHEN to_json(result_payload) LIKE '%agg_validation%' AND to_json(result_payload) NOT LIKE '%agg_validation%FAIL%' THEN '✅ Aggs' "
+                        "     WHEN to_json(result_payload) LIKE '%agg_validation%FAIL%' THEN '❌ Aggs' "
+                        "     ELSE '➖' END as agg_check, "
+                        "CASE WHEN get_json_object(to_json(result_payload), '$.source_catalog') IS NOT NULL "
+                        "     THEN CONCAT(get_json_object(to_json(result_payload), '$.source_catalog'), '.', "
+                        "                 get_json_object(to_json(result_payload), '$.source_schema'), '.', "
+                        "                 get_json_object(to_json(result_payload), '$.source_table')) "
+                        "     ELSE 'N/A' END as source_table, "
+                        "CASE WHEN get_json_object(to_json(result_payload), '$.target_catalog') IS NOT NULL "
+                        "     THEN CONCAT(get_json_object(to_json(result_payload), '$.target_catalog'), '.', "
+                        "                 get_json_object(to_json(result_payload), '$.target_schema'), '.', "
+                        "                 get_json_object(to_json(result_payload), '$.target_table')) "
+                        "     ELSE 'N/A' END as target_table "
+                        "FROM {table} WHERE job_name = {job} "
+                        "AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name = {job}) "
+                        "ORDER BY status DESC, task_key"
                     )
                 ],
             },
@@ -585,7 +821,7 @@ class DataPactClient:
             {
                 "ds_name": "ds_kpi",
                 "type": "COUNTER",
-                "title": "Tables Monitored",
+                "title": "Total Validations",
                 "pos": {"x": 4, "y": 0, "width": 2, "height": 3},
                 "value_col": "tables_validated",
             },
@@ -611,37 +847,31 @@ class DataPactClient:
                 "y_agg": "SUM",
             },
             {
+                "ds_name": "ds_validation_details",
+                "type": "TABLE",
+                "title": "Validation Results with Check Details",
+                "pos": {"x": 0, "y": 14, "width": 6, "height": 8},
+            },
+            {
                 "ds_name": "ds_business_impact",
                 "type": "TABLE",
-                "title": "Business Impact Assessment",
-                "pos": {"x": 0, "y": 14, "width": 6, "height": 5},
+                "title": "Source Schema Quality Summary",
+                "pos": {"x": 0, "y": 22, "width": 6, "height": 5},
             },
             {
-                "ds_name": "ds_latest_run_details",
+                "ds_name": "ds_exploded_checks",
                 "type": "TABLE",
-                "title": "Latest Validation Results",
-                "pos": {"x": 0, "y": 19, "width": 6, "height": 6},
-            },
-            {
-                "ds_name": "ds_pipeline_health",
-                "type": "TABLE",
-                "title": "Pipeline Health Matrix",
-                "pos": {"x": 0, "y": 25, "width": 6, "height": 5},
+                "title": "Detailed Check-by-Check Results (Filterable)",
+                "pos": {"x": 0, "y": 27, "width": 6, "height": 8},
             },
             {
                 "ds_name": "ds_top_failures",
                 "type": "BAR",
                 "title": "Top Failing Validations",
-                "pos": {"x": 0, "y": 30, "width": 6, "height": 5},
+                "pos": {"x": 0, "y": 27, "width": 6, "height": 5},
                 "x_field": "task_key",
                 "y_field": "failure_count",
                 "y_agg": "SUM",
-            },
-            {
-                "ds_name": "ds_history",
-                "type": "TABLE",
-                "title": "Audit Trail & Compliance Log",
-                "pos": {"x": 0, "y": 35, "width": 6, "height": 5},
             },
         ]
 
@@ -656,10 +886,20 @@ class DataPactClient:
                         "expression": f"`{w_def['value_col']}`",
                     }
                 ]
+                encodings = {"value": {"fieldName": w_def["value_col"]}}
+
+                # Add color coding for critical issues
+                if w_def.get("title") == "Critical Issues":
+                    encodings["value"]["displayAs"] = "color"
+                    encodings["value"]["colorRange"] = {
+                        "start": {"value": 0, "color": "#00A972"},  # Green for 0
+                        "end": {"value": 1, "color": "#FF3621"},  # Red for > 0
+                    }
+
                 spec = {
                     "version": 3,
                     "widgetType": "counter",
-                    "encodings": {"value": {"fieldName": w_def["value_col"]}},
+                    "encodings": encodings,
                 }
             elif w_def["type"] == "SUCCESS_RATE_COUNTER":
                 query_fields = [
@@ -702,18 +942,12 @@ class DataPactClient:
                                 "type": "categorical",
                                 "mappings": [
                                     {
-                                        "value": "SUCCESS",
-                                        "color": {
-                                            "themeColorType": "visualizationColors",
-                                            "position": 3,
-                                        },
+                                        "value": "Passed",
+                                        "color": "#00A972",  # Green for success
                                     },
                                     {
-                                        "value": "FAILURE",
-                                        "color": {
-                                            "themeColorType": "visualizationColors",
-                                            "position": 4,
-                                        },
+                                        "value": "Failed",
+                                        "color": "#E92828",  # Red for failure
                                     },
                                 ],
                             },
@@ -787,9 +1021,80 @@ class DataPactClient:
                     ]
 
             elif w_def["type"] == "TABLE":
-                query_fields = [
-                    {"name": c, "expression": f"`{c}`"}
-                    for c in [
+                # Different table widgets need different columns
+                if w_def["ds_name"] == "ds_business_impact":
+                    columns = [
+                        "schema_name",
+                        "total_validations",
+                        "failures",
+                        "quality_score",
+                        "health_status",
+                        "last_issue",
+                    ]
+                    display_names = [
+                        "Schema",
+                        "Total Validations",
+                        "Failures",
+                        "Quality Score (%)",
+                        "Health Status",
+                        "Last Issue",
+                    ]
+                elif w_def["ds_name"] == "ds_validation_details":
+                    columns = [
+                        "validation_name",
+                        "overall_status",
+                        "count_check",
+                        "hash_check",
+                        "null_check",
+                        "unique_check",
+                        "agg_check",
+                        "source_table",
+                        "target_table",
+                    ]
+                    display_names = [
+                        "Validation",
+                        "Status",
+                        "Count",
+                        "Hash",
+                        "Nulls",
+                        "Unique",
+                        "Aggs",
+                        "Source",
+                        "Target",
+                    ]
+                elif w_def["ds_name"] == "ds_exploded_checks":
+                    columns = [
+                        "validation_name",
+                        "check_type",
+                        "status",
+                        "details",
+                    ]
+                    display_names = [
+                        "Validation",
+                        "Check Type",
+                        "Status",
+                        "Details",
+                    ]
+                elif w_def["ds_name"] == "ds_latest_run_details":
+                    columns = [
+                        "task_key",
+                        "status",
+                        "source_table",
+                        "target_table",
+                        "timestamp",
+                        "result_payload",
+                    ]
+                    display_names = [
+                        "Task Key",
+                        "Status",
+                        "Source Table",
+                        "Target Table",
+                        "Timestamp",
+                        "Result Payload",
+                    ]
+                else:
+                    # Default columns for other table widgets
+                    columns = [
                         "task_key",
                         "status",
                         "timestamp",
@@ -797,21 +1102,23 @@ class DataPactClient:
                         "run_id",
                         "job_name",
                     ]
-                ]
+                    display_names = [
+                        "Task Key",
+                        "Status",
+                        "Timestamp",
+                        "Result Payload",
+                        "Run ID",
+                        "Job Name",
+                    ]
+
+                query_fields = [{"name": c, "expression": f"`{c}`"} for c in columns]
                 spec = {
                     "version": 3,
                     "widgetType": "table",
                     "encodings": {
                         "columns": [
-                            {"fieldName": "task_key", "displayName": "Task Key"},
-                            {"fieldName": "status", "displayName": "Status"},
-                            {"fieldName": "timestamp", "displayName": "Timestamp"},
-                            {
-                                "fieldName": "payload_json",
-                                "displayName": "Result Payload",
-                            },
-                            {"fieldName": "run_id", "displayName": "Run ID"},
-                            {"fieldName": "job_name", "displayName": "Job Name"},
+                            {"fieldName": col, "displayName": display}
+                            for col, display in zip(columns, display_names)
                         ]
                     },
                 }
@@ -851,12 +1158,19 @@ class DataPactClient:
                             "field": "job_name",
                         },
                         {"name": "run_id", "dataset": "ds_history", "field": "run_id"},
+                        {
+                            "name": "status_filter",
+                            "dataset": "ds_validation_details",
+                            "field": "overall_status",
+                            "displayName": "Filter by Status",
+                            "allowMultipleValues": True,
+                        },
                     ],
                     "pageType": "PAGE_TYPE_CANVAS",
                 },
                 {
                     "name": "details_page",
-                    "displayName": "Detailed Validation Analysis",
+                    "displayName": "Historical Validation Runs",
                     "layout": [
                         {
                             "widget": {
@@ -865,7 +1179,7 @@ class DataPactClient:
                                     {
                                         "name": "main_query",
                                         "query": {
-                                            "datasetName": "ds_latest_run_details",
+                                            "datasetName": "ds_history",
                                             "fields": [
                                                 {
                                                     "name": "task_key",
@@ -928,7 +1242,7 @@ class DataPactClient:
                                         ]
                                     },
                                     "frame": {
-                                        "title": "Latest Run Details",
+                                        "title": "All Run Details",
                                         "showTitle": True,
                                     },
                                 },
@@ -982,6 +1296,20 @@ class DataPactClient:
                         },
                     ],
                     "filters": [
+                        {
+                            "name": "status_filter_details",
+                            "dataset": "ds_history",
+                            "field": "status",
+                            "displayName": "Filter by Status",
+                            "allowMultipleValues": True,
+                        },
+                        {
+                            "name": "task_key_filter",
+                            "dataset": "ds_history",
+                            "field": "task_key",
+                            "displayName": "Filter by Task",
+                            "allowMultipleValues": True,
+                        },
                         {
                             "name": "job_name",
                             "dataset": "ds_latest_run_details",
@@ -1095,6 +1423,11 @@ class DataPactClient:
         )
         add_dashboard_refresh_task(
             tasks, dashboard_id=dashboard_id, warehouse_id=warehouse.id
+        )
+        add_genie_room_task(
+            tasks=tasks,
+            asset_paths=asset_paths,
+            warehouse_id=warehouse.id,
         )
 
         job_id: int = ensure_job(

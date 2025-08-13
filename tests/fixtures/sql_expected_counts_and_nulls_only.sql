@@ -19,7 +19,14 @@ null_metrics_v2 AS (
 )
 
 SELECT
-  parse_json(to_json(struct(
+  parse_json(to_json(struct(    
+    'c' AS source_catalog,
+    's' AS source_schema,
+    'a' AS source_table,
+    'c' AS target_catalog,
+    's' AS target_schema,
+    'b' AS target_table
+,
     struct(
       FORMAT_NUMBER(source_count, '#,##0') AS source_count,
       FORMAT_NUMBER(target_count, '#,##0') AS target_count,
@@ -29,12 +36,12 @@ SELECT
     ) AS count_validation,
     struct(
       FORMAT_NUMBER(source_nulls_v1, '#,##0') AS source_nulls,
-      FORMAT_NUMBER(target_nulls_v1, '#,##0') AS target_nulls,FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(target_nulls_v1 - source_nulls_v1) / NULLIF(CAST(source_nulls_v1 AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,FORMAT_STRING('%.2f%%', CAST(0.05 * 100 AS DOUBLE)) AS threshold_percent,
+      FORMAT_NUMBER(target_nulls_v1, '#,##0') AS target_nulls,FORMAT_STRING('%.2f%%', CAST(CASE WHEN source_nulls_v1 = 0 AND target_nulls_v1 > 0 THEN 100.0 ELSE COALESCE(ABS(target_nulls_v1 - source_nulls_v1) / NULLIF(CAST(source_nulls_v1 AS DOUBLE), 0), 0) * 100 END AS DOUBLE)) as relative_diff_percent,FORMAT_STRING('%.2f%%', CAST(0.05 * 100 AS DOUBLE)) AS threshold_percent,
   CASE WHEN CASE WHEN source_nulls_v1 = 0 THEN target_nulls_v1 = 0 ELSE COALESCE(ABS(target_nulls_v1 - source_nulls_v1) / NULLIF(CAST(source_nulls_v1 AS DOUBLE), 0), 0) <= 0.05 END THEN 'PASS' ELSE 'FAIL' END AS status
     ) AS null_validation_v1,
     struct(
       FORMAT_NUMBER(source_nulls_v2, '#,##0') AS source_nulls,
-      FORMAT_NUMBER(target_nulls_v2, '#,##0') AS target_nulls,FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(target_nulls_v2 - source_nulls_v2) / NULLIF(CAST(source_nulls_v2 AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,FORMAT_STRING('%.2f%%', CAST(0.05 * 100 AS DOUBLE)) AS threshold_percent,
+      FORMAT_NUMBER(target_nulls_v2, '#,##0') AS target_nulls,FORMAT_STRING('%.2f%%', CAST(CASE WHEN source_nulls_v2 = 0 AND target_nulls_v2 > 0 THEN 100.0 ELSE COALESCE(ABS(target_nulls_v2 - source_nulls_v2) / NULLIF(CAST(source_nulls_v2 AS DOUBLE), 0), 0) * 100 END AS DOUBLE)) as relative_diff_percent,FORMAT_STRING('%.2f%%', CAST(0.05 * 100 AS DOUBLE)) AS threshold_percent,
   CASE WHEN CASE WHEN source_nulls_v2 = 0 THEN target_nulls_v2 = 0 ELSE COALESCE(ABS(target_nulls_v2 - source_nulls_v2) / NULLIF(CAST(source_nulls_v2 AS DOUBLE), 0), 0) <= 0.05 END THEN 'PASS' ELSE 'FAIL' END AS status
     ) AS null_validation_v2))) as result_payload,
   ( COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= 0.02 AND CASE WHEN source_nulls_v1 = 0 THEN target_nulls_v1 = 0 ELSE COALESCE(ABS(target_nulls_v1 - source_nulls_v1) / NULLIF(CAST(source_nulls_v1 AS DOUBLE), 0), 0) <= 0.05 END AND CASE WHEN source_nulls_v2 = 0 THEN target_nulls_v2 = 0 ELSE COALESCE(ABS(target_nulls_v2 - source_nulls_v2) / NULLIF(CAST(source_nulls_v2 AS DOUBLE), 0), 0) <= 0.05 END) AS overall_validation_passed

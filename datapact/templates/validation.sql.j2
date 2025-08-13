@@ -136,6 +136,14 @@ uniqueness_metrics AS (
 SELECT
   parse_json(to_json(struct(
   {%- set comma = joiner(',') -%}
+    {# Metadata about tables being validated #}
+    {{ comma() }}
+    '{{ source_catalog }}' AS source_catalog,
+    '{{ source_schema }}' AS source_schema,
+    '{{ source_table }}' AS source_table,
+    '{{ target_catalog }}' AS target_catalog,
+    '{{ target_schema }}' AS target_schema,
+    '{{ target_table }}' AS target_table
     {# Count payload #}
     {%- if count_tolerance is not none -%}
     {{ comma() }}
@@ -170,7 +178,7 @@ SELECT
       {%- if primary_keys -%}
       FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(total_compared_{{ col }} AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
       {%- else -%}
-      FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
+      FORMAT_STRING('%.2f%%', CAST(CASE WHEN source_nulls_{{ col }} = 0 AND target_nulls_{{ col }} > 0 THEN 100.0 ELSE COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) * 100 END AS DOUBLE)) as relative_diff_percent,
       {%- endif -%}
       FORMAT_STRING('%.2f%%', CAST({{ null_validation_threshold }} * 100 AS DOUBLE)) AS threshold_percent,
   CASE WHEN {% if primary_keys %}COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(total_compared_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_threshold }}{% else %}CASE WHEN source_nulls_{{ col }} = 0 THEN target_nulls_{{ col }} = 0 ELSE COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_threshold }} END{% endif %} THEN 'PASS' ELSE 'FAIL' END AS status

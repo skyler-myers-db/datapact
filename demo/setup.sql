@@ -17,19 +17,19 @@ CREATE SCHEMA IF NOT EXISTS datapact_demo_catalog.reference_data COMMENT 'Master
 -- Table 1: Customer Master (1M+ customers, enterprise CRM backbone)
 CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.users AS
 SELECT
-  id AS user_id, 
-  md5(CAST(id AS STRING)) || '@' || 
-    CASE WHEN rand() < 0.3 THEN 'gmail.com' 
+  id AS user_id,
+  md5(CAST(id AS STRING)) || '@' ||
+    CASE WHEN rand() < 0.3 THEN 'gmail.com'
          WHEN rand() < 0.5 THEN 'outlook.com'
          WHEN rand() < 0.7 THEN 'yahoo.com'
          ELSE 'corporate.com' END AS email,
-  CASE WHEN rand() < 0.45 THEN 'USA' 
-       WHEN rand() < 0.65 THEN 'CAN' 
+  CASE WHEN rand() < 0.45 THEN 'USA'
+       WHEN rand() < 0.65 THEN 'CAN'
        WHEN rand() < 0.80 THEN 'GBR'
        WHEN rand() < 0.90 THEN 'AUS'
        ELSE 'DEU' END AS country,
   date_add('2020-01-01', CAST(rand() * 1460 AS INT)) AS signup_date,
-  CASE WHEN id % 100 < 5 THEN NULL 
+  CASE WHEN id % 100 < 5 THEN NULL
        WHEN id % 50 = 0 THEN 'churned'
        WHEN id % 30 = 0 THEN 'at_risk'
        WHEN id % 20 = 0 THEN 'premium'
@@ -46,23 +46,23 @@ FROM (SELECT explode(sequence(1, 1000000)) AS id);
 CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.users AS TABLE datapact_demo_catalog.source_data.users;
 
 -- Data Quality Issue #1: PII Masking gone wrong (5% records affected)
-UPDATE datapact_demo_catalog.target_data.users 
-SET email = md5(email) || '@masked.com' 
+UPDATE datapact_demo_catalog.target_data.users
+SET email = md5(email) || '@masked.com'
 WHERE user_id % 20 = 0;
 
 -- Data Quality Issue #2: Failed CDC batch (2% records missing)
-DELETE FROM datapact_demo_catalog.target_data.users 
-WHERE user_id % 50 = 0 
+DELETE FROM datapact_demo_catalog.target_data.users
+WHERE user_id % 50 = 0
 AND status != 'premium';  -- Premium customers protected
 
 -- Data Quality Issue #3: Duplicate prevention failure (0.3% duplicates)
-INSERT INTO datapact_demo_catalog.target_data.users 
-SELECT 
-  id AS user_id, 
-  'dup_' || md5(CAST(id AS STRING)) || '@duplicate.com' AS email, 
-  'UNKNOWN' as country, 
-  current_date() AS signup_date, 
-  'unverified' as status, 
+INSERT INTO datapact_demo_catalog.target_data.users
+SELECT
+  id AS user_id,
+  'dup_' || md5(CAST(id AS STRING)) || '@duplicate.com' AS email,
+  'UNKNOWN' as country,
+  current_date() AS signup_date,
+  'unverified' as status,
   0 as total_logins,
   0 as lifetime_value,
   'Unknown' as segment,
@@ -70,26 +70,26 @@ SELECT
 FROM (SELECT explode(sequence(1000001, 1003000)) AS id);
 
 -- Data Quality Issue #4: Timezone conversion error (10% date corruption)
-UPDATE datapact_demo_catalog.target_data.users 
-SET signup_date = NULL 
+UPDATE datapact_demo_catalog.target_data.users
+SET signup_date = NULL
 WHERE user_id % 10 = 0;
 
 -- Data Quality Issue #5: Status mapping failure (4% status corruption)
-UPDATE datapact_demo_catalog.target_data.users 
-SET status = NULL 
+UPDATE datapact_demo_catalog.target_data.users
+SET status = NULL
 WHERE user_id % 25 = 0;
 
 -- Data Quality Issue #6: Metric calculation error (Regional aggregation issue)
-UPDATE datapact_demo_catalog.target_data.users 
-SET total_logins = total_logins * 2 
+UPDATE datapact_demo_catalog.target_data.users
+SET total_logins = total_logins * 2
 WHERE country = 'CAN';  -- Canadian metrics doubled due to dual-system reporting
 
 -- Table 2: Financial Transactions (5M+ records, $500M+ transaction volume)
 CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.transactions AS
 SELECT
-  uuid() AS transaction_id, 
+  uuid() AS transaction_id,
   (abs(rand()) * 999999 + 1)::INT AS user_id,
-  ROUND((rand() * 2000 + 10) * 
+  ROUND((rand() * 2000 + 10) *
     CASE WHEN rand() < 0.1 THEN 5  -- High-value transactions
          WHEN rand() < 0.3 THEN 2  -- Medium-value
          ELSE 1 END, 2) AS amount,
@@ -113,9 +113,9 @@ CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.transactions AS TABLE 
 -- This table passes all validations - demonstrating system works correctly when data is clean
 
 -- Table 3: Product Catalog (5K SKUs, supporting $2B revenue)
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.products AS 
-SELECT 
-  uuid() as product_id, 
+CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.products AS
+SELECT
+  uuid() as product_id,
   CONCAT(
     CASE WHEN rand() < 0.2 THEN 'Premium '
          WHEN rand() < 0.4 THEN 'Standard '
@@ -126,7 +126,7 @@ SELECT
          WHEN id % 5 = 3 THEN 'Sports '
          ELSE 'Beauty ' END,
     'Item ', id) as product_name,
-  ROUND((rand() * 500 + 10) * 
+  ROUND((rand() * 500 + 10) *
     CASE WHEN rand() < 0.2 THEN 3 ELSE 1 END, 2) as price,
   ROUND(rand() * 0.3, 2) as margin_rate,
   (rand() * 1000)::INT as inventory_count,
@@ -141,7 +141,7 @@ FROM (SELECT explode(sequence(1, 5000)) as id);
 CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.products AS TABLE datapact_demo_catalog.source_data.products;
 
 -- Business-approved price adjustments (2% of products, within 2.5% threshold)
-UPDATE datapact_demo_catalog.target_data.products 
+UPDATE datapact_demo_catalog.target_data.products
 SET price = ROUND(price * 1.08, 2),  -- 8% increase for inflation
     margin_rate = ROUND(margin_rate * 0.95, 2)  -- Margin compression
 WHERE abs(hash(product_id)) % 50 = 0;
@@ -154,8 +154,8 @@ WHERE abs(hash(product_id)) % 50 = 0;
 
 -- Table 4: Marketing Campaigns (Driving 40% of new customer acquisition)
 CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.campaigns AS
-SELECT 
-  id as campaign_id, 
+SELECT
+  id as campaign_id,
   CONCAT(
     CASE WHEN id % 4 = 0 THEN 'Q1_2024_'
          WHEN id % 4 = 1 THEN 'Q2_2024_'
@@ -183,18 +183,18 @@ FROM (SELECT explode(sequence(1, 200)) as id);
 CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.campaigns AS TABLE datapact_demo_catalog.source_data.campaigns;
 
 -- Status update lag from marketing automation platform
-UPDATE datapact_demo_catalog.target_data.campaigns 
+UPDATE datapact_demo_catalog.target_data.campaigns
 SET status = 'completed',
     spend_to_date = budget * 0.98  -- Near-full spend
 WHERE campaign_id IN (10, 20, 30, 40, 50);
 
 -- Table 5: Digital Ad Spend (Daily granularity, $50M annual)
 CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.ad_spend AS
-SELECT 
-  id as ad_id, 
+SELECT
+  id as ad_id,
   (id % 200 + 1) as campaign_id,
   date_add('2024-01-01', id % 365) as spend_date,
-  ROUND((rand() * 5000 + 100) * 
+  ROUND((rand() * 5000 + 100) *
     CASE WHEN id % 7 IN (5, 6) THEN 1.5  -- Weekend boost
          WHEN id % 30 = 0 THEN 3  -- Month-end push
          ELSE 1 END, 2) as daily_spend,
@@ -209,7 +209,7 @@ SELECT
 FROM (SELECT explode(sequence(1, 10000)) as id);
 -- Currency conversion rounding issues
 CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.ad_spend AS
-SELECT 
+SELECT
   ad_id,
   campaign_id,
   spend_date,
@@ -229,8 +229,8 @@ FROM datapact_demo_catalog.source_data.ad_spend;
 
 -- Table 6: Employee Master (Supporting HR compliance and analytics)
 CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.employees AS
-SELECT 
-  id as employee_id, 
+SELECT
+  id as employee_id,
   CONCAT('emp-', LPAD(CAST(id AS STRING), 6, '0'), '@enterprise.com') as email,
   CONCAT(
     CASE WHEN rand() < 0.3 THEN 'John'
@@ -261,14 +261,14 @@ SELECT
   ROUND(rand() * 10, 1) as performance_rating
 FROM (SELECT explode(sequence(1, 10000)) as id);
 -- HR system sync issues - typical month-end scenario
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.employees AS 
-SELECT * FROM datapact_demo_catalog.source_data.employees 
+CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.employees AS
+SELECT * FROM datapact_demo_catalog.source_data.employees
 WHERE employee_id <= 9950  -- Recent terminations not yet synced
    OR employee_id > 10000;  -- Keep any overflow
 
 -- New hires added but not in source system yet
-INSERT INTO datapact_demo_catalog.target_data.employees 
-SELECT 
+INSERT INTO datapact_demo_catalog.target_data.employees
+SELECT
   10000 + id as employee_id,
   CONCAT('newhire-', id, '@enterprise.com') as email,
   CONCAT('New Hire ', id) as full_name,
@@ -283,15 +283,15 @@ FROM (SELECT explode(sequence(1, 25)) as id);
 
 -- Table 7: Compensation Bands (Global pay equity framework)
 CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.salary_bands (
-  band_id STRING, 
+  band_id STRING,
   band_name STRING,
   level STRING,
-  min_salary DECIMAL(10,2), 
+  min_salary DECIMAL(10,2),
   max_salary DECIMAL(10,2),
   midpoint DECIMAL(10,2),
   geographic_modifier DECIMAL(3,2)
 );
-INSERT INTO datapact_demo_catalog.source_data.salary_bands VALUES 
+INSERT INTO datapact_demo_catalog.source_data.salary_bands VALUES
   ('IC1', 'Individual Contributor I', 'IC', 50000, 75000, 62500, 1.0),
   ('IC2', 'Individual Contributor II', 'IC', 70000, 100000, 85000, 1.0),
   ('SIC1', 'Senior Individual Contributor', 'SENIOR_IC', 95000, 140000, 117500, 1.0),
@@ -314,15 +314,15 @@ CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.salary_bands AS TABLE 
 
 -- Table 8: General Ledger (Core financial records, audit-critical)
 CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.gl_postings AS
-SELECT 
-  id as posting_id, 
+SELECT
+  id as posting_id,
   CONCAT('JE-2024-', LPAD(CAST(id AS STRING), 8, '0')) as journal_entry,
   CASE WHEN rand() < 0.3 THEN '1000-CASH'
        WHEN rand() < 0.5 THEN '1200-AR'
        WHEN rand() < 0.7 THEN '2000-AP'
        WHEN rand() < 0.85 THEN '3000-REVENUE'
        ELSE '4000-EXPENSE' END as account_code,
-  ROUND((rand() * 100000 - 50000) * 
+  ROUND((rand() * 100000 - 50000) *
     CASE WHEN id % 100 = 0 THEN 10  -- Large adjustments
          ELSE 1 END, 2) as amount,
   CASE WHEN amount >= 0 THEN 'DEBIT' ELSE 'CREDIT' END as entry_type,
@@ -337,8 +337,8 @@ SELECT
   CONCAT('FY2024-Q', CEILING((id % 365) / 91.25)) as fiscal_period
 FROM (SELECT explode(sequence(1, 100000)) as id);
 -- Critical financial data with reconciliation issues
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.gl_postings AS 
-SELECT * FROM datapact_demo_catalog.source_data.gl_postings 
+CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.gl_postings AS
+SELECT * FROM datapact_demo_catalog.source_data.gl_postings
 WHERE posting_id <= 97500;  -- 2.5% of entries missing (failed batch load)
 
 -- This represents a critical issue that would trigger SOX compliance alerts
@@ -349,9 +349,9 @@ WHERE posting_id <= 97500;  -- 2.5% of entries missing (failed batch load)
 -- Critical for: Site Reliability, Performance, Security Monitoring
 -- =========================================================================================
 
--- Table 9: Web Analytics (2M daily page views, critical for conversion tracking)
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.page_views AS 
-SELECT 
+-- Table 9: Web Analytics (10M daily page views - enterprise traffic volume)
+CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.page_views AS
+SELECT
   (abs(rand()) * 999999 + 1)::INT AS user_id,
   uuid() as session_id,
   CASE WHEN rand() < 0.2 THEN '/home'
@@ -370,14 +370,14 @@ SELECT
   CASE WHEN rand() < 0.6 THEN 'DESKTOP'
        WHEN rand() < 0.9 THEN 'MOBILE'
        ELSE 'TABLET' END as device_type
-FROM (SELECT explode(sequence(1, 2000000)) as id);
+FROM (SELECT explode(sequence(1, 10000000)) as id);
 
 -- Timestamp drift issue (common in distributed logging)
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.page_views AS 
-SELECT 
-  user_id, 
-  session_id, 
-  page_path, 
+CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.page_views AS
+SELECT
+  user_id,
+  session_id,
+  page_path,
   date_add(view_ts, 1) as view_ts,  -- 1 day timestamp drift
   time_on_page_seconds,
   traffic_source,
@@ -386,8 +386,8 @@ FROM datapact_demo_catalog.source_data.page_views;
 
 -- Table 10: Application Logs (High-volume, no PK, critical for debugging)
 CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.log_messages (
-  ts TIMESTAMP, 
-  level STRING, 
+  ts TIMESTAMP,
+  level STRING,
   service STRING,
   message STRING,
   trace_id STRING,
@@ -395,8 +395,8 @@ CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.log_messages (
   latency_ms DOUBLE
 );
 
-INSERT INTO datapact_demo_catalog.source_data.log_messages 
-SELECT 
+INSERT INTO datapact_demo_catalog.source_data.log_messages
+SELECT
   current_timestamp() - (rand() * 24) * INTERVAL '1 hour' as ts,
   CASE WHEN rand() < 0.7 THEN 'INFO'
        WHEN rand() < 0.85 THEN 'WARN'
@@ -407,7 +407,7 @@ SELECT
        WHEN rand() < 0.7 THEN 'payment-service'
        WHEN rand() < 0.85 THEN 'inventory-service'
        ELSE 'notification-service' END as service,
-  CASE level 
+  CASE level
        WHEN 'ERROR' THEN 'Failed to process request: ' || uuid()
        WHEN 'WARN' THEN 'High latency detected for endpoint: /api/v2/' || (rand()*10)::INT
        ELSE 'Request processed successfully' END as message,
@@ -418,12 +418,12 @@ SELECT
 FROM (SELECT explode(sequence(1, 10000)) as id);
 
 -- Log shipping delay causing count mismatch
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.log_messages AS 
+CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.log_messages AS
 TABLE datapact_demo_catalog.source_data.log_messages;
 
 -- Additional logs in target (from different service)
-INSERT INTO datapact_demo_catalog.target_data.log_messages 
-SELECT 
+INSERT INTO datapact_demo_catalog.target_data.log_messages
+SELECT
   current_timestamp() as ts,
   'INFO' as level,
   'data-pipeline' as service,
@@ -452,9 +452,9 @@ CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.empty_audits (
 
 -- Table 12: API Response Codes (Reference data with categorization issues)
 CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.status_codes AS
-SELECT 
+SELECT
   id as code,
-  CASE id 
+  CASE id
     WHEN 200 THEN 'OK - Request successful'
     WHEN 201 THEN 'Created - Resource created'
     WHEN 204 THEN 'No Content - Request successful, no content'
@@ -467,14 +467,14 @@ SELECT
     WHEN 502 THEN 'Bad Gateway - Upstream server error'
     WHEN 503 THEN 'Service Unavailable - Temporary outage'
     ELSE 'HTTP Status ' || id END as description,
-  CASE 
+  CASE
     WHEN id BETWEEN 200 AND 299 THEN 'SUCCESS'
     WHEN id BETWEEN 300 AND 399 THEN 'REDIRECT'
     WHEN id BETWEEN 400 AND 499 THEN 'CLIENT_ERROR'
     WHEN id BETWEEN 500 AND 599 THEN 'SERVER_ERROR'
     WHEN id % 10 = 0 THEN NULL  -- Some uncategorized
     ELSE 'UNKNOWN' END as category,
-  CASE 
+  CASE
     WHEN id BETWEEN 500 AND 599 THEN 'HIGH'
     WHEN id IN (401, 403, 429) THEN 'MEDIUM'
     ELSE 'LOW' END as severity
@@ -482,12 +482,12 @@ FROM (SELECT explode(sequence(100, 599)) as id)
 WHERE id IN (200, 201, 204, 400, 401, 403, 404, 429, 500, 502, 503, 301, 302, 304);
 
 -- Data quality issue: Category mapping failures
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.status_codes AS 
+CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.status_codes AS
 TABLE datapact_demo_catalog.source_data.status_codes;
 
 -- Introduce null category for common codes (mapping failure)
-UPDATE datapact_demo_catalog.target_data.status_codes 
-SET category = NULL 
+UPDATE datapact_demo_catalog.target_data.status_codes
+SET category = NULL
 WHERE code IN (200, 404, 500);  -- Critical codes losing categorization
 
 -- =========================================================================================
@@ -509,7 +509,7 @@ SELECT
        WHEN rand() < 0.95 THEN 'PENDING'
        ELSE 'REJECTED' END as status,
   date_add('2024-01-01', CAST(rand() * 365 AS INT)) as request_date,
-  CASE WHEN status = 'COMPLETED' 
+  CASE WHEN status = 'COMPLETED'
        THEN date_add(request_date, CAST(rand() * 30 AS INT))
        ELSE NULL END as completion_date,
   CASE WHEN rand() < 0.5 THEN 'GDPR'
@@ -518,11 +518,11 @@ SELECT
   ROUND(rand() * 10, 1) as processing_days
 FROM (SELECT explode(sequence(1, 5000)) as id);
 
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.privacy_requests AS 
+CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.privacy_requests AS
 TABLE datapact_demo_catalog.source_data.privacy_requests;
 
 -- Compliance reporting delay
-DELETE FROM datapact_demo_catalog.target_data.privacy_requests 
+DELETE FROM datapact_demo_catalog.target_data.privacy_requests
 WHERE request_date > date_add(current_date(), -7)
 AND status = 'PENDING';  -- Recent pending requests not yet synced
 
@@ -539,7 +539,7 @@ SELECT
   'OFFICIAL' as rate_type,
   current_timestamp() as last_updated
 FROM (
-  SELECT 
+  SELECT
     CASE id % 5
       WHEN 0 THEN 'USD/EUR'
       WHEN 1 THEN 'USD/GBP'
@@ -578,6 +578,6 @@ FROM (SELECT explode(sequence(0, 364)) as id);
 SELECT 'DataPact Enterprise Demo Environment Setup Complete!' as message,
        COUNT(DISTINCT table_name) as tables_created,
        'Ready for validation testing' as status
-FROM information_schema.tables 
+FROM information_schema.tables
 WHERE table_schema IN ('source_data', 'target_data', 'reference_data')
 AND table_catalog = 'datapact_demo_catalog';

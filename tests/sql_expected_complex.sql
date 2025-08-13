@@ -2,7 +2,7 @@ CREATE OR REPLACE TEMP VIEW final_metrics_view AS
 WITH
 count_metrics AS (
   SELECT
-    (SELECT COUNT(1) FROM `cat`.`sch`.`src`) AS source_count,
+    (SELECT COUNT(1) FROM `c`.`s`.`src`) AS source_count,
     (SELECT COUNT(1) FROM `cat`.`sch`.`tgt`) AS target_count
 )
 ,
@@ -13,7 +13,7 @@ row_hash_metrics AS (
     SELECT
 `id1`, `id2`,
       md5(to_json(struct(*))) AS row_hash
-    FROM `cat`.`sch`.`src`
+    FROM `c`.`s`.`src`
   ) s
   INNER JOIN (
     SELECT
@@ -28,39 +28,40 @@ null_metrics_v1 AS (
     SUM(CASE WHEN s.`v1` IS NULL THEN 1 ELSE 0 END) as source_nulls_v1,
     SUM(CASE WHEN t.`v1` IS NULL THEN 1 ELSE 0 END) as target_nulls_v1,
     COUNT(1) as total_compared_v1
-  FROM `cat`.`sch`.`src` s JOIN `cat`.`sch`.`tgt` t
+  FROM `c`.`s`.`src` s JOIN `cat`.`sch`.`tgt` t
     ON s.`id1` = t.`id1` AND s.`id2` = t.`id2`),
 null_metrics_v2 AS (
   SELECT
     SUM(CASE WHEN s.`v2` IS NULL THEN 1 ELSE 0 END) as source_nulls_v2,
     SUM(CASE WHEN t.`v2` IS NULL THEN 1 ELSE 0 END) as target_nulls_v2,
     COUNT(1) as total_compared_v2
-  FROM `cat`.`sch`.`src` s JOIN `cat`.`sch`.`tgt` t
+  FROM `c`.`s`.`src` s JOIN `cat`.`sch`.`tgt` t
     ON s.`id1` = t.`id1` AND s.`id2` = t.`id2`)
 ,
 agg_metrics_v1_SUM AS (
   SELECT
-    TRY_CAST((SELECT SUM(`v1`) FROM `cat`.`sch`.`src`) AS DECIMAL(38, 6)) AS source_value_v1_SUM,
+    TRY_CAST((SELECT SUM(`v1`) FROM `c`.`s`.`src`) AS DECIMAL(38, 6)) AS source_value_v1_SUM,
     TRY_CAST((SELECT SUM(`v1`) FROM `cat`.`sch`.`tgt`) AS DECIMAL(38, 6)) AS target_value_v1_SUM
 ),
 agg_metrics_v1_AVG AS (
   SELECT
-    TRY_CAST((SELECT AVG(`v1`) FROM `cat`.`sch`.`src`) AS DECIMAL(38, 6)) AS source_value_v1_AVG,
+    TRY_CAST((SELECT AVG(`v1`) FROM `c`.`s`.`src`) AS DECIMAL(38, 6)) AS source_value_v1_AVG,
     TRY_CAST((SELECT AVG(`v1`) FROM `cat`.`sch`.`tgt`) AS DECIMAL(38, 6)) AS target_value_v1_AVG
 ),
 agg_metrics_v2_SUM AS (
   SELECT
-    TRY_CAST((SELECT SUM(`v2`) FROM `cat`.`sch`.`src`) AS DECIMAL(38, 6)) AS source_value_v2_SUM,
+    TRY_CAST((SELECT SUM(`v2`) FROM `c`.`s`.`src`) AS DECIMAL(38, 6)) AS source_value_v2_SUM,
     TRY_CAST((SELECT SUM(`v2`) FROM `cat`.`sch`.`tgt`) AS DECIMAL(38, 6)) AS target_value_v2_SUM
 )
 SELECT
   parse_json(to_json(struct(    
-    'cat' AS source_catalog,
-    'sch' AS source_schema,
+    'c' AS source_catalog,
+    's' AS source_schema,
     'src' AS source_table,
     'cat' AS target_catalog,
     'sch' AS target_schema,
-    'tgt' AS target_table
+    'tgt' AS target_table,
+    current_timestamp() AS started_at
 ,
     struct(
       FORMAT_NUMBER(source_count, '#,##0') AS source_count,
@@ -106,16 +107,18 @@ SELECT
       FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_value_v2_SUM - target_value_v2_SUM) / NULLIF(ABS(CAST(source_value_v2_SUM AS DOUBLE)), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
       FORMAT_STRING('%.2f%%', CAST(0.1 * 100 AS DOUBLE)) AS tolerance_percent,
       CASE WHEN COALESCE(ABS(source_value_v2_SUM - target_value_v2_SUM) / NULLIF(ABS(CAST(source_value_v2_SUM AS DOUBLE)), 0), 0) <= 0.1 THEN 'PASS' ELSE 'FAIL' END AS status
-    ) AS agg_validation_v2_SUM))) as result_payload,
+    ) AS agg_validation_v2_SUM,
+    current_timestamp() AS completed_at
+  ))) as result_payload,
   ( COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= 0.05 AND  COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= 1e-06 AND COALESCE(ABS(source_nulls_v1 - target_nulls_v1) / NULLIF(CAST(total_compared_v1 AS DOUBLE), 0), 0) <= 0.0 AND COALESCE(ABS(source_nulls_v2 - target_nulls_v2) / NULLIF(CAST(total_compared_v2 AS DOUBLE), 0), 0) <= 0.0 AND  COALESCE(ABS(source_value_v1_SUM - target_value_v1_SUM) / NULLIF(ABS(CAST(source_value_v1_SUM AS DOUBLE)), 0), 0) <= 0.0 AND  COALESCE(ABS(source_value_v1_AVG - target_value_v1_AVG) / NULLIF(ABS(CAST(source_value_v1_AVG AS DOUBLE)), 0), 0) <= 1e-06 AND  COALESCE(ABS(source_value_v2_SUM - target_value_v2_SUM) / NULLIF(ABS(CAST(source_value_v2_SUM AS DOUBLE)), 0), 0) <= 0.1) AS overall_validation_passed
 FROM
 count_metrics CROSS JOIN row_hash_metrics CROSS JOIN null_metrics_v1 CROSS JOIN null_metrics_v2 CROSS JOIN agg_metrics_v1_SUM CROSS JOIN agg_metrics_v1_AVG CROSS JOIN agg_metrics_v2_SUM
 ;
 
 INSERT INTO `cat`.`res`.`history` (task_key, status, run_id, job_id, job_name, timestamp, result_payload)
-SELECT 't_complex', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
+SELECT 't1_complex', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
 :run_id, :job_id, 'complex_job', current_timestamp(), result_payload FROM final_metrics_view;
 
-SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: t_complex. Payload: \n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false;
+SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: t1_complex. Payload: \n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false;
 
 SELECT to_json(result_payload, map('pretty', 'true')) AS result FROM final_metrics_view WHERE overall_validation_passed = true;

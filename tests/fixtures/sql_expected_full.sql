@@ -37,7 +37,14 @@ agg_metrics_v_SUM AS (
     TRY_CAST((SELECT SUM(`v`) FROM `c`.`s`.`b`) AS DECIMAL(38, 6)) AS target_value_v_SUM
 )
 SELECT
-  parse_json(to_json(struct(
+  parse_json(to_json(struct(    
+    'c' AS source_catalog,
+    's' AS source_schema,
+    'a' AS source_table,
+    'c' AS target_catalog,
+    's' AS target_schema,
+    'b' AS target_table
+,
     struct(
       FORMAT_NUMBER(source_count, '#,##0') AS source_count,
       FORMAT_NUMBER(target_count, '#,##0') AS target_count,

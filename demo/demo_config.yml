@@ -2,7 +2,7 @@
 # Executive-Ready Configuration: Demonstrating Enterprise-Scale Data Governance
 # This configuration validates critical business data across multiple domains:
 # - Customer Experience (CRM)
-# - Financial Transactions 
+# - Financial Transactions
 # - Marketing Operations
 # - Human Capital Management
 # - Financial Reporting & Compliance
@@ -47,7 +47,7 @@ validations:
     pk_hash_threshold: 0.0  # No changes acceptable
     agg_validations:
       - column: "amount"
-        validations: 
+        validations:
           - { agg: "SUM", tolerance: 0.0 }  # Total revenue must match exactly
           - { agg: "AVG", tolerance: 0.0 }  # Average transaction size
       - column: "tax_amount"
@@ -131,7 +131,7 @@ validations:
     count_tolerance: 0.01  # FAILS: 2.5% missing exceeds 1% threshold
     agg_validations:
       - column: "amount"
-        validations: 
+        validations:
           - { agg: "SUM", tolerance: 0.0 }  # Total must balance
     null_validation_threshold: 0.0
     null_validation_columns: ["account_code", "fiscal_period"]  # Required for reporting
@@ -177,7 +177,7 @@ validations:
     pk_hash_threshold: 0.0
 
   # ============================ CROSS-DOMAIN VALIDATIONS ============================
-  
+
   # 13. REGIONAL COMPLIANCE: Customer uniqueness by region
   - task_key: "validate_customer_regional_uniqueness_PASS"
     <<: *defaults
@@ -185,7 +185,7 @@ validations:
     target_table: "users"
     uniqueness_columns: ["email", "country"]
     uniqueness_threshold: 0.0  # Enforce regional data integrity
-  
+
   # 14. PRIVACY COMPLIANCE: GDPR/CCPA request tracking
   - task_key: "validate_privacy_requests_FAIL"
     <<: *defaults

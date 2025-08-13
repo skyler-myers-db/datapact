@@ -17,7 +17,7 @@ classifiers = [
     "Development Status :: 5 - Production/Stable",
 ]
 dependencies = [
-    "databricks-sdk>=0.61.0",
+    "databricks-sdk>=0.62.0",
     "databricks-sql-connector",
     "pyarrow",
     "pyyaml",

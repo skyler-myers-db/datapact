@@ -306,10 +306,13 @@ class TestUploadSqlScripts:
         assert "task1" in asset_paths
         assert "task2" in asset_paths
         assert "aggregate_results" in asset_paths
+        assert "setup_genie_datasets" in asset_paths  # Genie datasets setup task
         assert (
             asset_paths["task1"] == "/Users/test/datapact/job_assets/Test Job/task1.sql"
         )
-        assert client.w.workspace.upload.call_count == 3  # 2 tasks + 1 aggregate
+        assert (
+            client.w.workspace.upload.call_count == 4
+        )  # 2 tasks + 1 aggregate + 1 genie datasets
 
 
 class TestRunValidation:
