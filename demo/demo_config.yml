@@ -25,11 +25,11 @@ validations:
     primary_keys: ["user_id"]
     count_tolerance: 0.01 # FAILS: 1.7% customer records missing
     pk_row_hash_check: true
-    pk_hash_threshold: 0.04 # FAILS: 5% PII masking errors
-    null_validation_threshold: 0.02 # FAILS: Critical date fields corrupted
+    pk_hash_tolerance: 0.04 # FAILS: 5% PII masking errors
+    null_validation_tolerance: 0.02 # FAILS: Critical date fields corrupted
     null_validation_columns: ["signup_date", "status", "satisfaction_score"]
     uniqueness_columns: ["email"]
-    uniqueness_threshold: 0.0 # FAILS: Duplicate email addresses detected
+    uniqueness_tolerance: 0.0 # FAILS: Duplicate email addresses detected
     agg_validations:
       - column: "total_logins"
         validations: [{ agg: "SUM", tolerance: 0.05 }] # FAILS: Canadian metrics doubled
@@ -44,7 +44,7 @@ validations:
     primary_keys: ["transaction_id"]
     count_tolerance: 0.0  # Zero tolerance for financial data
     pk_row_hash_check: true
-    pk_hash_threshold: 0.0  # No changes acceptable
+    pk_hash_tolerance: 0.0  # No changes acceptable
     agg_validations:
       - column: "amount"
         validations:
@@ -60,7 +60,7 @@ validations:
     target_table: "products"
     primary_keys: ["product_id"]
     pk_row_hash_check: true
-    pk_hash_threshold: 0.025  # 2.5% threshold for approved price changes
+    pk_hash_tolerance: 0.025  # 2.5% threshold for approved price changes
     agg_validations:
       - column: "price"
         validations: [{ agg: "AVG", tolerance: 0.10 }]  # 10% average price drift acceptable
@@ -75,7 +75,7 @@ validations:
     target_table: "campaigns"
     primary_keys: ["campaign_id"]
     pk_row_hash_check: true
-    pk_hash_threshold: 0.0  # FAILS: Campaign status out of sync
+    pk_hash_tolerance: 0.0  # FAILS: Campaign status out of sync
     agg_validations:
       - column: "budget"
         validations: [{ agg: "SUM", tolerance: 0.0 }]  # Total budget must match
@@ -117,9 +117,9 @@ validations:
     target_table: "salary_bands"
     primary_keys: ["band_id"]
     pk_row_hash_check: true
-    pk_hash_threshold: 0.0  # Zero tolerance for compensation data
+    pk_hash_tolerance: 0.0  # Zero tolerance for compensation data
     uniqueness_columns: ["band_id", "level"]
-    uniqueness_threshold: 0.0  # No duplicate bands allowed
+    uniqueness_tolerance: 0.0  # No duplicate bands allowed
 
   # ============================ FINANCE DOMAIN ============================
   # 8. SOX CRITICAL: General Ledger - Missing financial records
@@ -133,7 +133,7 @@ validations:
       - column: "amount"
         validations:
           - { agg: "SUM", tolerance: 0.0 }  # Total must balance
-    null_validation_threshold: 0.0
+    null_validation_tolerance: 0.0
     null_validation_columns: ["account_code", "fiscal_period"]  # Required for reporting
 
   # ============================ LOGGING & OPS DOMAIN ============================
@@ -144,7 +144,7 @@ validations:
     target_table: "page_views"
     primary_keys: ["session_id"]
     pk_row_hash_check: true
-    pk_hash_threshold: 0.0
+    pk_hash_tolerance: 0.0
     hash_columns: ["user_id", "session_id", "page_path", "device_type"]  # Ignore timestamp drift
     agg_validations:
       - column: "time_on_page_seconds"
@@ -171,10 +171,10 @@ validations:
     source_table: "status_codes"
     target_table: "status_codes"
     primary_keys: ["code"]
-    null_validation_threshold: 0.01  # FAILS: Critical codes losing categorization
+    null_validation_tolerance: 0.01  # FAILS: Critical codes losing categorization
     null_validation_columns: ["category", "severity"]
     pk_row_hash_check: true
-    pk_hash_threshold: 0.0
+    pk_hash_tolerance: 0.0
 
   # ============================ CROSS-DOMAIN VALIDATIONS ============================
 
@@ -184,7 +184,7 @@ validations:
     source_table: "users"
     target_table: "users"
     uniqueness_columns: ["email", "country"]
-    uniqueness_threshold: 0.0  # Enforce regional data integrity
+    uniqueness_tolerance: 0.0  # Enforce regional data integrity
 
   # 14. PRIVACY COMPLIANCE: GDPR/CCPA request tracking
   - task_key: "validate_privacy_requests_FAIL"
@@ -193,7 +193,7 @@ validations:
     target_table: "privacy_requests"
     primary_keys: ["request_id"]
     count_tolerance: 0.005  # FAILS: Recent requests missing
-    null_validation_threshold: 0.0
+    null_validation_tolerance: 0.0
     null_validation_columns: ["regulation", "status"]
     agg_validations:
       - column: "processing_days"

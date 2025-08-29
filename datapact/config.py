@@ -56,9 +56,9 @@ class ValidationTask(BaseModel):
         primary_keys (list[str] | None): List of primary key columns used for row matching. Optional.
         count_tolerance (float | None): Allowed tolerance for row count differences between source and target. Optional.
         pk_row_hash_check (bool | None): Whether to perform row hash validation on primary keys. Defaults to False.
-        pk_hash_threshold (float | None): Threshold for acceptable row hash differences. Optional.
+        pk_hash_tolerance (float | None): Tolerance for acceptable row hash differences. Optional.
         hash_columns (list[str] | None): List of columns to include in hash calculations. Optional.
-        null_validation_threshold (float | None): Threshold for acceptable null value differences. Optional.
+        null_validation_tolerance (float | None): Tolerance for acceptable null value differences. Optional.
         null_validation_columns (list[str] | None): Columns to include in null value validation. Optional.
         agg_validations (list[AggValidation] | None): List of aggregate validation rules to apply. Optional.
     """
@@ -73,20 +73,20 @@ class ValidationTask(BaseModel):
     primary_keys: list[str] | None = None
     count_tolerance: float | None = None
     pk_row_hash_check: bool | None = Field(default=False)
-    pk_hash_threshold: float | None = None
+    pk_hash_tolerance: float | None = None
     hash_columns: list[str] | None = None
-    null_validation_threshold: float | None = None
+    null_validation_tolerance: float | None = None
     null_validation_columns: list[str] | None = None
     agg_validations: list[AggValidation] | None = None
     # New optional validations
     uniqueness_columns: list[str] | None = None
-    uniqueness_threshold: float | None = None
+    uniqueness_tolerance: float | None = None
 
     @field_validator(
         "count_tolerance",
-        "pk_hash_threshold",
-        "null_validation_threshold",
-        "uniqueness_threshold",
+        "pk_hash_tolerance",
+        "null_validation_tolerance",
+        "uniqueness_tolerance",
     )
     @classmethod
     def tolerance_must_be_a_ratio(cls, v: float | None) -> float | None:

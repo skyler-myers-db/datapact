@@ -36,9 +36,9 @@ def _minimal_task(**overrides) -> ValidationTask:
         "primary_keys": [],
         "count_tolerance": 0.01,
         "pk_row_hash_check": False,
-        "pk_hash_threshold": None,
+        "pk_hash_tolerance": None,
         "hash_columns": [],
-        "null_validation_threshold": None,
+        "null_validation_tolerance": None,
         "null_validation_columns": [],
         "agg_validations": [],
     }
@@ -83,7 +83,11 @@ def test_ensure_results_table_exists_emits_expected_sql(monkeypatch):
             """
         CREATE TABLE IF NOT EXISTS `c`.`s`.`t` (
             task_key STRING, status STRING, run_id BIGINT, job_id BIGINT, job_name STRING,
-            timestamp TIMESTAMP, result_payload VARIANT) USING DELTA
+            timestamp TIMESTAMP, 
+            started_at TIMESTAMP, completed_at TIMESTAMP,
+            source_catalog STRING, source_schema STRING, source_table STRING,
+            target_catalog STRING, target_schema STRING, target_table STRING,
+            result_payload VARIANT) USING DELTA
         """
         )
     )

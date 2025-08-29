@@ -30,9 +30,9 @@ def test_hash_columns_empty_uses_struct_star():
         "primary_keys": ["id"],
         "count_tolerance": None,
         "pk_row_hash_check": True,
-        "pk_hash_threshold": 0.0,
+        "pk_hash_tolerance": 0.0,
         "hash_columns": [],
-        "null_validation_threshold": None,
+        "null_validation_tolerance": None,
         "null_validation_columns": [],
         "agg_validations": [],
         "results_table": "`c`.`s`.`hist`",
@@ -54,9 +54,9 @@ def test_multiple_pks_and_null_columns_and_aggs():
         "primary_keys": ["id1", "id2"],
         "count_tolerance": 0.05,
         "pk_row_hash_check": True,
-        "pk_hash_threshold": 0.000001,
+        "pk_hash_tolerance": 0.000001,
         "hash_columns": [],
-        "null_validation_threshold": 0.0,
+        "null_validation_tolerance": 0.0,
         "null_validation_columns": ["v1", "v2"],
         "agg_validations": [
             {

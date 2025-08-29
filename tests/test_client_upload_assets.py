@@ -52,9 +52,9 @@ def test_upload_sql_scripts_renders_and_uploads_expected_files() -> None:
         primary_keys=["id"],
         count_tolerance=0.01,
         pk_row_hash_check=True,
-        pk_hash_threshold=0.0,
+        pk_hash_tolerance=0.0,
         hash_columns=["id", "v"],
-        null_validation_threshold=0.02,
+        null_validation_tolerance=0.02,
         null_validation_columns=["v"],
         agg_validations=[
             AggValidation(

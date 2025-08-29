@@ -16,9 +16,9 @@ def _minimal_task(**overrides):
         primary_keys=["id"],
         count_tolerance=None,
         pk_row_hash_check=False,
-        pk_hash_threshold=None,
+        pk_hash_tolerance=None,
         hash_columns=None,
-        null_validation_threshold=None,
+        null_validation_tolerance=None,
         null_validation_columns=None,
         agg_validations=None,
     )
@@ -31,8 +31,8 @@ def _minimal_task(**overrides):
     [
         ("count_tolerance", 0.0),
         ("count_tolerance", 1.0),
-        ("pk_hash_threshold", 0.3),
-        ("null_validation_threshold", None),
+        ("pk_hash_tolerance", 0.3),
+        ("null_validation_tolerance", None),
     ],
 )
 def test_tolerance_validator_accepts_valid_values(field, value):
@@ -45,8 +45,8 @@ def test_tolerance_validator_accepts_valid_values(field, value):
     "field,value",
     [
         ("count_tolerance", -0.0001),
-        ("pk_hash_threshold", 1.00001),
-        ("null_validation_threshold", 2.0),
+        ("pk_hash_tolerance", 1.00001),
+        ("null_validation_tolerance", 2.0),
     ],
 )
 def test_tolerance_validator_rejects_out_of_range(field, value):
