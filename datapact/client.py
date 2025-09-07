@@ -248,7 +248,7 @@ class DataPactClient:
     ) -> str:
         """Generate SQL script for creating curated datasets for Genie room.
 
-        This creates materialized views of the validation results optimized for
+        This creates Delta tables of the validation results optimized for
         natural language querying through Databricks AI/BI Genie.
         """
         # Safely escape SQL values to prevent injection
@@ -538,9 +538,14 @@ Once created, users can ask questions in natural language to analyze data qualit
             )
             self.w.workspace.delete(path=draft_path, recursive=True)
             time.sleep(2)
-        except (NotFound, Exception):
-            # NotFound or any other exception means the file doesn't exist
+        except NotFound:
+            # File doesn't exist - this is expected for new dashboards
             logger.info("Dashboard file does not yet exist – will create")
+        except (PermissionError, OSError) as e:
+            # Log specific filesystem/permission errors but continue with dashboard creation
+            logger.warning(
+                f"Error accessing dashboard file: {e}. Proceeding with creation."
+            )
 
         def q(sql):
             # Safely escape job name to prevent SQL injection
