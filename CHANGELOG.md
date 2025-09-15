@@ -4,7 +4,18 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [2.5.0] - 2025-09-15
+
+### ✨ Added (New Features)
+
+- **Better Visualizations:** Much better visualizations with 3 tabs for different topics, including job run metrics.
+- **New Dashboard Theme:** The dashboard has a new, custom, aesthetic theme that makes it stand out and easy to read.
+- **Dashboard Filters:** Now you can filter some of the visualizations based on the test results.
+
+### 🐛 Fixed
+
+- Some of the visualiztion results were not coming in properly.
+- The filter for the most recent job run was on `run_id`, which is not a reliable indicator of the latest run (it has been switched to `completed_at` combined with `run_id`).
 
 ## [2.0.0] - 2025-08-02
 
@@ -20,7 +31,7 @@ All notable changes to this project will be documented in this file.
 - Resolved a series of critical API errors related to the creation of Lakeview dashboards via the SDK.
 - Corrected dashboard layout issues that caused skewed and misaligned visualizations.
 
-## [1.0.0] - (Previous Release Date)
+## [1.0.0] - 2025-05-20
 
 ### ✨ Added
 - Initial release of the DataPact validation engine.

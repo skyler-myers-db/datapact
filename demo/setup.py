@@ -133,6 +133,9 @@ def execute_sql_commands(
     logger.info(
         f"Found {len(sql_commands)} individual SQL statements to execute sequentially."
     )
+    logger.info(
+        "Creating enterprise-scale demo data (10M page views, 5M transactions)..."
+    )
     for i, command in enumerate(sql_commands):
         logger.info(f"Executing statement {i + 1}/{len(sql_commands)}...")
         logger.debug(f"SQL: {command}")
@@ -145,8 +148,25 @@ def execute_sql_commands(
                 raise RuntimeError(f"Statement {i + 1} failed to get a statement ID.")
             timeout = timedelta(minutes=10)
             deadline = datetime.now() + timeout
+            retry_count = 0
+            max_retries = 3
             while datetime.now() < deadline:
-                status = w.statement_execution.get_statement(statement_id)
+                try:
+                    status = w.statement_execution.get_statement(statement_id)
+                    retry_count = 0  # Reset retry count on successful request
+                except (ConnectionError, ConnectionResetError, TimeoutError) as e:
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        logger.warning(
+                            f"Connection error on statement {i + 1}, retries exhausted: {e}"
+                        )
+                        raise
+                    logger.warning(
+                        f"Connection error on statement {i + 1}, retry {retry_count}/{max_retries}: {e}"
+                    )
+                    time.sleep(10)  # Wait longer before retry
+                    continue
+
                 if not status.status:
                     time.sleep(5)
                     continue
@@ -206,11 +226,11 @@ def print_success_and_instructions(profile: str) -> None:
         "\nYou have just set up a realistic, multi-faceted data environment. The upcoming validation run will showcase:"
     )
     logger.info(
-        "  - Validation across a 12-table enterprise model (Sales, HR, Marketing, Finance)."
+        "  - Validation across a 14-table enterprise model (Sales, HR, Marketing, Finance, Operations)."
     )
     logger.info("  - A mix of PASSING and FAILING tasks to demonstrate rich reporting.")
     logger.info(
-        "  - Advanced features like accepted thresholds and selective column hashing."
+        "  - Advanced features like accepted tolerance and selective column hashing."
     )
     logger.info(
         "  - Graceful handling of edge cases like empty tables and tables without primary keys."
@@ -253,7 +273,13 @@ def run_demo_setup() -> None:
     args = parse_args()
     profile_name = args.profile or os.getenv("DATABRICKS_PROFILE", "DEFAULT")
     logger.info(f"Connecting to Databricks with profile '{profile_name}'...")
-    w = WorkspaceClient(profile=profile_name)
+    # Configure longer timeout for enterprise-scale data operations
+    from databricks.sdk.config import Config
+
+    config = Config(
+        profile=profile_name, http_timeout_seconds=1200
+    )  # 20 minute timeout
+    w = WorkspaceClient(config=config)
     warehouse_name = resolve_warehouse_name(args, w)
     logger.info(f"Using warehouse: {warehouse_name}")
     warehouse = get_warehouse_by_name(w, warehouse_name)

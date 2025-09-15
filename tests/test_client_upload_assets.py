@@ -52,9 +52,9 @@ def test_upload_sql_scripts_renders_and_uploads_expected_files() -> None:
         primary_keys=["id"],
         count_tolerance=0.01,
         pk_row_hash_check=True,
-        pk_hash_threshold=0.0,
+        pk_hash_tolerance=0.0,
         hash_columns=["id", "v"],
-        null_validation_threshold=0.02,
+        null_validation_tolerance=0.02,
         null_validation_columns=["v"],
         agg_validations=[
             AggValidation(
@@ -76,8 +76,12 @@ def test_upload_sql_scripts_renders_and_uploads_expected_files() -> None:
     job_name = "unit_upload_job"
     assets = client._upload_sql_scripts(config, results_table, job_name)
 
-    # Assert paths include both task and aggregate
-    assert set(assets.keys()) == {"t_upload", "aggregate_results"}
+    # Assert paths include task, aggregate, and genie datasets setup
+    assert set(assets.keys()) == {
+        "t_upload",
+        "aggregate_results",
+        "setup_genie_datasets",
+    }
 
     dw = client.w.workspace  # type: ignore[assignment]
     # Validate uploaded content for task matches the template render

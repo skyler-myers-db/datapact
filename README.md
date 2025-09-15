@@ -31,17 +31,17 @@ DataPact provides a rich suite of validations to cover the most critical data qu
 
 - Multi-column uniqueness aliasing:
   - Config entry: `validate_users_email_country_uniqueness_FAIL` in `demo/demo_config.yml`.
-  - What it does: Enforces uniqueness on the composite key `(email, country)` with a strict `uniqueness_threshold: 0.0`.
+  - What it does: Enforces uniqueness on the composite key `(email, country)` with a strict `uniqueness_tolerance: 0.0`.
   - Where to see it: In the results payload, look for `uniqueness_validation_email_country` within the latest run’s details table on the “Run Details” page. The “Failures by Validation Type” chart also includes a “uniqueness” bucket.
 
 | Validation               | **Business Question It Answers**                                                              | **Example Configuration**                                                                                                                                |
 | ------------------------ | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Count Validation**     | _"Did we lose or gain a significant number of records during our ETL process?"_                | <pre lang="yaml">task_key: validate_users<br>...<br>count_tolerance: 0.01</pre>                                                                          |
-| **Row Hash Check**       | _"Have any of our supposedly identical records been subtly corrupted or changed?"_             | <pre lang="yaml">task_key: validate_products<br>...<br>primary_keys: [product_id]<br> pk_row_hash_check: true<br> pk_hash_threshold: 0.05</pre>           |
+| **Row Hash Check**       | _"Have any of our supposedly identical records been subtly corrupted or changed?"_             | <pre lang="yaml">task_key: validate_products<br>...<br>primary_keys: [product_id]<br> pk_row_hash_check: true<br> pk_hash_tolerance: 0.05</pre>           |
 | **Selective Hashing**    | _"How can we check for data integrity on critical columns while ignoring frequently changing ones like timestamps?"_ | <pre lang="yaml">task_key: validate_events<br>...<br>primary_keys: [event_id]<br> pk_row_hash_check: true<br> hash_columns: [user_id, event_type]</pre> |
-| **Aggregate Validation** | _"Has the total revenue, average order value, or max transaction ID changed beyond an acceptable threshold?"_ | <pre lang="yaml">task_key: validate_finance<br>...<br>agg_validations:<br>  - column: "total_revenue"<br>    validations: [{agg: SUM, tolerance: 0.005}]</pre>   |
-| **Null Count Validation**| _"Has a recent upstream change caused a spike in NULL values in our critical identifier or attribute columns?"_ | <pre lang="yaml">task_key: validate_customers<br>...<br> null_validation_threshold: 0.02<br> null_validation_columns: [email, country]</pre>       |
-| **Uniqueness Validation**| _"Are key columns unique (e.g., no duplicate emails or IDs) within each side?"_ | <pre lang="yaml">task_key: validate_users<br>...<br> uniqueness_columns: [email]<br> uniqueness_threshold: 0.0</pre> |
+| **Aggregate Validation** | _"Has the total revenue, average order value, or max transaction ID changed beyond an acceptable tolerance?"_ | <pre lang="yaml">task_key: validate_finance<br>...<br>agg_validations:<br>  - column: "total_revenue"<br>    validations: [{agg: SUM, tolerance: 0.005}]</pre>   |
+| **Null Count Validation**| _"Has a recent upstream change caused a spike in NULL values in our critical identifier or attribute columns?"_ | <pre lang="yaml">task_key: validate_customers<br>...<br> null_validation_tolerance: 0.02<br> null_validation_columns: [email, country]</pre>       |
+| **Uniqueness Validation**| _"Are key columns unique (e.g., no duplicate emails or IDs) within each side?"_ | <pre lang="yaml">task_key: validate_users<br>...<br> uniqueness_columns: [email]<br> uniqueness_tolerance: 0.0</pre> |
 
 ---
 
@@ -136,11 +136,11 @@ datapact run \
 
 * ✅ Performance on tables with millions of rows.
 * ✅ A mix of intentionally PASSING and FAILING tasks.
-* ✅ Advanced features like accepted change thresholds (pk_hash_threshold).
+* ✅ Advanced features like accepted change tolerance (pk_hash_tolerance).
 * ✅ Performance tuning with selective column hashing (hash_columns).
 * ✅ Detailed aggregate validations (SUM, MAX).
 * ✅ In-depth null-count validation (null_validation_columns).
-* ✅ Optional uniqueness checks for key columns (uniqueness_columns, threshold).
+* ✅ Optional uniqueness checks for key columns (uniqueness_columns, tolerance).
 * ✅ Graceful handling of edge cases like empty tables and tables without primary keys.
 
 ---
@@ -223,13 +223,13 @@ Below are all available parameters for each task in your `validation_config.yml`
 | `primary_keys`            | list[string] | No       | List of primary key columns, required for hash checks.                               |
 | `count_tolerance`         | float        | No       | Allowed relative difference for row counts (e.g., `0.01` for 1%). Defaults to `0.0`. |
 | `pk_row_hash_check`       | boolean      | No       | If `true`, performs a per-row hash comparison. Requires `primary_keys`.              |
-| `pk_hash_threshold`       | float        | No       | Allowed ratio of mismatched hashes. Requires `pk_row_hash_check`. Defaults to `0.0`. |
+| `pk_hash_tolerance`       | float        | No       | Allowed ratio of mismatched hashes. Requires `pk_row_hash_check`. Defaults to `0.0`. |
 | `hash_columns`            | list[string] | No       | Specific columns to include in the row hash. If omitted, all columns are used.       |
-| `null_validation_threshold` | float        | No       | Allowed relative difference for null counts in a column.                             |
-| `null_validation_columns` | list[string] | No       | List of columns to perform null count validation on. Requires `null_validation_threshold`. |
+| `null_validation_tolerance` | float        | No       | Allowed relative difference for null counts in a column.                             |
+| `null_validation_columns` | list[string] | No       | List of columns to perform null count validation on. Requires `null_validation_tolerance`. |
 | `agg_validations`         | list[dict]   | No       | A list of aggregate validations to perform. See structure in examples.               |
 | `uniqueness_columns`      | list[string] | No       | Columns that must be unique within source and within target.                         |
-| `uniqueness_threshold`    | float        | No       | Allowed duplicate ratio (e.g., 0.0 = strict no duplicates).                          |
+| `uniqueness_tolerance`    | float        | No       | Allowed duplicate ratio (e.g., 0.0 = strict no duplicates).                          |
 | `results-table` | string | No | FQN of the results table. If omitted, `datapact_main.results.run_history` is used. |
 
 ---
@@ -284,7 +284,7 @@ Each validation task writes a JSON payload under `result_payload` with named sec
     "source_nulls": "0",
     "target_nulls": "200",
     "relative_diff_percent": "—",
-    "threshold_percent": "2.00%",
+    "tolerance_percent": "2.00%",
     "status": "FAIL"
   },
   "agg_validation_total_logins_SUM": {
@@ -299,7 +299,7 @@ Each validation task writes a JSON payload under `result_payload` with named sec
     "target_duplicates": "25",
     "source_dupe_percent": "0.00%",
     "target_dupe_percent": "0.25%",
-    "threshold_percent": "0.00%",
+    "tolerance_percent": "0.00%",
     "status": "FAIL"
   }
 }

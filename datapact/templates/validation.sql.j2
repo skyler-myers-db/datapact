@@ -7,12 +7,22 @@
 {# Begin view creation #}
 {% set has_any = (count_tolerance is not none)
   or (pk_row_hash_check and primary_keys)
-  or (null_validation_columns and null_validation_threshold is not none)
+  or (null_validation_columns and null_validation_tolerance is not none)
   or (agg_validations)
-  or (uniqueness_columns and uniqueness_threshold is not none)
+  or (uniqueness_columns and uniqueness_tolerance is not none)
 %}
 {% if not has_any %}
-CREATE OR REPLACE TEMP VIEW final_metrics_view AS SELECT true as overall_validation_passed, parse_json(to_json(struct('No validations configured for task {{ task_key_ }}' as message))) as result_payload;
+CREATE OR REPLACE TEMP VIEW final_metrics_view AS SELECT
+  current_timestamp() as started_at,
+  '{{ source_catalog }}' AS source_catalog,
+  '{{ source_schema }}' AS source_schema,
+  '{{ source_table }}' AS source_table,
+  '{{ target_catalog }}' AS target_catalog,
+  '{{ target_schema }}' AS target_schema,
+  '{{ target_table }}' AS target_table,
+  true as overall_validation_passed,
+  parse_json(to_json(struct('No validations configured for task {{ task_key_ }}' as message))) as result_payload,
+  current_timestamp() as completed_at;
 {% else %}
 CREATE OR REPLACE TEMP VIEW final_metrics_view AS
 {% set ns = namespace(first=True) %}
@@ -65,7 +75,7 @@ row_hash_metrics AS (
 {%- endif %}
 
 {# Null validations CTEs #}
-{% if null_validation_columns and null_validation_threshold is not none %}
+{% if null_validation_columns and null_validation_tolerance is not none %}
 {% for col in null_validation_columns %}
 {% if ns.first %}WITH
 {% set ns.first = False %}
@@ -110,7 +120,7 @@ agg_metrics_{{ col }}_{{ agg }} AS (
 {%- endif %}
 
 {# Uniqueness validation CTE #}
-{% if uniqueness_columns and uniqueness_threshold is not none -%}
+{% if uniqueness_columns and uniqueness_tolerance is not none -%}
 {% if ns.first %}WITH
 {% set ns.first = False %}
 {% else %},
@@ -134,6 +144,13 @@ uniqueness_metrics AS (
 
 {# SELECT with payload struct and overall status #}
 SELECT
+  current_timestamp() AS started_at,
+  '{{ source_catalog }}' AS source_catalog,
+  '{{ source_schema }}' AS source_schema,
+  '{{ source_table }}' AS source_table,
+  '{{ target_catalog }}' AS target_catalog,
+  '{{ target_schema }}' AS target_schema,
+  '{{ target_table }}' AS target_table,
   parse_json(to_json(struct(
   {%- set comma = joiner(',') -%}
     {# Count payload #}
@@ -155,25 +172,25 @@ SELECT
       FORMAT_NUMBER(total_compared_rows, '#,##0') AS compared_rows,
       FORMAT_NUMBER(mismatch_count, '#,##0') AS mismatch_count,
       FORMAT_STRING('%.2f%%', CAST(COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) * 100 AS DOUBLE)) as mismatch_percent,
-      FORMAT_STRING('%.2f%%', CAST({{ pk_hash_threshold if pk_hash_threshold is not none else 0.0 }} * 100 AS DOUBLE)) AS threshold_percent,
-      CASE WHEN COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= {{ pk_hash_threshold if pk_hash_threshold is not none else 0.0 }} THEN 'PASS' ELSE 'FAIL' END AS status
+      FORMAT_STRING('%.2f%%', CAST({{ pk_hash_tolerance if pk_hash_tolerance is not none else 0.0 }} * 100 AS DOUBLE)) AS tolerance_percent,
+      CASE WHEN COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= {{ pk_hash_tolerance if pk_hash_tolerance is not none else 0.0 }} THEN 'PASS' ELSE 'FAIL' END AS status
     ) AS row_hash_validation
     {%- endif -%}
 
     {# Null payloads #}
-    {%- if null_validation_columns and null_validation_threshold is not none -%}
+    {%- if null_validation_columns and null_validation_tolerance is not none -%}
     {%- for col in null_validation_columns -%}
     {{ comma() }}
     struct(
       FORMAT_NUMBER(source_nulls_{{ col }}, '#,##0') AS source_nulls,
       FORMAT_NUMBER(target_nulls_{{ col }}, '#,##0') AS target_nulls,
       {%- if primary_keys -%}
-      FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(total_compared_{{ col }} AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
+      FORMAT_STRING('%.2f%%', CAST(CASE WHEN source_nulls_{{ col }} = 0 AND target_nulls_{{ col }} > 0 THEN 100.0 ELSE COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(total_compared_{{ col }} AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
       {%- else -%}
-      FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
+      FORMAT_STRING('%.2f%%', CAST(CASE WHEN source_nulls_{{ col }} = 0 AND target_nulls_{{ col }} > 0 THEN 100.0 ELSE COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) * 100 END AS DOUBLE)) as relative_diff_percent,
       {%- endif -%}
-      FORMAT_STRING('%.2f%%', CAST({{ null_validation_threshold }} * 100 AS DOUBLE)) AS threshold_percent,
-  CASE WHEN {% if primary_keys %}COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(total_compared_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_threshold }}{% else %}CASE WHEN source_nulls_{{ col }} = 0 THEN target_nulls_{{ col }} = 0 ELSE COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_threshold }} END{% endif %} THEN 'PASS' ELSE 'FAIL' END AS status
+      FORMAT_STRING('%.2f%%', CAST({{ null_validation_tolerance }} * 100 AS DOUBLE)) AS tolerance_percent,
+  CASE WHEN {% if primary_keys %}COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(total_compared_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_tolerance }}{% else %}CASE WHEN source_nulls_{{ col }} = 0 THEN target_nulls_{{ col }} = 0 ELSE COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_tolerance }} END{% endif %} THEN 'PASS' ELSE 'FAIL' END AS status
     ) AS null_validation_{{ col }}
     {%- endfor -%}
     {%- endif -%}
@@ -195,16 +212,16 @@ SELECT
     {%- endif -%}
 
   {# Uniqueness payload #}
-  {% if uniqueness_columns and uniqueness_threshold is not none -%}
+  {% if uniqueness_columns and uniqueness_tolerance is not none -%}
     {{ comma() }}
     struct(
       FORMAT_NUMBER(source_duplicates, '#,##0') AS source_duplicates,
       FORMAT_NUMBER(target_duplicates, '#,##0') AS target_duplicates,
       FORMAT_STRING('%.2f%%', CAST(COALESCE(source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as source_dupe_percent,
       FORMAT_STRING('%.2f%%', CAST(COALESCE(target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as target_dupe_percent,
-      FORMAT_STRING('%.2f%%', CAST({{ uniqueness_threshold }} * 100 AS DOUBLE)) AS threshold_percent,
-      CASE WHEN COALESCE(source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0), 0) <= {{ uniqueness_threshold }}
-            AND COALESCE(target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0), 0) <= {{ uniqueness_threshold }} THEN 'PASS' ELSE 'FAIL' END AS status
+      FORMAT_STRING('%.2f%%', CAST({{ uniqueness_tolerance }} * 100 AS DOUBLE)) AS tolerance_percent,
+      CASE WHEN COALESCE(source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0), 0) <= {{ uniqueness_tolerance }}
+            AND COALESCE(target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0), 0) <= {{ uniqueness_tolerance }} THEN 'PASS' ELSE 'FAIL' END AS status
   ) AS uniqueness_validation_{{ uniqueness_columns|join('_') }}
   {%- endif -%}
   ))) as result_payload,
@@ -214,15 +231,15 @@ SELECT
     {{ andsep() }} COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= {{ count_tolerance }}
     {%- endif -%}
     {%- if pk_row_hash_check and primary_keys -%}
-    {{ andsep() }} COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= {{ pk_hash_threshold if pk_hash_threshold is not none else 0.0 }}
+    {{ andsep() }} COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= {{ pk_hash_tolerance if pk_hash_tolerance is not none else 0.0 }}
     {%- endif -%}
-    {%- if null_validation_columns and null_validation_threshold is not none -%}
+    {%- if null_validation_columns and null_validation_tolerance is not none -%}
     {%- for col in null_validation_columns -%}
     {{ andsep() }}
       {%- if primary_keys -%}
-      COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(total_compared_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_threshold }}
+      COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(total_compared_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_tolerance }}
       {%- else -%}
-      CASE WHEN source_nulls_{{ col }} = 0 THEN target_nulls_{{ col }} = 0 ELSE COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_threshold }} END
+      CASE WHEN source_nulls_{{ col }} = 0 THEN target_nulls_{{ col }} = 0 ELSE COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_tolerance }} END
       {%- endif -%}
     {%- endfor -%}
     {%- endif -%}
@@ -233,11 +250,12 @@ SELECT
     {%- endfor -%}
     {%- endfor -%}
     {%- endif -%}
-  {%- if uniqueness_columns and uniqueness_threshold is not none -%}
-  {{ andsep() }} COALESCE(source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0), 0) <= {{ uniqueness_threshold }}
-  {{ andsep() }} COALESCE(target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0), 0) <= {{ uniqueness_threshold }}
+  {%- if uniqueness_columns and uniqueness_tolerance is not none -%}
+  {{ andsep() }} COALESCE(source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0), 0) <= {{ uniqueness_tolerance }}
+  {{ andsep() }} COALESCE(target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0), 0) <= {{ uniqueness_tolerance }}
   {%- endif -%}
-  ) AS overall_validation_passed
+  ) AS overall_validation_passed,
+  current_timestamp() AS completed_at
 FROM
 {% if cte_names | length > 0 %}
 {# NOTE: All CTEs in cte_names must return exactly one row. CROSS JOIN is only safe under this assumption. #}
@@ -248,9 +266,9 @@ FROM
 ;
 {% endif %}
 
-INSERT INTO {{ results_table }} (task_key, status, run_id, job_id, job_name, timestamp, result_payload)
+INSERT INTO {{ results_table }} (task_key, status, run_id, job_id, job_name, timestamp, started_at, completed_at, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, result_payload)
 SELECT '{{ task_key_ }}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
-:run_id, :job_id, '{{ job_name }}', current_timestamp(), result_payload FROM final_metrics_view;
+:run_id, :job_id, '{{ job_name }}', current_timestamp(), started_at, completed_at, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, result_payload FROM final_metrics_view;
 
 SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: {{ task_key_ }}. Payload: \n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false;
 

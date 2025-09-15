@@ -82,6 +82,42 @@ def add_dashboard_refresh_task(
     )
 
 
+def add_genie_room_task(
+    tasks: list[Task],
+    asset_paths: dict[str, str],
+    warehouse_id: str,
+) -> None:
+    """Add a task to set up curated datasets for Databricks AI/BI Genie.
+
+    This task creates optimized tables from validation results that can be used
+    as data sources when creating a Genie space through the UI. The task runs
+    in parallel with the dashboard refresh task, both depending on aggregate_results.
+
+    After this task completes, users can:
+    1. Navigate to Databricks AI/BI in the UI
+    2. Create a new Genie space
+    3. Add the created tables as data sources
+    4. Enable natural language querying of validation results
+    """
+    if "setup_genie_datasets" not in asset_paths:
+        # Skip if Genie setup SQL wasn't uploaded
+        return
+
+    tasks.append(
+        Task(
+            task_key="setup_genie_datasets",
+            depends_on=[TaskDependency(task_key="aggregate_results")],
+            run_if=RunIf.ALL_DONE,
+            sql_task=SqlTask(
+                file=SqlTaskFile(
+                    path=asset_paths["setup_genie_datasets"], source=Source.WORKSPACE
+                ),
+                warehouse_id=warehouse_id,
+            ),
+        )
+    )
+
+
 def ensure_job(
     w: WorkspaceClient,
     *,

@@ -31,9 +31,9 @@ def _base_payload() -> dict:
         "primary_keys": [],
         "count_tolerance": None,
         "pk_row_hash_check": False,
-        "pk_hash_threshold": None,
+        "pk_hash_tolerance": None,
         "hash_columns": [],
-        "null_validation_threshold": None,
+        "null_validation_tolerance": None,
         "null_validation_columns": [],
         "agg_validations": [],
         "results_table": "`datapact`.`results`.`run_history`",
@@ -79,7 +79,7 @@ def test_row_hash_only_block_exact_fragments():
         {
             "primary_keys": ["id"],
             "pk_row_hash_check": True,
-            "pk_hash_threshold": 0.0,
+            "pk_hash_tolerance": 0.0,
             "hash_columns": ["id", "v"],
         }
     )
@@ -100,7 +100,7 @@ def test_nulls_with_pk_join_and_without_pk():
     p1.update(
         {
             "primary_keys": ["id"],
-            "null_validation_threshold": 0.02,
+            "null_validation_tolerance": 0.02,
             "null_validation_columns": ["v"],
         }
     )
@@ -117,7 +117,7 @@ def test_nulls_with_pk_join_and_without_pk():
     p2 = _base_payload()
     p2.update(
         {
-            "null_validation_threshold": 0.02,
+            "null_validation_tolerance": 0.02,
             "null_validation_columns": ["v"],
         }
     )
@@ -167,9 +167,9 @@ def test_full_combo_contains_all_sections_and_cross_joins_in_order():
             "count_tolerance": 0.01,
             "primary_keys": ["id"],
             "pk_row_hash_check": True,
-            "pk_hash_threshold": 0.0,
+            "pk_hash_tolerance": 0.0,
             "hash_columns": ["id", "v"],
-            "null_validation_threshold": 0.02,
+            "null_validation_tolerance": 0.02,
             "null_validation_columns": ["v"],
             "agg_validations": [
                 {"column": "v", "validations": [{"agg": "sum", "tolerance": 0.05}]}
@@ -198,7 +198,7 @@ def test_uniqueness_only_block_exact_fragments():
     p.update(
         {
             "uniqueness_columns": ["email"],
-            "uniqueness_threshold": 0.0,
+            "uniqueness_tolerance": 0.0,
         }
     )
     sql = _render(p)
@@ -229,15 +229,15 @@ def test_full_combo_includes_uniqueness_cross_join_order():
             "count_tolerance": 0.01,
             "primary_keys": ["id"],
             "pk_row_hash_check": True,
-            "pk_hash_threshold": 0.0,
+            "pk_hash_tolerance": 0.0,
             "hash_columns": ["id", "v"],
-            "null_validation_threshold": 0.02,
+            "null_validation_tolerance": 0.02,
             "null_validation_columns": ["v"],
             "agg_validations": [
                 {"column": "v", "validations": [{"agg": "sum", "tolerance": 0.05}]}
             ],
             "uniqueness_columns": ["email"],
-            "uniqueness_threshold": 0.0,
+            "uniqueness_tolerance": 0.0,
         }
     )
     sql = _render(p)
@@ -255,7 +255,7 @@ def test_uniqueness_multi_columns_alias():
     p.update(
         {
             "uniqueness_columns": ["email", "domain"],
-            "uniqueness_threshold": 0.0,
+            "uniqueness_tolerance": 0.0,
         }
     )
     sql = _render(p)
