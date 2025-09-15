@@ -39,7 +39,7 @@ DataPact provides a rich suite of validations to cover the most critical data qu
 | **Count Validation**     | _"Did we lose or gain a significant number of records during our ETL process?"_                | <pre lang="yaml">task_key: validate_users<br>...<br>count_tolerance: 0.01</pre>                                                                          |
 | **Row Hash Check**       | _"Have any of our supposedly identical records been subtly corrupted or changed?"_             | <pre lang="yaml">task_key: validate_products<br>...<br>primary_keys: [product_id]<br> pk_row_hash_check: true<br> pk_hash_tolerance: 0.05</pre>           |
 | **Selective Hashing**    | _"How can we check for data integrity on critical columns while ignoring frequently changing ones like timestamps?"_ | <pre lang="yaml">task_key: validate_events<br>...<br>primary_keys: [event_id]<br> pk_row_hash_check: true<br> hash_columns: [user_id, event_type]</pre> |
-| **Aggregate Validation** | _"Has the total revenue, average order value, or max transaction ID changed beyond an acceptable threshold?"_ | <pre lang="yaml">task_key: validate_finance<br>...<br>agg_validations:<br>  - column: "total_revenue"<br>    validations: [{agg: SUM, tolerance: 0.005}]</pre>   |
+| **Aggregate Validation** | _"Has the total revenue, average order value, or max transaction ID changed beyond an acceptable tolerance?"_ | <pre lang="yaml">task_key: validate_finance<br>...<br>agg_validations:<br>  - column: "total_revenue"<br>    validations: [{agg: SUM, tolerance: 0.005}]</pre>   |
 | **Null Count Validation**| _"Has a recent upstream change caused a spike in NULL values in our critical identifier or attribute columns?"_ | <pre lang="yaml">task_key: validate_customers<br>...<br> null_validation_tolerance: 0.02<br> null_validation_columns: [email, country]</pre>       |
 | **Uniqueness Validation**| _"Are key columns unique (e.g., no duplicate emails or IDs) within each side?"_ | <pre lang="yaml">task_key: validate_users<br>...<br> uniqueness_columns: [email]<br> uniqueness_tolerance: 0.0</pre> |
 
@@ -136,11 +136,11 @@ datapact run \
 
 * ✅ Performance on tables with millions of rows.
 * ✅ A mix of intentionally PASSING and FAILING tasks.
-* ✅ Advanced features like accepted change thresholds (pk_hash_tolerance).
+* ✅ Advanced features like accepted change tolerance (pk_hash_tolerance).
 * ✅ Performance tuning with selective column hashing (hash_columns).
 * ✅ Detailed aggregate validations (SUM, MAX).
 * ✅ In-depth null-count validation (null_validation_columns).
-* ✅ Optional uniqueness checks for key columns (uniqueness_columns, threshold).
+* ✅ Optional uniqueness checks for key columns (uniqueness_columns, tolerance).
 * ✅ Graceful handling of edge cases like empty tables and tables without primary keys.
 
 ---

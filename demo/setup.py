@@ -230,7 +230,7 @@ def print_success_and_instructions(profile: str) -> None:
     )
     logger.info("  - A mix of PASSING and FAILING tasks to demonstrate rich reporting.")
     logger.info(
-        "  - Advanced features like accepted thresholds and selective column hashing."
+        "  - Advanced features like accepted tolerance and selective column hashing."
     )
     logger.info(
         "  - Graceful handling of edge cases like empty tables and tables without primary keys."

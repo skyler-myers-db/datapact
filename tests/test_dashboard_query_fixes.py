@@ -77,10 +77,13 @@ class TestDashboardQueryFixes:
 
             # Test 2: Source and target columns should handle nulls
             assert (
-                "CASE WHEN get_json_object(to_json(result_payload), '$.source_catalog') IS NOT NULL"
+                "CONCAT_WS('.', source_catalog, source_schema, source_table) AS source_table"
                 in query
             )
-            assert "ELSE 'N/A' END as source_table" in query
+            assert (
+                "CONCAT_WS('.', target_catalog, target_schema, target_table) AS target_table"
+                in query
+            )
 
             # Test 3: Agg validation check should use simplified logic
             assert (

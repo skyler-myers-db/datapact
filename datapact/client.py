@@ -223,7 +223,7 @@ class DataPactClient:
         ddl = textwrap.dedent(
             f"""CREATE TABLE IF NOT EXISTS {results_table_fqn} (
             task_key STRING, status STRING, run_id BIGINT, job_id BIGINT, job_name STRING,
-            timestamp TIMESTAMP, 
+            timestamp TIMESTAMP,
             started_at TIMESTAMP, completed_at TIMESTAMP,
             source_catalog STRING, source_schema STRING, source_table STRING,
             target_catalog STRING, target_schema STRING, target_table STRING,
@@ -298,9 +298,16 @@ SELECT
     get_json_object(to_json(result_payload), '$.count_validation.target_count') as target_row_count,
     run_id,
     job_name
-FROM {results_table}
-WHERE job_name = {safe_job_name}
-AND run_id = (SELECT MAX(run_id) FROM {results_table} WHERE job_name = {safe_job_name});
+FROM (
+    SELECT
+      *,
+      row_number() over (partition by run_id, task_key order by timestamp desc) as rn
+    FROM
+      {results_table}
+    WHERE
+      job_name = {safe_job_name}
+  )
+WHERE rn = 1;
 
 -- 2. Data quality metrics by table
 CREATE OR REPLACE TABLE {genie_catalog}.{genie_schema}.genie_table_quality AS
@@ -311,9 +318,16 @@ SELECT
     SUM(CASE WHEN status = 'FAILURE' THEN 1 ELSE 0 END) as failed_validations,
     ROUND(100.0 * SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) / COUNT(*), 2) as quality_score,
     MAX(timestamp) as last_checked
-FROM {results_table}
-WHERE job_name = {safe_job_name}
-AND run_id = (SELECT MAX(run_id) FROM {results_table} WHERE job_name = {safe_job_name})
+FROM (
+    SELECT
+      *,
+      row_number() over (partition by run_id, task_key order by timestamp desc) as rn
+    FROM
+      {results_table}
+    WHERE
+      job_name = {safe_job_name}
+  )
+WHERE rn = 1
 GROUP BY 1;
 
 -- 3. Issue details for failed validations
@@ -332,10 +346,17 @@ SELECT
     END as issue_description,
     timestamp as detected_at,
     'High' as severity
-FROM {results_table}
-WHERE job_name = {safe_job_name}
-AND status = 'FAILURE'
-AND run_id = (SELECT MAX(run_id) FROM {results_table} WHERE job_name = {safe_job_name});
+FROM (
+    SELECT
+      *,
+      row_number() over (partition by run_id, task_key order by timestamp desc) as rn
+    FROM
+      {results_table}
+    WHERE
+      job_name = {safe_job_name}
+  )
+WHERE rn = 1
+AND status = 'FAILURE';
 
 -- Display instructions for setting up Genie space
 SELECT '🚀 GENIE ROOM SETUP INSTRUCTIONS' as title,
@@ -618,8 +639,16 @@ Once created, users can ask questions in natural language to analyze data qualit
                     q(
                         "WITH failure_details AS (\n"
                         "  SELECT task_key, result_payload\n"
-                        "  FROM {table}\n"
-                        "  WHERE job_name={job} AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name={job})\n"
+                        "  FROM (\n"
+                        "    SELECT\n"
+                        "    *,\n"
+                        "    row_number() over (partition by run_id, task_key order by timestamp desc) AS rn\n"
+                        "    FROM\n"
+                        "       {table}\n"
+                        "    WHERE\n"
+                        "       job_name = {job}\n"
+                        ")\n"
+                        "  WHERE rn = 1\n"
                         "    AND status = 'FAILURE'\n"
                         ")\n"
                         "SELECT validation_type, COUNT(DISTINCT task_key) as failure_count FROM (\n"
@@ -694,9 +723,16 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "SUM(CASE WHEN status = 'FAILURE' THEN 1 ELSE 0 END) as failures, "
                         "ROUND(100.0 * SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) / COUNT(*), 2) as quality_score, "
                         "MAX(CASE WHEN status = 'FAILURE' THEN timestamp END) as last_failure "
-                        "FROM {table} "
-                        "WHERE job_name = {job} "
-                        "AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name = {job}) "
+                        "FROM ( "
+                        "    SELECT "
+                        "    *, "
+                        "    row_number() over (partition by run_id, task_key order by timestamp desc) as rn "
+                        "    FROM "
+                        "       {table} "
+                        "    WHERE "
+                        "       job_name = {job} "
+                        ") "
+                        "WHERE rn = 1 "
                         "GROUP BY source_schema) "
                         "SELECT source_schema as schema_name, "
                         "total_validations, failures, quality_score, "
@@ -716,10 +752,28 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "queryLines": [
                     q(
                         "WITH base_data AS ( "
-                        "  SELECT task_key, status, result_payload, run_id, job_name "
-                        "  FROM {table} "
-                        "  WHERE job_name = {job} "
-                        "  AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name = {job}) "
+                        "  SELECT "
+                        "    task_key, "
+                        "    status, "
+                        "    result_payload, "
+                        "    run_id, "
+                        "    job_name "
+                        "    FROM "
+                        "    ( "
+                        "        SELECT "
+                        "           task_key, "
+                        "           status, "
+                        "           result_payload, "
+                        "           run_id, "
+                        "           job_name, "
+                        "           row_number() over (partition by run_id, task_key order by timestamp desc) AS rn "
+                        "        FROM "
+                        "           {table} "
+                        "        WHERE "
+                        "           job_name = {job} "
+                        "    ) "
+                        "    WHERE "
+                        "       rn = 1 "
                         "), "
                         "expanded_checks AS ( "
                         "  SELECT task_key, 'Count Check' as check_type, "
@@ -736,7 +790,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "    CONCAT('Compared: ', get_json_object(to_json(result_payload), '$.row_hash_validation.compared_rows'), "
                         "           ' rows | Mismatches: ', get_json_object(to_json(result_payload), '$.row_hash_validation.mismatch_count'), "
                         "           ' | Diff: ', get_json_object(to_json(result_payload), '$.row_hash_validation.mismatch_percent'), "
-                        "           ' | Tolerance: ', get_json_object(to_json(result_payload), '$.row_hash_validation.threshold_percent')) as details "
+                        "           ' | Tolerance: ', get_json_object(to_json(result_payload), '$.row_hash_validation.tolerance_percent')) as details "
                         "  FROM base_data "
                         "  WHERE get_json_object(to_json(result_payload), '$.row_hash_validation') IS NOT NULL "
                         "  UNION ALL "
@@ -745,7 +799,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "    CONCAT('Source nulls: ', get_json_object(null_json, '$.source_nulls'), "
                         "           ' | Target nulls: ', get_json_object(null_json, '$.target_nulls'), "
                         "           ' | Diff: ', get_json_object(null_json, '$.relative_diff_percent'), "
-                        "           ' | Tolerance: ', get_json_object(null_json, '$.threshold_percent')) as details "
+                        "           ' | Tolerance: ', get_json_object(null_json, '$.tolerance_percent')) as details "
                         "  FROM ("
                         "    SELECT task_key, result_payload, "
                         "           regexp_extract(key, 'null_validation_(.*)', 1) as null_field, "
@@ -760,7 +814,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "    get_json_object(unique_json, '$.status') as check_status, "
                         "    CONCAT('Source duplicates: ', COALESCE(get_json_object(unique_json, '$.source_duplicates'), '0'), "
                         "           ' | Target duplicates: ', COALESCE(get_json_object(unique_json, '$.target_duplicates'), '0'), "
-                        "           ' | Tolerance: ', get_json_object(unique_json, '$.threshold_percent')) as details "
+                        "           ' | Tolerance: ', get_json_object(unique_json, '$.tolerance_percent')) as details "
                         "  FROM ("
                         "    SELECT task_key, result_payload, "
                         "           regexp_extract(key, 'uniqueness_validation_(.*)', 1) as unique_field, "
@@ -825,18 +879,18 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "CASE WHEN to_json(result_payload) LIKE '%agg_validation%' AND to_json(result_payload) NOT LIKE '%agg_validation%FAIL%' THEN '✅ Aggs' "
                         "     WHEN to_json(result_payload) LIKE '%agg_validation%FAIL%' THEN '❌ Aggs' "
                         "     ELSE '➖' END as agg_check, "
-                        "CASE WHEN get_json_object(to_json(result_payload), '$.source_catalog') IS NOT NULL "
-                        "     THEN CONCAT(get_json_object(to_json(result_payload), '$.source_catalog'), '.', "
-                        "                 get_json_object(to_json(result_payload), '$.source_schema'), '.', "
-                        "                 get_json_object(to_json(result_payload), '$.source_table')) "
-                        "     ELSE 'N/A' END as source_table, "
-                        "CASE WHEN get_json_object(to_json(result_payload), '$.target_catalog') IS NOT NULL "
-                        "     THEN CONCAT(get_json_object(to_json(result_payload), '$.target_catalog'), '.', "
-                        "                 get_json_object(to_json(result_payload), '$.target_schema'), '.', "
-                        "                 get_json_object(to_json(result_payload), '$.target_table')) "
-                        "     ELSE 'N/A' END as target_table "
-                        "FROM {table} WHERE job_name = {job} "
-                        "AND run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name = {job}) "
+                        "CONCAT_WS('.', source_catalog, source_schema, source_table) AS source_table, "
+                        "CONCAT_WS('.', target_catalog, target_schema, target_table) AS target_table "
+                        "FROM ( "
+                        "    SELECT "
+                        "       *, "
+                        "       row_number() over (partition by run_id, task_key order by timestamp desc) as rn "
+                        "    FROM "
+                        "       {table} "
+                        "    WHERE "
+                        "       job_name = {job} "
+                        ") "
+                        "WHERE rn = 1 "
                         "ORDER BY status DESC, task_key"
                     )
                 ],
@@ -887,13 +941,13 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Runtime Trend",
                 "queryLines": [
                     q(
-                        "SELECT DATE(MIN(started_at)) as run_date, "
+                        "SELECT MIN(started_at)::DATE as run_date, "
                         "AVG(CAST(unix_timestamp(completed_at) - unix_timestamp(started_at) AS DOUBLE)) as avg_runtime_seconds, "
                         "COUNT(DISTINCT run_id) as num_runs "
                         "FROM {table} "
                         "WHERE job_name = {job} "
                         "AND started_at IS NOT NULL AND completed_at IS NOT NULL "
-                        "GROUP BY DATE(MIN(started_at)) "
+                        "GROUP BY started_at::DATE "
                         "ORDER BY run_date DESC "
                         "LIMIT 30"
                     )
@@ -949,25 +1003,25 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "ds_name": "ds_validation_details",
                 "type": "TABLE",
                 "title": "Validation Results with Check Details",
-                "pos": {"x": 0, "y": 14, "width": 6, "height": 8},
+                "pos": {"x": 0, "y": 15, "width": 6, "height": 8},
             },
             {
                 "ds_name": "ds_business_impact",
                 "type": "TABLE",
                 "title": "Source Schema Quality Summary",
-                "pos": {"x": 0, "y": 22, "width": 6, "height": 5},
+                "pos": {"x": 0, "y": 23, "width": 6, "height": 5},
             },
             {
                 "ds_name": "ds_exploded_checks",
                 "type": "TABLE",
-                "title": "Check Details (Filterable)",
-                "pos": {"x": 0, "y": 27, "width": 6, "height": 8},
+                "title": "Check Details",
+                "pos": {"x": 0, "y": 34, "width": 6, "height": 8},
             },
             {
                 "ds_name": "ds_top_failures",
                 "type": "BAR",
                 "title": "Top Failing Validations",
-                "pos": {"x": 0, "y": 27, "width": 6, "height": 5},
+                "pos": {"x": 0, "y": 28, "width": 6, "height": 5},
                 "x_field": "task_key",
                 "y_field": "failure_count",
                 "y_agg": None,  # Already aggregated in query
@@ -975,6 +1029,85 @@ Once created, users can ask questions in natural language to analyze data qualit
         ]
 
         layout_widgets: list[dict[str, Any]] = []
+        dashboard_filters: list[dict[str, Any]] = [
+            {
+                "widget": {
+                    "name": "3b28acc4",
+                    "queries": [
+                        {
+                            "name": "ds_validation_details_overall_status",
+                            "query": {
+                                "datasetName": "ds_validation_details",
+                                "fields": [
+                                    {
+                                        "name": "overall_status",
+                                        "expression": "`overall_status`",
+                                    },
+                                    {
+                                        "name": "overall_status_associativity",
+                                        "expression": "COUNT_IF(`associative_filter_predicate_group`)",
+                                    },
+                                ],
+                                "disaggregated": False,
+                            },
+                        }
+                    ],
+                    "spec": {
+                        "version": 2,
+                        "widgetType": "filter-single-select",
+                        "encodings": {
+                            "fields": [
+                                {
+                                    "fieldName": "overall_status",
+                                    "displayName": "overall_status",
+                                    "queryName": "ds_validation_details_overall_status",
+                                }
+                            ]
+                        },
+                        "frame": {"showTitle": True, "title": "Status"},
+                    },
+                },
+                "position": {"x": 0, "y": 14, "width": 6, "height": 1},
+            },
+            {
+                "widget": {
+                    "name": "56ba318f",
+                    "queries": [
+                        {
+                            "name": "ds_exploded_checks_status",
+                            "query": {
+                                "datasetName": "ds_exploded_checks",
+                                "fields": [
+                                    {"name": "status", "expression": "`status`"},
+                                    {
+                                        "name": "status_associativity",
+                                        "expression": "COUNT_IF(`associative_filter_predicate_group`)",
+                                    },
+                                ],
+                                "disaggregated": False,
+                            },
+                        }
+                    ],
+                    "spec": {
+                        "version": 2,
+                        "widgetType": "filter-single-select",
+                        "encodings": {
+                            "fields": [
+                                {
+                                    "fieldName": "status",
+                                    "displayName": "status",
+                                    "queryName": "ds_exploded_checks_status",
+                                }
+                            ]
+                        },
+                        "frame": {"showTitle": True, "title": "Validation Status"},
+                    },
+                },
+                "position": {"x": 0, "y": 33, "width": 6, "height": 1},
+            },
+        ]
+        layout_widgets += dashboard_filters
+
         for i, w_def in enumerate(widget_definitions):
             spec, query_fields = {}, []
 
@@ -1911,6 +2044,25 @@ Once created, users can ask questions in natural language to analyze data qualit
                     "pageType": "PAGE_TYPE_CANVAS",
                 },
             ],
+            "uiSettings": {
+                "theme": {
+                    "canvasBackgroundColor": {"light": "#FFFFFF", "dark": "#000000"},
+                    "widgetBackgroundColor": {"light": "#FFFFFF", "dark": "#000000"},
+                    "widgetBorderColor": {"light": "#000000", "dark": "#7F00FF"},
+                    "fontColor": {"light": "#000000", "dark": "#006CFF"},
+                    "selectionColor": {"light": "#FF00FF", "dark": "#FFFFFF"},
+                    "visualizationColors": [
+                        "#EE7733",
+                        "#0077BB",
+                        "#33BBEE",
+                        "#EE3377",
+                        "#CC3311",
+                        "#009988",
+                        "#BBBBBB",
+                    ],
+                    "widgetHeaderAlignment": "LEFT",
+                }
+            },
         }
 
         draft: Dashboard = self.w.lakeview.create(

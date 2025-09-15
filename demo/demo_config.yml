@@ -42,16 +42,16 @@ validations:
     source_table: "transactions"
     target_table: "transactions"
     primary_keys: ["transaction_id"]
-    count_tolerance: 0.0  # Zero tolerance for financial data
+    count_tolerance: 0.0 # Zero tolerance for financial data
     pk_row_hash_check: true
-    pk_hash_tolerance: 0.0  # No changes acceptable
+    pk_hash_tolerance: 0.0 # No changes acceptable
     agg_validations:
       - column: "amount"
         validations:
-          - { agg: "SUM", tolerance: 0.0 }  # Total revenue must match exactly
-          - { agg: "AVG", tolerance: 0.0 }  # Average transaction size
+          - { agg: "SUM", tolerance: 0.0 } # Total revenue must match exactly
+          - { agg: "AVG", tolerance: 0.0 } # Average transaction size
       - column: "tax_amount"
-        validations: [{ agg: "SUM", tolerance: 0.0 }]  # Tax reporting critical
+        validations: [{ agg: "SUM", tolerance: 0.0 }] # Tax reporting critical
 
   # 3. APPROVED: Product Catalog - Price updates within business rules
   - task_key: "validate_product_catalog_SCD_PASS"
@@ -60,12 +60,12 @@ validations:
     target_table: "products"
     primary_keys: ["product_id"]
     pk_row_hash_check: true
-    pk_hash_tolerance: 0.025  # 2.5% threshold for approved price changes
+    pk_hash_tolerance: 0.025 # 2.5% tolerance for approved price changes
     agg_validations:
       - column: "price"
-        validations: [{ agg: "AVG", tolerance: 0.10 }]  # 10% average price drift acceptable
+        validations: [{ agg: "AVG", tolerance: 0.10 }] # 10% average price drift acceptable
       - column: "inventory_count"
-        validations: [{ agg: "SUM", tolerance: 0.05 }]  # 5% inventory variance allowed
+        validations: [{ agg: "SUM", tolerance: 0.05 }] # 5% inventory variance allowed
 
   # ============================ MARKETING DOMAIN ============================
   # 4. WARNING: Marketing Campaigns - Status synchronization issues
@@ -75,12 +75,12 @@ validations:
     target_table: "campaigns"
     primary_keys: ["campaign_id"]
     pk_row_hash_check: true
-    pk_hash_tolerance: 0.0  # FAILS: Campaign status out of sync
+    pk_hash_tolerance: 0.0 # FAILS: Campaign status out of sync
     agg_validations:
       - column: "budget"
-        validations: [{ agg: "SUM", tolerance: 0.0 }]  # Total budget must match
+        validations: [{ agg: "SUM", tolerance: 0.0 }] # Total budget must match
       - column: "conversions"
-        validations: [{ agg: "SUM", tolerance: 0.01 }]  # Conversion tracking
+        validations: [{ agg: "SUM", tolerance: 0.01 }] # Conversion tracking
 
   # 5. CRITICAL: Digital Ad Spend - Currency conversion causing drift
   - task_key: "validate_digital_ad_spend_FAIL"
@@ -90,11 +90,11 @@ validations:
     primary_keys: ["ad_id"]
     agg_validations:
       - column: "daily_spend"
-        validations: [{ agg: "SUM", tolerance: 0.0005 }]  # FAILS: 0.1% FX drift exceeds 0.05% tolerance
+        validations: [{ agg: "SUM", tolerance: 0.0005 }] # FAILS: 0.1% FX drift exceeds 0.05% tolerance
       - column: "impressions"
-        validations: [{ agg: "SUM", tolerance: 0.0 }]  # Impressions must match exactly
+        validations: [{ agg: "SUM", tolerance: 0.0 }] # Impressions must match exactly
       - column: "clicks"
-        validations: [{ agg: "SUM", tolerance: 0.0 }]  # Click tracking critical
+        validations: [{ agg: "SUM", tolerance: 0.0 }] # Click tracking critical
 
   # ============================ HR DOMAIN ============================
   # 6. HR ALERT: Employee Master - Month-end synchronization gap
@@ -103,12 +103,12 @@ validations:
     source_table: "employees"
     target_table: "employees"
     primary_keys: ["employee_id"]
-    count_tolerance: 0.0  # FAILS: New hires/terminations not synced
+    count_tolerance: 0.0 # FAILS: New hires/terminations not synced
     agg_validations:
       - column: "base_salary"
-        validations: [{ agg: "SUM", tolerance: 0.001 }]  # Payroll total critical
+        validations: [{ agg: "SUM", tolerance: 0.001 }] # Payroll total critical
       - column: "performance_rating"
-        validations: [{ agg: "AVG", tolerance: 0.05 }]  # Performance metrics
+        validations: [{ agg: "AVG", tolerance: 0.05 }] # Performance metrics
 
   # 7. COMPLIANT: Compensation Bands - Master data integrity maintained
   - task_key: "validate_compensation_bands_PASS"
@@ -117,9 +117,9 @@ validations:
     target_table: "salary_bands"
     primary_keys: ["band_id"]
     pk_row_hash_check: true
-    pk_hash_tolerance: 0.0  # Zero tolerance for compensation data
+    pk_hash_tolerance: 0.0 # Zero tolerance for compensation data
     uniqueness_columns: ["band_id", "level"]
-    uniqueness_tolerance: 0.0  # No duplicate bands allowed
+    uniqueness_tolerance: 0.0 # No duplicate bands allowed
 
   # ============================ FINANCE DOMAIN ============================
   # 8. SOX CRITICAL: General Ledger - Missing financial records
@@ -128,13 +128,13 @@ validations:
     source_table: "gl_postings"
     target_table: "gl_postings"
     primary_keys: ["posting_id"]
-    count_tolerance: 0.01  # FAILS: 2.5% missing exceeds 1% threshold
+    count_tolerance: 0.01 # FAILS: 2.5% missing exceeds 1% tolerance
     agg_validations:
       - column: "amount"
         validations:
-          - { agg: "SUM", tolerance: 0.0 }  # Total must balance
+          - { agg: "SUM", tolerance: 0.0 } # Total must balance
     null_validation_tolerance: 0.0
-    null_validation_columns: ["account_code", "fiscal_period"]  # Required for reporting
+    null_validation_columns: ["account_code", "fiscal_period"] # Required for reporting
 
   # ============================ LOGGING & OPS DOMAIN ============================
   # 9. ACCEPTABLE: Web Analytics - Timestamp drift within tolerance
@@ -145,17 +145,17 @@ validations:
     primary_keys: ["session_id"]
     pk_row_hash_check: true
     pk_hash_tolerance: 0.0
-    hash_columns: ["user_id", "session_id", "page_path", "device_type"]  # Ignore timestamp drift
+    hash_columns: ["user_id", "session_id", "page_path", "device_type"] # Ignore timestamp drift
     agg_validations:
       - column: "time_on_page_seconds"
-        validations: [{ agg: "AVG", tolerance: 0.05 }]  # Engagement metrics
+        validations: [{ agg: "AVG", tolerance: 0.05 }] # Engagement metrics
 
   # 10. MONITORING: Application Logs - Volume mismatch detected
   - task_key: "validate_application_logs_FAIL"
     <<: *defaults
     source_table: "log_messages"
     target_table: "log_messages"
-    count_tolerance: 0.0  # FAILS: Additional logs in target
+    count_tolerance: 0.0 # FAILS: Additional logs in target
     # Note: No PK available for row-level validation
 
   # 11. COMPLIANT: Audit Trail - Clean period (no violations)
@@ -163,7 +163,7 @@ validations:
     <<: *defaults
     source_table: "empty_audits"
     target_table: "empty_audits"
-    count_tolerance: 0.0  # Both empty - compliance period clean
+    count_tolerance: 0.0 # Both empty - compliance period clean
 
   # 12. DATA QUALITY: API Status Codes - Category mapping failures
   - task_key: "validate_api_status_codes_FAIL"
@@ -171,7 +171,7 @@ validations:
     source_table: "status_codes"
     target_table: "status_codes"
     primary_keys: ["code"]
-    null_validation_tolerance: 0.01  # FAILS: Critical codes losing categorization
+    null_validation_tolerance: 0.01 # FAILS: Critical codes losing categorization
     null_validation_columns: ["category", "severity"]
     pk_row_hash_check: true
     pk_hash_tolerance: 0.0
@@ -184,7 +184,7 @@ validations:
     source_table: "users"
     target_table: "users"
     uniqueness_columns: ["email", "country"]
-    uniqueness_tolerance: 0.0  # Enforce regional data integrity
+    uniqueness_tolerance: 0.0 # Enforce regional data integrity
 
   # 14. PRIVACY COMPLIANCE: GDPR/CCPA request tracking
   - task_key: "validate_privacy_requests_FAIL"
@@ -192,9 +192,9 @@ validations:
     source_table: "privacy_requests"
     target_table: "privacy_requests"
     primary_keys: ["request_id"]
-    count_tolerance: 0.005  # FAILS: Recent requests missing
+    count_tolerance: 0.005 # FAILS: Recent requests missing
     null_validation_tolerance: 0.0
     null_validation_columns: ["regulation", "status"]
     agg_validations:
       - column: "processing_days"
-        validations: [{ agg: "AVG", tolerance: 0.0 }]  # Compliance SLA tracking
+        validations: [{ agg: "AVG", tolerance: 0.0 }] # Compliance SLA tracking

@@ -246,7 +246,7 @@ class TestMetadataAndPerformanceImprovements:
         # Check for consistent separators (using |)
         assert " | Target: " in query
         assert " | Diff: " in query
-        assert " | Tolerance: " in query or " | Threshold: " in query
+        assert " | Tolerance: " in query
 
         # Should not use commas as separators
         assert ", Target: " not in query

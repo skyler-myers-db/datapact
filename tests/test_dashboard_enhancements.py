@@ -55,7 +55,7 @@ class TestDashboardVisualizationFixes:
                 "target_count": "999,995",
                 "missing_count": "5",
                 "relative_diff_percent": "0.0005%",
-                "threshold_percent": "0.00%",
+                "tolerance_percent": "0.00%",
                 "status": "FAIL",
             },
             "null_validation_email": {
@@ -131,15 +131,13 @@ class TestDashboardVisualizationFixes:
 
         # Verify null handling for source and target tables
         assert (
-            "CASE WHEN get_json_object(to_json(result_payload), '$.source_catalog') IS NOT NULL"
+            "CONCAT_WS('.', source_catalog, source_schema, source_table) AS source_table"
             in query
         )
-        assert "ELSE 'N/A' END as source_table" in query
         assert (
-            "CASE WHEN get_json_object(to_json(result_payload), '$.target_catalog') IS NOT NULL"
+            "CONCAT_WS('.', target_catalog, target_schema, target_table) AS target_table"
             in query
         )
-        assert "ELSE 'N/A' END as target_table" in query
 
     def test_agg_validation_status_logic(self, mock_client):
         """Test aggregation validation status shows PASS when values match."""

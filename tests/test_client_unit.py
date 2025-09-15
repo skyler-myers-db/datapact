@@ -83,7 +83,7 @@ def test_ensure_results_table_exists_emits_expected_sql(monkeypatch):
             """
         CREATE TABLE IF NOT EXISTS `c`.`s`.`t` (
             task_key STRING, status STRING, run_id BIGINT, job_id BIGINT, job_name STRING,
-            timestamp TIMESTAMP, 
+            timestamp TIMESTAMP,
             started_at TIMESTAMP, completed_at TIMESTAMP,
             source_catalog STRING, source_schema STRING, source_table STRING,
             target_catalog STRING, target_schema STRING, target_table STRING,
