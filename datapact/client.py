@@ -2131,7 +2131,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                     "canvasBackgroundColor": {"light": "#FFFFFF", "dark": "#000000"},
                     "widgetBackgroundColor": {"light": "#FFFFFF", "dark": "#000000"},
                     "widgetBorderColor": {"light": "#000000", "dark": "#7F00FF"},
-                    "fontColor": {"light": "#000000", "dark": "#006CFF"},
+                    "fontColor": {"light": "#000000", "dark": "#0096FF"},
                     "selectionColor": {"light": "#FF00FF", "dark": "#FFFFFF"},
                     "visualizationColors": [
                         "#EE7733",
