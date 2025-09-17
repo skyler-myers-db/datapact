@@ -1,3 +1,5 @@
+DECLARE VARIABLE validation_begin_ts TIMESTAMP DEFAULT current_timestamp();
+
 CREATE OR REPLACE TEMP VIEW final_metrics_view AS
 WITH
 count_metrics AS (
@@ -54,7 +56,7 @@ agg_metrics_v2_SUM AS (
     TRY_CAST((SELECT SUM(`v2`) FROM `cat`.`sch`.`tgt`) AS DECIMAL(38, 6)) AS target_value_v2_SUM
 )
 SELECT
-  current_timestamp() AS started_at,
+  validation_begin_ts AS validation_begin_ts,
   'cat' AS source_catalog,
   'sch' AS source_schema,
   'src' AS source_table,
@@ -78,44 +80,134 @@ SELECT
     ) AS row_hash_validation,
     struct(
       FORMAT_NUMBER(source_nulls_v1, '#,##0') AS source_nulls,
-      FORMAT_NUMBER(target_nulls_v1, '#,##0') AS target_nulls,FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_nulls_v1 - target_nulls_v1) / NULLIF(CAST(total_compared_v1 AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,FORMAT_STRING('%.2f%%', CAST(0.0 * 100 AS DOUBLE)) AS tolerance_percent,
-  CASE WHEN COALESCE(ABS(source_nulls_v1 - target_nulls_v1) / NULLIF(CAST(total_compared_v1 AS DOUBLE), 0), 0) <= 0.0 THEN 'PASS' ELSE 'FAIL' END AS status
+      FORMAT_NUMBER(target_nulls_v1, '#,##0') AS target_nulls,FORMAT_STRING('%.2f%%', CAST(
+        CASE
+          WHEN source_nulls_v1 = 0 AND target_nulls_v1 > 0 THEN 100.0
+          WHEN source_nulls_v1 = 0 THEN 0.0
+          WHEN target_nulls_v1 = 0 AND source_nulls_v1 > 0 THEN 100.0
+          ELSE COALESCE(ABS(source_nulls_v1 - target_nulls_v1) / NULLIF(CAST(source_nulls_v1 AS DOUBLE), 0), 0) * 100
+        END AS DOUBLE
+      )) as relative_diff_percent,FORMAT_STRING('%.2f%%', CAST(0.0 * 100 AS DOUBLE)) AS tolerance_percent,
+  CASE WHEN     CASE
+      WHEN source_nulls_v1 = 0 THEN target_nulls_v1 = 0
+      ELSE COALESCE(ABS(source_nulls_v1 - target_nulls_v1) / NULLIF(CAST(source_nulls_v1 AS DOUBLE), 0), 0) <= 0.0
+    END
+ THEN 'PASS' ELSE 'FAIL' END AS status
     ) AS null_validation_v1,
     struct(
       FORMAT_NUMBER(source_nulls_v2, '#,##0') AS source_nulls,
-      FORMAT_NUMBER(target_nulls_v2, '#,##0') AS target_nulls,FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_nulls_v2 - target_nulls_v2) / NULLIF(CAST(total_compared_v2 AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,FORMAT_STRING('%.2f%%', CAST(0.0 * 100 AS DOUBLE)) AS tolerance_percent,
-  CASE WHEN COALESCE(ABS(source_nulls_v2 - target_nulls_v2) / NULLIF(CAST(total_compared_v2 AS DOUBLE), 0), 0) <= 0.0 THEN 'PASS' ELSE 'FAIL' END AS status
-    ) AS null_validation_v2,
+      FORMAT_NUMBER(target_nulls_v2, '#,##0') AS target_nulls,FORMAT_STRING('%.2f%%', CAST(
+        CASE
+          WHEN source_nulls_v2 = 0 AND target_nulls_v2 > 0 THEN 100.0
+          WHEN source_nulls_v2 = 0 THEN 0.0
+          WHEN target_nulls_v2 = 0 AND source_nulls_v2 > 0 THEN 100.0
+          ELSE COALESCE(ABS(source_nulls_v2 - target_nulls_v2) / NULLIF(CAST(source_nulls_v2 AS DOUBLE), 0), 0) * 100
+        END AS DOUBLE
+      )) as relative_diff_percent,FORMAT_STRING('%.2f%%', CAST(0.0 * 100 AS DOUBLE)) AS tolerance_percent,
+  CASE WHEN     CASE
+      WHEN source_nulls_v2 = 0 THEN target_nulls_v2 = 0
+      ELSE COALESCE(ABS(source_nulls_v2 - target_nulls_v2) / NULLIF(CAST(source_nulls_v2 AS DOUBLE), 0), 0) <= 0.0
+    END
+ THEN 'PASS' ELSE 'FAIL' END AS status
+    ) AS null_validation_v2    ,
     struct(
       FORMAT_NUMBER(source_value_v1_SUM, '#,##0.00') as source_value,
       FORMAT_NUMBER(target_value_v1_SUM, '#,##0.00') as target_value,
-      FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_value_v1_SUM - target_value_v1_SUM) / NULLIF(ABS(CAST(source_value_v1_SUM AS DOUBLE)), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
+      FORMAT_STRING('%.2f%%', CAST((CASE
+  WHEN source_value_v1_SUM IS NULL OR target_value_v1_SUM IS NULL THEN NULL
+  WHEN source_value_v1_SUM = target_value_v1_SUM THEN CAST(0 AS DECIMAL(38, 12))
+  WHEN GREATEST(ABS(source_value_v1_SUM), ABS(target_value_v1_SUM)) = 0 THEN CAST(0 AS DECIMAL(38, 12))
+  ELSE
+    CAST(ABS(source_value_v1_SUM - target_value_v1_SUM) AS DECIMAL(38, 12)) /
+    CAST(GREATEST(ABS(source_value_v1_SUM), ABS(target_value_v1_SUM)) AS DECIMAL(38, 12))
+END) * 100 AS DOUBLE)) as relative_diff_percent,
       FORMAT_STRING('%.2f%%', CAST(0.0 * 100 AS DOUBLE)) AS tolerance_percent,
-      CASE WHEN COALESCE(ABS(source_value_v1_SUM - target_value_v1_SUM) / NULLIF(ABS(CAST(source_value_v1_SUM AS DOUBLE)), 0), 0) <= 0.0 THEN 'PASS' ELSE 'FAIL' END AS status
-    ) AS agg_validation_v1_SUM,
+      CASE WHEN COALESCE(CASE
+  WHEN source_value_v1_SUM IS NULL OR target_value_v1_SUM IS NULL THEN NULL
+  WHEN source_value_v1_SUM = target_value_v1_SUM THEN CAST(0 AS DECIMAL(38, 12))
+  WHEN GREATEST(ABS(source_value_v1_SUM), ABS(target_value_v1_SUM)) = 0 THEN CAST(0 AS DECIMAL(38, 12))
+  ELSE
+    CAST(ABS(source_value_v1_SUM - target_value_v1_SUM) AS DECIMAL(38, 12)) /
+    CAST(GREATEST(ABS(source_value_v1_SUM), ABS(target_value_v1_SUM)) AS DECIMAL(38, 12))
+END, CAST(0 AS DECIMAL(38, 12))) <= 0.0 THEN 'PASS' ELSE 'FAIL' END AS status
+    ) AS agg_validation_v1_SUM    ,
     struct(
       FORMAT_NUMBER(source_value_v1_AVG, '#,##0.00') as source_value,
       FORMAT_NUMBER(target_value_v1_AVG, '#,##0.00') as target_value,
-      FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_value_v1_AVG - target_value_v1_AVG) / NULLIF(ABS(CAST(source_value_v1_AVG AS DOUBLE)), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
+      FORMAT_STRING('%.2f%%', CAST((CASE
+  WHEN source_value_v1_AVG IS NULL OR target_value_v1_AVG IS NULL THEN NULL
+  WHEN source_value_v1_AVG = target_value_v1_AVG THEN CAST(0 AS DECIMAL(38, 12))
+  WHEN GREATEST(ABS(source_value_v1_AVG), ABS(target_value_v1_AVG)) = 0 THEN CAST(0 AS DECIMAL(38, 12))
+  ELSE
+    CAST(ABS(source_value_v1_AVG - target_value_v1_AVG) AS DECIMAL(38, 12)) /
+    CAST(GREATEST(ABS(source_value_v1_AVG), ABS(target_value_v1_AVG)) AS DECIMAL(38, 12))
+END) * 100 AS DOUBLE)) as relative_diff_percent,
       FORMAT_STRING('%.2f%%', CAST(1e-06 * 100 AS DOUBLE)) AS tolerance_percent,
-      CASE WHEN COALESCE(ABS(source_value_v1_AVG - target_value_v1_AVG) / NULLIF(ABS(CAST(source_value_v1_AVG AS DOUBLE)), 0), 0) <= 1e-06 THEN 'PASS' ELSE 'FAIL' END AS status
-    ) AS agg_validation_v1_AVG,
+      CASE WHEN COALESCE(CASE
+  WHEN source_value_v1_AVG IS NULL OR target_value_v1_AVG IS NULL THEN NULL
+  WHEN source_value_v1_AVG = target_value_v1_AVG THEN CAST(0 AS DECIMAL(38, 12))
+  WHEN GREATEST(ABS(source_value_v1_AVG), ABS(target_value_v1_AVG)) = 0 THEN CAST(0 AS DECIMAL(38, 12))
+  ELSE
+    CAST(ABS(source_value_v1_AVG - target_value_v1_AVG) AS DECIMAL(38, 12)) /
+    CAST(GREATEST(ABS(source_value_v1_AVG), ABS(target_value_v1_AVG)) AS DECIMAL(38, 12))
+END, CAST(0 AS DECIMAL(38, 12))) <= 1e-06 THEN 'PASS' ELSE 'FAIL' END AS status
+    ) AS agg_validation_v1_AVG    ,
     struct(
       FORMAT_NUMBER(source_value_v2_SUM, '#,##0.00') as source_value,
       FORMAT_NUMBER(target_value_v2_SUM, '#,##0.00') as target_value,
-      FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_value_v2_SUM - target_value_v2_SUM) / NULLIF(ABS(CAST(source_value_v2_SUM AS DOUBLE)), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
+      FORMAT_STRING('%.2f%%', CAST((CASE
+  WHEN source_value_v2_SUM IS NULL OR target_value_v2_SUM IS NULL THEN NULL
+  WHEN source_value_v2_SUM = target_value_v2_SUM THEN CAST(0 AS DECIMAL(38, 12))
+  WHEN GREATEST(ABS(source_value_v2_SUM), ABS(target_value_v2_SUM)) = 0 THEN CAST(0 AS DECIMAL(38, 12))
+  ELSE
+    CAST(ABS(source_value_v2_SUM - target_value_v2_SUM) AS DECIMAL(38, 12)) /
+    CAST(GREATEST(ABS(source_value_v2_SUM), ABS(target_value_v2_SUM)) AS DECIMAL(38, 12))
+END) * 100 AS DOUBLE)) as relative_diff_percent,
       FORMAT_STRING('%.2f%%', CAST(0.1 * 100 AS DOUBLE)) AS tolerance_percent,
-      CASE WHEN COALESCE(ABS(source_value_v2_SUM - target_value_v2_SUM) / NULLIF(ABS(CAST(source_value_v2_SUM AS DOUBLE)), 0), 0) <= 0.1 THEN 'PASS' ELSE 'FAIL' END AS status
+      CASE WHEN COALESCE(CASE
+  WHEN source_value_v2_SUM IS NULL OR target_value_v2_SUM IS NULL THEN NULL
+  WHEN source_value_v2_SUM = target_value_v2_SUM THEN CAST(0 AS DECIMAL(38, 12))
+  WHEN GREATEST(ABS(source_value_v2_SUM), ABS(target_value_v2_SUM)) = 0 THEN CAST(0 AS DECIMAL(38, 12))
+  ELSE
+    CAST(ABS(source_value_v2_SUM - target_value_v2_SUM) AS DECIMAL(38, 12)) /
+    CAST(GREATEST(ABS(source_value_v2_SUM), ABS(target_value_v2_SUM)) AS DECIMAL(38, 12))
+END, CAST(0 AS DECIMAL(38, 12))) <= 0.1 THEN 'PASS' ELSE 'FAIL' END AS status
     ) AS agg_validation_v2_SUM))) as result_payload,
-  ( COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= 0.05 AND  COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= 1e-06 AND COALESCE(ABS(source_nulls_v1 - target_nulls_v1) / NULLIF(CAST(total_compared_v1 AS DOUBLE), 0), 0) <= 0.0 AND COALESCE(ABS(source_nulls_v2 - target_nulls_v2) / NULLIF(CAST(total_compared_v2 AS DOUBLE), 0), 0) <= 0.0 AND  COALESCE(ABS(source_value_v1_SUM - target_value_v1_SUM) / NULLIF(ABS(CAST(source_value_v1_SUM AS DOUBLE)), 0), 0) <= 0.0 AND  COALESCE(ABS(source_value_v1_AVG - target_value_v1_AVG) / NULLIF(ABS(CAST(source_value_v1_AVG AS DOUBLE)), 0), 0) <= 1e-06 AND  COALESCE(ABS(source_value_v2_SUM - target_value_v2_SUM) / NULLIF(ABS(CAST(source_value_v2_SUM AS DOUBLE)), 0), 0) <= 0.1) AS overall_validation_passed,
-  current_timestamp() AS completed_at
+  ( COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= 0.05 AND  COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= 1e-06 AND CASE
+        WHEN source_nulls_v1 = 0 THEN target_nulls_v1 = 0
+        ELSE COALESCE(ABS(source_nulls_v1 - target_nulls_v1) / NULLIF(CAST(source_nulls_v1 AS DOUBLE), 0), 0) <= 0.0
+      END AND CASE
+        WHEN source_nulls_v2 = 0 THEN target_nulls_v2 = 0
+        ELSE COALESCE(ABS(source_nulls_v2 - target_nulls_v2) / NULLIF(CAST(source_nulls_v2 AS DOUBLE), 0), 0) <= 0.0
+      END AND  COALESCE(CASE
+  WHEN source_value_v1_SUM IS NULL OR target_value_v1_SUM IS NULL THEN NULL
+  WHEN source_value_v1_SUM = target_value_v1_SUM THEN CAST(0 AS DECIMAL(38, 12))
+  WHEN GREATEST(ABS(source_value_v1_SUM), ABS(target_value_v1_SUM)) = 0 THEN CAST(0 AS DECIMAL(38, 12))
+  ELSE
+    CAST(ABS(source_value_v1_SUM - target_value_v1_SUM) AS DECIMAL(38, 12)) /
+    CAST(GREATEST(ABS(source_value_v1_SUM), ABS(target_value_v1_SUM)) AS DECIMAL(38, 12))
+END, CAST(0 AS DECIMAL(38, 12))) <= 0.0 AND  COALESCE(CASE
+  WHEN source_value_v1_AVG IS NULL OR target_value_v1_AVG IS NULL THEN NULL
+  WHEN source_value_v1_AVG = target_value_v1_AVG THEN CAST(0 AS DECIMAL(38, 12))
+  WHEN GREATEST(ABS(source_value_v1_AVG), ABS(target_value_v1_AVG)) = 0 THEN CAST(0 AS DECIMAL(38, 12))
+  ELSE
+    CAST(ABS(source_value_v1_AVG - target_value_v1_AVG) AS DECIMAL(38, 12)) /
+    CAST(GREATEST(ABS(source_value_v1_AVG), ABS(target_value_v1_AVG)) AS DECIMAL(38, 12))
+END, CAST(0 AS DECIMAL(38, 12))) <= 1e-06 AND  COALESCE(CASE
+  WHEN source_value_v2_SUM IS NULL OR target_value_v2_SUM IS NULL THEN NULL
+  WHEN source_value_v2_SUM = target_value_v2_SUM THEN CAST(0 AS DECIMAL(38, 12))
+  WHEN GREATEST(ABS(source_value_v2_SUM), ABS(target_value_v2_SUM)) = 0 THEN CAST(0 AS DECIMAL(38, 12))
+  ELSE
+    CAST(ABS(source_value_v2_SUM - target_value_v2_SUM) AS DECIMAL(38, 12)) /
+    CAST(GREATEST(ABS(source_value_v2_SUM), ABS(target_value_v2_SUM)) AS DECIMAL(38, 12))
+END, CAST(0 AS DECIMAL(38, 12))) <= 0.1) AS overall_validation_passed
 FROM
 count_metrics CROSS JOIN row_hash_metrics CROSS JOIN null_metrics_v1 CROSS JOIN null_metrics_v2 CROSS JOIN agg_metrics_v1_SUM CROSS JOIN agg_metrics_v1_AVG CROSS JOIN agg_metrics_v2_SUM
 ;
 
-INSERT INTO `cat`.`res`.`history` (task_key, status, run_id, job_id, job_name, timestamp, started_at, completed_at, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, result_payload)
+INSERT INTO `cat`.`res`.`history` (task_key, status, run_id, job_id, job_name, job_start_ts, validation_begin_ts, validation_complete_ts, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, result_payload)
 SELECT 't_complex', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
-:run_id, :job_id, 'complex_job', current_timestamp(), started_at, completed_at, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, result_payload FROM final_metrics_view;
+:run_id, :job_id, 'complex_job', :job_start_ts, validation_begin_ts, current_timestamp(), source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, result_payload FROM final_metrics_view;
 
 SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: t_complex. Payload: \n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false;
 

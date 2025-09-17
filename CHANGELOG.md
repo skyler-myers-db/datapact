@@ -4,6 +4,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.5.1] - 2025-09-17
+
+- **Fixed Some Precision Issues** Now test results will be more accurate
+- **Better Metadata Tracking** Enhanced how metadata is captured so things like job run time and task run time is better reflected
+- **Naming Consistency** Renamed some columns and visualizations to maintain consistency accross the repo
+
 ## [2.5.0] - 2025-09-15
 
 ### ✨ Added (New Features)
@@ -15,7 +21,7 @@ All notable changes to this project will be documented in this file.
 ### 🐛 Fixed
 
 - Some of the visualiztion results were not coming in properly.
-- The filter for the most recent job run was on `run_id`, which is not a reliable indicator of the latest run (it has been switched to `completed_at` combined with `run_id`).
+- The filter for the most recent job run was on `run_id`, which is not a reliable indicator of the latest run (it has been switched to `job_start_ts`).
 
 ## [2.0.0] - 2025-08-02
 

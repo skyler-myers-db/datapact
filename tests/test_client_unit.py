@@ -83,8 +83,9 @@ def test_ensure_results_table_exists_emits_expected_sql(monkeypatch):
             """
         CREATE TABLE IF NOT EXISTS `c`.`s`.`t` (
             task_key STRING, status STRING, run_id BIGINT, job_id BIGINT, job_name STRING,
-            timestamp TIMESTAMP,
-            started_at TIMESTAMP, completed_at TIMESTAMP,
+            job_start_ts TIMESTAMP,
+            validation_begin_ts TIMESTAMP,
+            validation_complete_ts TIMESTAMP,
             source_catalog STRING, source_schema STRING, source_table STRING,
             target_catalog STRING, target_schema STRING, target_table STRING,
             result_payload VARIANT) USING DELTA
