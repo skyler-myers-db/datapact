@@ -1,8 +1,22 @@
 {# Inputs and helpers #}
-{% set task_key_ = task_key %}
-{% set source_fqn = '`' ~ source_catalog ~ '`.`' ~ source_schema ~ '`.`' ~ source_table ~ '`' %}
-{% set target_fqn = '`' ~ target_catalog ~ '`.`' ~ target_schema ~ '`.`' ~ target_table ~ '`' %}
-{% set cte_names = [] %}
+{% set task_key_ = task_key -%}
+{% set source_fqn = '`' ~ source_catalog ~ '`.`' ~ source_schema ~ '`.`' ~ source_table ~ '`' -%}
+{% set target_fqn = '`' ~ target_catalog ~ '`.`' ~ target_schema ~ '`.`' ~ target_table ~ '`' -%}
+{% set cte_names = [] -%}
+
+{# Helper macros #}
+{% macro agg_rel_diff(column, agg) -%}
+CASE
+  WHEN source_value_{{ column }}_{{ agg }} IS NULL OR target_value_{{ column }}_{{ agg }} IS NULL THEN NULL
+  WHEN source_value_{{ column }}_{{ agg }} = target_value_{{ column }}_{{ agg }} THEN CAST(0 AS DECIMAL(38, 12))
+  WHEN GREATEST(ABS(source_value_{{ column }}_{{ agg }}), ABS(target_value_{{ column }}_{{ agg }})) = 0 THEN CAST(0 AS DECIMAL(38, 12))
+  ELSE
+    CAST(ABS(source_value_{{ column }}_{{ agg }} - target_value_{{ column }}_{{ agg }}) AS DECIMAL(38, 12)) /
+    CAST(GREATEST(ABS(source_value_{{ column }}_{{ agg }}), ABS(target_value_{{ column }}_{{ agg }})) AS DECIMAL(38, 12))
+END
+{%- endmacro %}
+
+DECLARE VARIABLE validation_begin_ts TIMESTAMP DEFAULT current_timestamp();
 
 {# Begin view creation #}
 {% set has_any = (count_tolerance is not none)
@@ -13,16 +27,15 @@
 %}
 {% if not has_any %}
 CREATE OR REPLACE TEMP VIEW final_metrics_view AS SELECT
-  current_timestamp() as started_at,
+  validation_begin_ts AS validation_begin_ts,
   '{{ source_catalog }}' AS source_catalog,
   '{{ source_schema }}' AS source_schema,
   '{{ source_table }}' AS source_table,
   '{{ target_catalog }}' AS target_catalog,
   '{{ target_schema }}' AS target_schema,
   '{{ target_table }}' AS target_table,
-  true as overall_validation_passed,
   parse_json(to_json(struct('No validations configured for task {{ task_key_ }}' as message))) as result_payload,
-  current_timestamp() as completed_at;
+  true as overall_validation_passed;
 {% else %}
 CREATE OR REPLACE TEMP VIEW final_metrics_view AS
 {% set ns = namespace(first=True) %}
@@ -144,7 +157,7 @@ uniqueness_metrics AS (
 
 {# SELECT with payload struct and overall status #}
 SELECT
-  current_timestamp() AS started_at,
+  validation_begin_ts AS validation_begin_ts,
   '{{ source_catalog }}' AS source_catalog,
   '{{ source_schema }}' AS source_schema,
   '{{ source_table }}' AS source_table,
@@ -185,12 +198,24 @@ SELECT
       FORMAT_NUMBER(source_nulls_{{ col }}, '#,##0') AS source_nulls,
       FORMAT_NUMBER(target_nulls_{{ col }}, '#,##0') AS target_nulls,
       {%- if primary_keys -%}
-      FORMAT_STRING('%.2f%%', CAST(CASE WHEN source_nulls_{{ col }} = 0 AND target_nulls_{{ col }} > 0 THEN 100.0 ELSE COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(total_compared_{{ col }} AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
+      FORMAT_STRING('%.2f%%', CAST(
+        CASE
+          WHEN source_nulls_{{ col }} = 0 AND target_nulls_{{ col }} > 0 THEN 100.0
+          WHEN source_nulls_{{ col }} = 0 THEN 0.0
+          WHEN target_nulls_{{ col }} = 0 AND source_nulls_{{ col }} > 0 THEN 100.0
+          ELSE COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) * 100
+        END AS DOUBLE
+      )) as relative_diff_percent,
       {%- else -%}
-      FORMAT_STRING('%.2f%%', CAST(CASE WHEN source_nulls_{{ col }} = 0 AND target_nulls_{{ col }} > 0 THEN 100.0 ELSE COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) * 100 END AS DOUBLE)) as relative_diff_percent,
+      FORMAT_STRING('%.2f%%', CAST(CASE WHEN source_nulls_{{ col }} = 0 AND target_nulls_{{ col }} > 0 THEN 100.0 WHEN target_nulls_{{ col }} = 0 AND source_nulls_{{ col }} > 0 THEN 100.0 ELSE COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) * 100 END AS DOUBLE)) as relative_diff_percent,
       {%- endif -%}
       FORMAT_STRING('%.2f%%', CAST({{ null_validation_tolerance }} * 100 AS DOUBLE)) AS tolerance_percent,
-  CASE WHEN {% if primary_keys %}COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(total_compared_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_tolerance }}{% else %}CASE WHEN source_nulls_{{ col }} = 0 THEN target_nulls_{{ col }} = 0 ELSE COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_tolerance }} END{% endif %} THEN 'PASS' ELSE 'FAIL' END AS status
+  CASE WHEN {% if primary_keys %}
+    CASE
+      WHEN source_nulls_{{ col }} = 0 THEN target_nulls_{{ col }} = 0
+      ELSE COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_tolerance }}
+    END
+  {% else %}CASE WHEN source_nulls_{{ col }} = 0 THEN target_nulls_{{ col }} = 0 ELSE COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_tolerance }} END{% endif %} THEN 'PASS' ELSE 'FAIL' END AS status
     ) AS null_validation_{{ col }}
     {%- endfor -%}
     {%- endif -%}
@@ -199,13 +224,14 @@ SELECT
     {%- if agg_validations -%}
     {%- for av in agg_validations -%}
     {%- for v in av.validations -%}
+    {% set diff_expr = agg_rel_diff(av.column, v.agg.upper()) %}
     {{ comma() }}
     struct(
       FORMAT_NUMBER(source_value_{{ av.column }}_{{ v.agg.upper() }}, '#,##0.00') as source_value,
       FORMAT_NUMBER(target_value_{{ av.column }}_{{ v.agg.upper() }}, '#,##0.00') as target_value,
-      FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_value_{{ av.column }}_{{ v.agg.upper() }} - target_value_{{ av.column }}_{{ v.agg.upper() }}) / NULLIF(ABS(CAST(source_value_{{ av.column }}_{{ v.agg.upper() }} AS DOUBLE)), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
+      FORMAT_STRING('%.2f%%', CAST(({{ diff_expr }}) * 100 AS DOUBLE)) as relative_diff_percent,
       FORMAT_STRING('%.2f%%', CAST({{ v.tolerance }} * 100 AS DOUBLE)) AS tolerance_percent,
-      CASE WHEN COALESCE(ABS(source_value_{{ av.column }}_{{ v.agg.upper() }} - target_value_{{ av.column }}_{{ v.agg.upper() }}) / NULLIF(ABS(CAST(source_value_{{ av.column }}_{{ v.agg.upper() }} AS DOUBLE)), 0), 0) <= {{ v.tolerance }} THEN 'PASS' ELSE 'FAIL' END AS status
+      CASE WHEN COALESCE({{ diff_expr }}, CAST(0 AS DECIMAL(38, 12))) <= {{ v.tolerance }} THEN 'PASS' ELSE 'FAIL' END AS status
     ) AS agg_validation_{{ av.column }}_{{ v.agg.upper() }}
     {%- endfor -%}
     {%- endfor -%}
@@ -237,7 +263,10 @@ SELECT
     {%- for col in null_validation_columns -%}
     {{ andsep() }}
       {%- if primary_keys -%}
-      COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(total_compared_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_tolerance }}
+      CASE
+        WHEN source_nulls_{{ col }} = 0 THEN target_nulls_{{ col }} = 0
+        ELSE COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_tolerance }}
+      END
       {%- else -%}
       CASE WHEN source_nulls_{{ col }} = 0 THEN target_nulls_{{ col }} = 0 ELSE COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_tolerance }} END
       {%- endif -%}
@@ -246,7 +275,7 @@ SELECT
     {%- if agg_validations -%}
     {%- for av in agg_validations -%}
     {%- for v in av.validations -%}
-    {{ andsep() }} COALESCE(ABS(source_value_{{ av.column }}_{{ v.agg.upper() }} - target_value_{{ av.column }}_{{ v.agg.upper() }}) / NULLIF(ABS(CAST(source_value_{{ av.column }}_{{ v.agg.upper() }} AS DOUBLE)), 0), 0) <= {{ v.tolerance }}
+    {{ andsep() }} COALESCE({{ agg_rel_diff(av.column, v.agg.upper()) }}, CAST(0 AS DECIMAL(38, 12))) <= {{ v.tolerance }}
     {%- endfor -%}
     {%- endfor -%}
     {%- endif -%}
@@ -254,8 +283,7 @@ SELECT
   {{ andsep() }} COALESCE(source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0), 0) <= {{ uniqueness_tolerance }}
   {{ andsep() }} COALESCE(target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0), 0) <= {{ uniqueness_tolerance }}
   {%- endif -%}
-  ) AS overall_validation_passed,
-  current_timestamp() AS completed_at
+  ) AS overall_validation_passed
 FROM
 {% if cte_names | length > 0 %}
 {# NOTE: All CTEs in cte_names must return exactly one row. CROSS JOIN is only safe under this assumption. #}
@@ -266,9 +294,9 @@ FROM
 ;
 {% endif %}
 
-INSERT INTO {{ results_table }} (task_key, status, run_id, job_id, job_name, timestamp, started_at, completed_at, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, result_payload)
+INSERT INTO {{ results_table }} (task_key, status, run_id, job_id, job_name, job_start_ts, validation_begin_ts, validation_complete_ts, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, result_payload)
 SELECT '{{ task_key_ }}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
-:run_id, :job_id, '{{ job_name }}', current_timestamp(), started_at, completed_at, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, result_payload FROM final_metrics_view;
+:run_id, :job_id, '{{ job_name }}', :job_start_ts, validation_begin_ts, current_timestamp(), source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, result_payload FROM final_metrics_view;
 
 SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: {{ task_key_ }}. Payload: \n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false;
 

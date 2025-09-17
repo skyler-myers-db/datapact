@@ -223,8 +223,9 @@ class DataPactClient:
         ddl = textwrap.dedent(
             f"""CREATE TABLE IF NOT EXISTS {results_table_fqn} (
             task_key STRING, status STRING, run_id BIGINT, job_id BIGINT, job_name STRING,
-            timestamp TIMESTAMP,
-            started_at TIMESTAMP, completed_at TIMESTAMP,
+            job_start_ts TIMESTAMP,
+            validation_begin_ts TIMESTAMP,
+            validation_complete_ts TIMESTAMP,
             source_catalog STRING, source_schema STRING, source_table STRING,
             target_catalog STRING, target_schema STRING, target_table STRING,
             result_payload VARIANT) USING DELTA"""
@@ -284,7 +285,7 @@ SELECT
     get_json_object(to_json(result_payload), '$.target_catalog') || '.' ||
     get_json_object(to_json(result_payload), '$.target_schema') || '.' ||
     get_json_object(to_json(result_payload), '$.target_table') as target_table,
-    timestamp as last_validated,
+    validation_begin_ts as last_validated,
     CASE
         WHEN get_json_object(to_json(result_payload), '$.count_validation.status') = 'FAIL' THEN 'Row count mismatch'
         WHEN get_json_object(to_json(result_payload), '$.row_hash_validation.status') = 'FAIL' THEN 'Data integrity issue'
@@ -301,7 +302,7 @@ SELECT
 FROM (
     SELECT
       *,
-      row_number() over (partition by run_id, task_key order by timestamp desc) as rn
+      row_number() over (partition by run_id, task_key order by validation_begin_ts desc) as rn
     FROM
       {results_table}
     WHERE
@@ -317,11 +318,11 @@ SELECT
     SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) as passed_validations,
     SUM(CASE WHEN status = 'FAILURE' THEN 1 ELSE 0 END) as failed_validations,
     ROUND(100.0 * SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) / COUNT(*), 2) as quality_score,
-    MAX(timestamp) as last_checked
+    MAX(validation_begin_ts) as last_checked
 FROM (
     SELECT
       *,
-      row_number() over (partition by run_id, task_key order by timestamp desc) as rn
+      row_number() over (partition by run_id, task_key order by validation_begin_ts desc) as rn
     FROM
       {results_table}
     WHERE
@@ -344,12 +345,12 @@ SELECT
                    get_json_object(to_json(result_payload), '$.row_hash_validation.failed_count'), ' records')
         ELSE 'Validation failed - check details'
     END as issue_description,
-    timestamp as detected_at,
+    validation_begin_ts as detected_at,
     'High' as severity
 FROM (
     SELECT
       *,
-      row_number() over (partition by run_id, task_key order by timestamp desc) as rn
+      row_number() over (partition by run_id, task_key order by validation_begin_ts desc) as rn
     FROM
       {results_table}
     WHERE
@@ -418,9 +419,9 @@ Once created, users can ask questions in natural language to analyze data qualit
 
             queries = {
                 "run_summary": f"SELECT status, COUNT(1) as task_count FROM {results_table_fqn} WHERE run_id = (SELECT MAX(run_id) FROM {results_table_fqn} WHERE job_name = '{job_name}') GROUP BY status",
-                "failure_rate_over_time": f"SELECT to_date(timestamp) as run_date, COUNT(CASE WHEN status = 'FAILURE' THEN 1 END) * 100.0 / COUNT(1) as failure_rate_percent FROM {results_table_fqn} WHERE job_name = '{job_name}' GROUP BY 1 ORDER BY 1",
+                "failure_rate_over_time": f"SELECT to_date(validation_begin_ts) as run_date, COUNT(CASE WHEN status = 'FAILURE' THEN 1 END) * 100.0 / COUNT(1) as failure_rate_percent FROM {results_table_fqn} WHERE job_name = '{job_name}' GROUP BY 1 ORDER BY 1",
                 "top_failing_tasks": f"SELECT task_key, COUNT(1) as failure_count FROM {results_table_fqn} WHERE status = 'FAILURE' AND job_name = '{job_name}' GROUP BY 1 ORDER BY 2 DESC LIMIT 10",
-                "raw_history": f"SELECT task_key, status, run_id, job_id, job_name, timestamp, result_payload FROM {results_table_fqn} WHERE job_name = '{job_name}' ORDER BY timestamp DESC, task_key"
+                "raw_history": f"SELECT task_key, status, run_id, job_id, job_name, validation_begin_ts, result_payload FROM {results_table_fqn} WHERE job_name = '{job_name}' ORDER BY validation_begin_ts DESC, task_key"
             }
 
             widgets = []
@@ -580,18 +581,33 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Executive KPI Dashboard",
                 "queryLines": [
                     q(
-                        "WITH latest_run AS (SELECT task_key, status, "
-                        "get_json_object(to_json(result_payload), '$.source_catalog') as source_catalog, "
-                        "get_json_object(to_json(result_payload), '$.source_schema') as source_schema, "
-                        "get_json_object(to_json(result_payload), '$.source_table') as source_table, "
-                        "result_payload "
-                        "FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name={job})) "
-                        "SELECT COUNT(*) as total_tasks, "
-                        "COUNT(IF(status = 'FAILURE', 1, NULL)) as failed_tasks, "
-                        "ROUND(COUNT(IF(status = 'SUCCESS', 1, NULL)) * 100.0 / COUNT(*), 2) as success_rate_percent, "
-                        "ROUND(COUNT(IF(status = 'SUCCESS', 1, NULL)) * 1.0 / COUNT(*), 4) as data_quality_score, "
-                        "COUNT(*) as tables_validated "
-                        "FROM latest_run"
+                        "WITH latest_run AS ( "
+                        "  SELECT "
+                        "    task_key, "
+                        "    status, "
+                        "    source_catalog, "
+                        "    source_schema, "
+                        "    source_table, "
+                        "    result_payload "
+                        "  FROM "
+                        "    {table} "
+                        "  WHERE "
+                        "    job_name = {job} "
+                        "    AND job_start_ts = ( "
+                        "      SELECT "
+                        "        MAX(job_start_ts) "
+                        "      FROM "
+                        "        {table} "
+                        "    ) "
+                        ") "
+                        "SELECT "
+                        "  COUNT(*) as total_tasks, "
+                        "  COUNT(IF(status = 'FAILURE', 1, NULL)) as failed_tasks, "
+                        "  ROUND(COUNT(IF(status = 'SUCCESS', 1, NULL)) * 100.0 / COUNT(*), 2) as success_rate_percent, "
+                        "  ROUND(COUNT(IF(status = 'SUCCESS', 1, NULL)) * 1.0 / COUNT(*), 4) as data_quality_score, "
+                        "  COUNT(*) as tables_validated "
+                        "FROM "
+                        "  latest_run; "
                     )
                 ],
             },
@@ -600,13 +616,25 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Validation Status Overview",
                 "queryLines": [
                     q(
-                        "SELECT CASE status "
-                        "WHEN 'SUCCESS' THEN 'Passed' "
-                        "WHEN 'FAILURE' THEN 'Failed' "
-                        "ELSE status END as status, "
-                        "COUNT(*) as task_count "
-                        "FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name={job}) "
-                        "GROUP BY status"
+                        "SELECT "
+                        "  CASE status "
+                        "    WHEN 'SUCCESS' THEN 'Passed' "
+                        "    WHEN 'FAILURE' THEN 'Failed' "
+                        "    ELSE status "
+                        "  END as status, "
+                        "  COUNT(*) as task_count "
+                        "FROM "
+                        "  {table} "
+                        "WHERE "
+                        "  job_name = {job} "
+                        "  AND job_start_ts = ( "
+                        "    SELECT "
+                        "      MAX(job_start_ts) "
+                        "    FROM "
+                        "      {table} "
+                        "  ) "
+                        "GROUP BY "
+                        "  status; "
                     )
                 ],
             },
@@ -615,7 +643,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Data Quality Trend Analysis",
                 "queryLines": [
                     q(
-                        "SELECT date(timestamp) as run_date, "
+                        "SELECT date(validation_begin_ts) as run_date, "
                         "ROUND(COUNT(IF(status='FAILURE',1,NULL))*100.0/COUNT(*), 2) as failure_rate, "
                         "ROUND(COUNT(IF(status='SUCCESS',1,NULL))*100.0/COUNT(*), 2) as success_rate, "
                         "COUNT(*) as validations_run "
@@ -642,7 +670,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "  FROM (\n"
                         "    SELECT\n"
                         "    *,\n"
-                        "    row_number() over (partition by run_id, task_key order by timestamp desc) AS rn\n"
+                        "    row_number() over (partition by run_id, task_key order by job_start_ts desc) AS rn\n"
                         "    FROM\n"
                         "       {table}\n"
                         "    WHERE\n"
@@ -673,7 +701,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "  WHERE to_json(result_payload) LIKE '%agg_validation_%status%FAIL%'\n"
                         ") t\n"
                         "GROUP BY validation_type\n"
-                        "ORDER BY failure_count DESC"
+                        "ORDER BY failure_count DESC;"
                     )
                 ],
             },
@@ -682,7 +710,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Detailed Run History",
                 "queryLines": [
                     q(
-                        "SELECT task_key, status, timestamp, to_json(result_payload) as payload_json, run_id, job_name FROM {table} WHERE job_name={job} ORDER BY timestamp DESC, task_key"
+                        "SELECT task_key, status, job_start_ts, to_json(result_payload) as payload_json, run_id, job_name FROM {table} WHERE job_name={job} ORDER BY job_start_ts DESC, task_key"
                     )
                 ],
             },
@@ -691,15 +719,35 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "All Run Details",
                 "queryLines": [
                     q(
-                        "SELECT task_key, "
-                        "CASE status WHEN 'SUCCESS' THEN '✅ PASSED' WHEN 'FAILURE' THEN '❌ FAILED' ELSE status END as status, "
-                        "CONCAT(source_catalog, '.', source_schema, '.', source_table) as source_table, "
-                        "CONCAT(target_catalog, '.', target_schema, '.', target_table) as target_table, "
-                        "DATE_FORMAT(timestamp, 'yyyy-MM-dd HH:mm:ss') as timestamp, "
-                        "to_json(result_payload) as result_payload, "
-                        "run_id, job_name "
-                        "FROM {table} WHERE run_id = (SELECT MAX(run_id) FROM {table} WHERE job_name={job}) "
-                        "ORDER BY CASE status WHEN 'FAILURE' THEN 0 ELSE 1 END, task_key"
+                        "SELECT "
+                        "  task_key, "
+                        "  CASE status "
+                        "    WHEN 'SUCCESS' THEN '✅ PASSED' "
+                        "    WHEN 'FAILURE' THEN '❌ FAILED' "
+                        "    ELSE status "
+                        "  END as status, "
+                        "  CONCAT(source_catalog, '.', source_schema, '.', source_table) as source_table, "
+                        "  CONCAT(target_catalog, '.', target_schema, '.', target_table) as target_table, "
+                        "  DATE_FORMAT(job_start_ts, 'yyyy-MM-dd HH:mm:ss') as job_start_ts, "
+                        "  to_json(result_payload) as result_payload, "
+                        "  run_id, "
+                        "  job_name "
+                        "FROM "
+                        "  {table} "
+                        "WHERE "
+                        "  job_name = {job} "
+                        "  AND job_start_ts = ( "
+                        "    SELECT "
+                        "      MAX(job_start_ts) "
+                        "    FROM "
+                        "      {table} "
+                        "  ) "
+                        "ORDER BY "
+                        "  CASE status "
+                        "    WHEN 'FAILURE' THEN 0 "
+                        "    ELSE 1 "
+                        "  END, "
+                        "  task_key; "
                     )
                 ],
             },
@@ -708,7 +756,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Success Rate Over Time",
                 "queryLines": [
                     q(
-                        "SELECT date(timestamp) as run_date, COUNT(IF(status='SUCCESS',1,NULL))*100/COUNT(*) as success_rate FROM {table} WHERE job_name={job} GROUP BY 1 ORDER BY 1"
+                        "SELECT date(job_start_ts) as run_date, COUNT(IF(status='SUCCESS',1,NULL))*100/COUNT(*) as success_rate FROM {table} WHERE job_name={job} GROUP BY 1 ORDER BY 1"
                     )
                 ],
             },
@@ -717,32 +765,66 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Business Impact Assessment",
                 "queryLines": [
                     q(
-                        "WITH impact_analysis AS ("
-                        "SELECT source_schema, "
-                        "COUNT(*) as total_validations, "
-                        "SUM(CASE WHEN status = 'FAILURE' THEN 1 ELSE 0 END) as failures, "
-                        "ROUND(100.0 * SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) / COUNT(*), 2) as quality_score, "
-                        "MAX(CASE WHEN status = 'FAILURE' THEN timestamp END) as last_failure "
-                        "FROM ( "
-                        "    SELECT "
-                        "    *, "
-                        "    row_number() over (partition by run_id, task_key order by timestamp desc) as rn "
-                        "    FROM "
-                        "       {table} "
-                        "    WHERE "
-                        "       job_name = {job} "
+                        "WITH impact_analysis AS ( "
+                        "  SELECT "
+                        "    source_catalog, "
+                        "    source_schema, "
+                        "    COUNT(*) as total_validations, "
+                        "    SUM( "
+                        "      CASE "
+                        "        WHEN status = 'FAILURE' THEN 1 "
+                        "        ELSE 0 "
+                        "      END "
+                        "    ) as failures, "
+                        "    ROUND( "
+                        "      100.0 "
+                        "      * SUM( "
+                        "        CASE "
+                        "          WHEN status = 'SUCCESS' THEN 1 "
+                        "          ELSE 0 "
+                        "        END "
+                        "      ) "
+                        "      / COUNT(*), "
+                        "      2 "
+                        "    ) as quality_score, "
+                        "    MAX( "
+                        "      CASE "
+                        "        WHEN status = 'FAILURE' THEN job_start_ts "
+                        "      END "
+                        "    ) as last_failure "
+                        "  FROM "
+                        "    ( "
+                        "      SELECT "
+                        "        *, "
+                        "        row_number() over (partition by run_id, task_key order by job_start_ts desc) as rn "
+                        "      FROM "
+                        "        {table} "
+                        "      WHERE "
+                        "        job_name = {job} "
+                        "    ) "
+                        "  WHERE "
+                        "    rn = 1 "
+                        "  GROUP BY "
+                        "    source_catalog, "
+                        "    source_schema "
                         ") "
-                        "WHERE rn = 1 "
-                        "GROUP BY source_schema) "
-                        "SELECT source_schema as schema_name, "
-                        "total_validations, failures, quality_score, "
-                        "CASE WHEN failures = 0 THEN '🟢 Excellent' "
-                        "WHEN quality_score >= 95 THEN '🟡 Good' "
-                        "WHEN quality_score >= 90 THEN '🟠 Fair' "
-                        "ELSE '🔴 Needs Attention' END as health_status, "
-                        "COALESCE(DATE_FORMAT(last_failure, 'yyyy-MM-dd HH:mm'), 'No failures') as last_issue "
-                        "FROM impact_analysis "
-                        "ORDER BY failures DESC, quality_score ASC"
+                        "SELECT "
+                        "  CONCAT_WS('.', source_catalog, source_schema) as source_schema, "
+                        "  total_validations, "
+                        "  failures, "
+                        "  quality_score, "
+                        "  CASE "
+                        "    WHEN failures = 0 THEN '🟢 Excellent' "
+                        "    WHEN quality_score >= 95 THEN '🟡 Good' "
+                        "    WHEN quality_score >= 90 THEN '🟠 Fair' "
+                        "    ELSE '🔴 Needs Attention' "
+                        "  END as health_status, "
+                        "  COALESCE(DATE_FORMAT(last_failure, 'yyyy-MM-dd HH:mm'), 'No failures') as last_issue "
+                        "FROM "
+                        "  impact_analysis "
+                        "ORDER BY "
+                        "  failures DESC, "
+                        "  quality_score ASC; "
                     )
                 ],
             },
@@ -766,7 +848,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "           result_payload, "
                         "           run_id, "
                         "           job_name, "
-                        "           row_number() over (partition by run_id, task_key order by timestamp desc) AS rn "
+                        "           row_number() over (partition by run_id, task_key order by job_start_ts desc) AS rn "
                         "        FROM "
                         "           {table} "
                         "        WHERE "
@@ -884,7 +966,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "FROM ( "
                         "    SELECT "
                         "       *, "
-                        "       row_number() over (partition by run_id, task_key order by timestamp desc) as rn "
+                        "       row_number() over (partition by run_id, task_key order by job_start_ts desc) as rn "
                         "    FROM "
                         "       {table} "
                         "    WHERE "
@@ -901,15 +983,15 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "queryLines": [
                     q(
                         "SELECT task_key, "
-                        "AVG(CAST(unix_timestamp(completed_at) - unix_timestamp(started_at) AS DOUBLE)) as avg_runtime_seconds, "
-                        "MIN(CAST(unix_timestamp(completed_at) - unix_timestamp(started_at) AS DOUBLE)) as min_runtime_seconds, "
-                        "MAX(CAST(unix_timestamp(completed_at) - unix_timestamp(started_at) AS DOUBLE)) as max_runtime_seconds, "
+                        "AVG(CAST(unix_timestamp(validation_complete_ts) - unix_timestamp(validation_begin_ts) AS DOUBLE)) as avg_runtime_seconds, "
+                        "MIN(CAST(unix_timestamp(validation_complete_ts) - unix_timestamp(validation_begin_ts) AS DOUBLE)) as min_runtime_seconds, "
+                        "MAX(CAST(unix_timestamp(validation_complete_ts) - unix_timestamp(validation_begin_ts) AS DOUBLE)) as max_runtime_seconds, "
                         "COUNT(*) as total_runs, "
                         "SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) as successful_runs, "
                         "ROUND(100.0 * SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) / COUNT(*), 2) as success_rate "
                         "FROM {table} "
                         "WHERE job_name = {job} "
-                        "AND started_at IS NOT NULL AND completed_at IS NOT NULL "
+                        "AND validation_begin_ts IS NOT NULL AND validation_complete_ts IS NOT NULL "
                         "GROUP BY task_key "
                         "ORDER BY avg_runtime_seconds DESC"
                     )
@@ -921,15 +1003,15 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "queryLines": [
                     q(
                         "SELECT run_id, "
-                        "MIN(started_at) as job_start, "
-                        "MAX(completed_at) as job_end, "
-                        "CAST(unix_timestamp(MAX(completed_at)) - unix_timestamp(MIN(started_at)) AS DOUBLE) as total_runtime_seconds, "
+                        "MIN(job_start_ts) as job_start, "
+                        "MAX(validation_complete_ts) as job_end, "
+                        "CAST(unix_timestamp(MAX(validation_complete_ts)) - unix_timestamp(MIN(validation_begin_ts)) AS DOUBLE) as total_runtime_seconds, "
                         "COUNT(DISTINCT task_key) as tasks_run, "
                         "SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) as successful_tasks, "
                         "SUM(CASE WHEN status = 'FAILURE' THEN 1 ELSE 0 END) as failed_tasks "
                         "FROM {table} "
                         "WHERE job_name = {job} "
-                        "AND started_at IS NOT NULL AND completed_at IS NOT NULL "
+                        "AND validation_begin_ts IS NOT NULL AND validation_complete_ts IS NOT NULL "
                         "GROUP BY run_id "
                         "ORDER BY job_start DESC "
                         "LIMIT 30"
@@ -941,13 +1023,13 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Runtime Trend",
                 "queryLines": [
                     q(
-                        "SELECT MIN(started_at)::DATE as run_date, "
-                        "AVG(CAST(unix_timestamp(completed_at) - unix_timestamp(started_at) AS DOUBLE)) as avg_runtime_seconds, "
+                        "SELECT MIN(validation_begin_ts)::DATE as run_date, "
+                        "AVG(CAST(unix_timestamp(validation_complete_ts) - unix_timestamp(validation_begin_ts) AS DOUBLE)) as avg_runtime_seconds, "
                         "COUNT(DISTINCT run_id) as num_runs "
                         "FROM {table} "
                         "WHERE job_name = {job} "
-                        "AND started_at IS NOT NULL AND completed_at IS NOT NULL "
-                        "GROUP BY started_at::DATE "
+                        "AND validation_begin_ts IS NOT NULL AND validation_complete_ts IS NOT NULL "
+                        "GROUP BY validation_begin_ts::DATE "
                         "ORDER BY run_date DESC "
                         "LIMIT 30"
                     )
@@ -1355,7 +1437,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                 # Different table widgets need different columns
                 if w_def["ds_name"] == "ds_business_impact":
                     columns = [
-                        "schema_name",
+                        "source_schema",
                         "total_validations",
                         "failures",
                         "quality_score",
@@ -1412,7 +1494,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "status",
                         "source_table",
                         "target_table",
-                        "timestamp",
+                        "validation_begin_ts",
                         "result_payload",
                     ]
                     display_names = [
@@ -1420,7 +1502,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "Status",
                         "Source Table",
                         "Target Table",
-                        "Timestamp",
+                        "Job Complete Timestamp",
                         "Result Payload",
                     ]
                 else:
@@ -1428,7 +1510,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                     columns = [
                         "task_key",
                         "status",
-                        "timestamp",
+                        "validation_begin_ts",
                         "payload_json",
                         "run_id",
                         "job_name",
@@ -1436,7 +1518,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                     display_names = [
                         "Task Key",
                         "Status",
-                        "Timestamp",
+                        "Job Complete Timestamp",
                         "Result Payload",
                         "Run ID",
                         "Job Name",
@@ -1609,7 +1691,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         {
                             "name": "time_range",
                             "dataset": "ds_history",
-                            "field": "timestamp",
+                            "field": "validation_begin_ts",
                             "displayName": "Time Range",
                             "type": "date_range",
                         },
@@ -1638,8 +1720,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                                                     "expression": "`status`",
                                                 },
                                                 {
-                                                    "name": "timestamp",
-                                                    "expression": "`timestamp`",
+                                                    "name": "job_start_ts",
+                                                    "expression": "`job_start_ts`",
                                                 },
                                                 {
                                                     "name": "payload_json",
@@ -1672,8 +1754,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                                                 "displayName": "Status",
                                             },
                                             {
-                                                "fieldName": "timestamp",
-                                                "displayName": "Timestamp",
+                                                "fieldName": "validation_begin_ts",
+                                                "displayName": "Job Complete Timestamp",
                                             },
                                             {
                                                 "fieldName": "payload_json",
@@ -1776,7 +1858,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         {
                             "name": "time_range_details",
                             "dataset": "ds_latest_run_details",
-                            "field": "timestamp",
+                            "field": "validation_begin_ts",
                             "displayName": "Time Range",
                             "type": "date_range",
                         },
@@ -2152,6 +2234,7 @@ Once created, users can ask questions in natural language to analyze data qualit
         sql_params: dict[str, str] = {
             "run_id": "{{job.run_id}}",
             "job_id": "{{job.id}}",
+            "job_start_ts": "{{job.start_time.iso_datetime}}",
         }
 
         tasks: list[Task] = build_tasks(

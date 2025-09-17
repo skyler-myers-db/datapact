@@ -55,7 +55,7 @@ class TestMetadataAndPerformanceImprovements:
         )
 
     def test_timestamps_added_as_columns(self):
-        """Test that started_at and completed_at are top-level columns."""
+        """Test that validation_begin_ts and validation_complete_ts are top-level columns."""
         jinja2 = importlib.import_module("jinja2")
         env = jinja2.Environment(
             loader=jinja2.PackageLoader("datapact", "templates"),
@@ -81,12 +81,13 @@ class TestMetadataAndPerformanceImprovements:
 
         sql = template.render(**payload)
 
-        # Check timestamps are in SELECT
-        assert "current_timestamp() AS started_at" in sql
-        assert "current_timestamp() AS completed_at" in sql
+        # Check timestamps and variables are in SELECT
+        assert "DECLARE VARIABLE validation_begin_ts TIMESTAMP" in sql
+        assert "validation_begin_ts AS validation_begin_ts" in sql
+        assert "current_timestamp() AS validation_complete_ts" in sql
 
         # Check they're in the INSERT statement
-        assert "started_at, completed_at" in sql
+        assert "validation_begin_ts, validation_complete_ts" in sql
 
     def test_insert_statement_includes_all_columns(self):
         """Test that INSERT statement includes all new metadata columns."""
@@ -122,9 +123,9 @@ class TestMetadataAndPerformanceImprovements:
         assert "run_id" in insert_line
         assert "job_id" in insert_line
         assert "job_name" in insert_line
-        assert "timestamp" in insert_line
-        assert "started_at" in insert_line
-        assert "completed_at" in insert_line
+        assert "job_start_ts" in insert_line
+        assert "validation_begin_ts" in insert_line
+        assert "validation_complete_ts" in insert_line
         assert "source_catalog" in insert_line
         assert "source_schema" in insert_line
         assert "source_table" in insert_line
@@ -195,7 +196,7 @@ class TestMetadataAndPerformanceImprovements:
         assert "ds_runtime_trend" in dataset_names
 
     def test_performance_queries_use_timestamps(self, mock_client):
-        """Test that performance queries use started_at and completed_at."""
+        """Test that performance queries use validation_begin_ts and validation_complete_ts."""
         dashboard_json = self._get_dashboard_json(mock_client)
 
         # Find performance datasets
@@ -206,10 +207,13 @@ class TestMetadataAndPerformanceImprovements:
         )
         query = " ".join(perf_metrics["queryLines"])
 
-        # Should use started_at and completed_at
-        assert "started_at" in query
-        assert "completed_at" in query
-        assert "unix_timestamp(completed_at) - unix_timestamp(started_at)" in query
+        # Should use validation_begin_ts and validation_complete_ts
+        assert "validation_begin_ts" in query
+        assert "validation_complete_ts" in query
+        assert (
+            "unix_timestamp(validation_complete_ts) - unix_timestamp(validation_begin_ts)"
+            in query
+        )
 
     def test_bar_chart_labels_are_clean(self, mock_client):
         """Test that bar charts don't show 'sum(failure_count)' labels."""

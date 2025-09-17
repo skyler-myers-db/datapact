@@ -701,7 +701,7 @@ FROM (
 CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.privacy_requests AS TABLE datapact_demo_catalog.source_data.privacy_requests;
 -- Compliance reporting delay
 DELETE FROM datapact_demo_catalog.target_data.privacy_requests
-WHERE request_date > date_add(current_date(), -7)
+WHERE request_date >= to_date('2024-10-01')
   AND status = 'PENDING';
 -- Recent pending requests not yet synced
 -- =========================================================================================

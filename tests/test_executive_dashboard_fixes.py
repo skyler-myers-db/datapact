@@ -12,7 +12,7 @@ class TestExecutiveDashboardFixes:
     """Test all executive dashboard fixes and improvements."""
 
     def test_timestamps_removed_from_payload(self):
-        """Test that started_at and completed_at are not in the result payload."""
+        """Test that validation_begin_ts and validation_complete_ts are not in the result payload."""
         # This improves executive readability by reducing clutter
         jinja2 = importlib.import_module("jinja2")
         env = jinja2.Environment(
@@ -39,9 +39,10 @@ class TestExecutiveDashboardFixes:
 
         sql = template.render(**payload)
 
-        # Check that started_at and completed_at are top-level columns, not in struct
-        assert "current_timestamp() AS started_at" in sql
-        assert "current_timestamp() AS completed_at" in sql
+        # Check that validation_begin_ts and validation_complete_ts are top-level columns, not in struct
+        assert "DECLARE VARIABLE validation_begin_ts TIMESTAMP" in sql
+        assert "validation_begin_ts AS validation_begin_ts" in sql
+        assert "current_timestamp() AS validation_complete_ts" in sql
 
         # Should NOT be in the parse_json struct (checking the payload part)
         struct_part = (
@@ -50,14 +51,14 @@ class TestExecutiveDashboardFixes:
             else ""
         )
         if struct_part:
-            assert "AS started_at" not in struct_part
-            assert "AS completed_at" not in struct_part
+            assert "AS validation_begin_ts" not in struct_part
+            assert "AS validation_complete_ts" not in struct_part
 
         # But they should be in the INSERT statement
         assert "INSERT INTO" in sql
         insert_line = [line for line in sql.split("\n") if "INSERT INTO" in line][0]
-        assert "started_at" in insert_line
-        assert "completed_at" in insert_line
+        assert "validation_begin_ts" in insert_line
+        assert "validation_complete_ts" in insert_line
 
     def test_null_validation_percentage_fix(self):
         """Test that null validation shows 100% when source=0 and target has values."""
