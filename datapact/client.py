@@ -228,10 +228,109 @@ class DataPactClient:
             validation_complete_ts TIMESTAMP,
             source_catalog STRING, source_schema STRING, source_table STRING,
             target_catalog STRING, target_schema STRING, target_table STRING,
+            business_domain STRING, business_owner STRING, business_priority STRING,
+            expected_sla_hours DOUBLE, estimated_impact_usd DOUBLE,
             result_payload VARIANT) USING DELTA"""
         )
         self._execute_sql(ddl, warehouse_id)
         logger.success(f"Results table '{results_table_fqn}' is ready.")
+
+    def _bootstrap_exec_summary_tables(
+        self: "DataPactClient",
+        warehouse_id: str,
+        results_table_fqn: str,
+    ) -> None:
+        """Create the executive summary tables up-front so Lakeview queries succeed."""
+
+        statement_api = getattr(self.w, "statement_execution", None)
+        if statement_api is None:
+            logger.debug(
+                "Skipping executive summary table bootstrap; statement execution client not available."
+            )
+            return
+
+        cleaned = results_table_fqn.replace("`", "").replace("\n", " ").strip()
+        parts = [p for p in cleaned.split(".") if p]
+
+        if len(parts) >= 3:
+            catalog, schema = parts[0], parts[1]
+        else:
+            catalog, schema = DEFAULT_CATALOG, DEFAULT_SCHEMA
+
+        base_path = f"`{catalog}`.`{schema}`"
+
+        logger.debug(
+            f"Ensuring executive summary tables exist in {base_path} using warehouse {warehouse_id}."
+        )
+
+        table_definitions: dict[str, str] = {
+            "exec_run_summary": """
+                run_id BIGINT,
+                job_id BIGINT,
+                job_name STRING,
+                total_tasks BIGINT,
+                failure_count BIGINT,
+                success_count BIGINT,
+                success_rate_percent DOUBLE,
+                data_quality_score DOUBLE,
+                critical_failures BIGINT,
+                potential_impact_usd DOUBLE,
+                realized_impact_usd DOUBLE,
+                avg_expected_sla_hours DOUBLE,
+                failed_task_keys ARRAY<STRING>,
+                generated_at TIMESTAMP
+            """,
+            "exec_domain_breakdown": """
+                run_id BIGINT,
+                job_name STRING,
+                business_domain STRING,
+                total_validations BIGINT,
+                failed_validations BIGINT,
+                success_rate_percent DOUBLE,
+                avg_expected_sla_hours DOUBLE,
+                potential_impact_usd DOUBLE,
+                realized_impact_usd DOUBLE,
+                last_failure_ts TIMESTAMP,
+                generated_at TIMESTAMP
+            """,
+            "exec_owner_breakdown": """
+                run_id BIGINT,
+                job_name STRING,
+                business_owner STRING,
+                total_validations BIGINT,
+                failed_validations BIGINT,
+                success_rate_percent DOUBLE,
+                avg_expected_sla_hours DOUBLE,
+                potential_impact_usd DOUBLE,
+                realized_impact_usd DOUBLE,
+                last_failure_ts TIMESTAMP,
+                generated_at TIMESTAMP
+            """,
+            "exec_priority_breakdown": """
+                run_id BIGINT,
+                job_name STRING,
+                business_priority STRING,
+                total_validations BIGINT,
+                failed_validations BIGINT,
+                success_rate_percent DOUBLE,
+                potential_impact_usd DOUBLE,
+                realized_impact_usd DOUBLE,
+                last_failure_ts TIMESTAMP,
+                generated_at TIMESTAMP
+            """,
+        }
+
+        for table_name, columns in table_definitions.items():
+            ddl = textwrap.dedent(
+                f"""
+                CREATE TABLE IF NOT EXISTS {base_path}.`{table_name}` (
+                    {textwrap.dedent(columns).strip()}
+                ) USING DELTA
+                """
+            ).strip()
+            self._execute_sql(ddl, warehouse_id)
+
+        logger.success("Executive summary tables are ready for dashboard queries.")
 
     def _generate_validation_sql(
         self: "DataPactClient",
@@ -553,6 +652,9 @@ Once created, users can ask questions in natural language to analyze data qualit
         draft_path: str = f"{parent_path}/{display_name}.lvdash.json"
         self.w.workspace.mkdirs(parent_path)
 
+        # Ensure supporting executive summary tables exist before the dashboard is created
+        self._bootstrap_exec_summary_tables(warehouse_id, results_table_fqn)
+
         try:
             self.w.workspace.get_status(draft_path)
             logger.warning(
@@ -569,10 +671,30 @@ Once created, users can ask questions in natural language to analyze data qualit
                 f"Error accessing dashboard file: {e}. Proceeding with creation."
             )
 
+        cleaned_fqn = results_table_fqn.replace("`", "").replace("\n", " ").strip()
+        parts = [p for p in cleaned_fqn.split(".") if p]
+        catalog = parts[0] if len(parts) >= 3 else DEFAULT_CATALOG
+        schema = parts[1] if len(parts) >= 3 else DEFAULT_SCHEMA
+
+        def fq(name: str) -> str:
+            return f"`{catalog}`.`{schema}`.`{name}`"
+
+        run_summary_table = fq("exec_run_summary")
+        domain_breakdown_table = fq("exec_domain_breakdown")
+        owner_breakdown_table = fq("exec_owner_breakdown")
+        priority_breakdown_table = fq("exec_priority_breakdown")
+
         def q(sql):
             # Safely escape job name to prevent SQL injection
             safe_job_name = escape_sql_string(validate_job_name(job_name))
-            return sql.format(table=results_table_fqn, job=safe_job_name)
+            return sql.format(
+                table=results_table_fqn,
+                job=safe_job_name,
+                run_summary=run_summary_table,
+                domain_breakdown=domain_breakdown_table,
+                owner_breakdown=owner_breakdown_table,
+                priority_breakdown=priority_breakdown_table,
+            )
 
         # Define all datasets needed for the dashboard
         datasets: list[dict[str, Any]] = [
@@ -581,33 +703,21 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Executive KPI Dashboard",
                 "queryLines": [
                     q(
-                        "WITH latest_run AS ( "
-                        "  SELECT "
-                        "    task_key, "
-                        "    status, "
-                        "    source_catalog, "
-                        "    source_schema, "
-                        "    source_table, "
-                        "    result_payload "
-                        "  FROM "
-                        "    {table} "
-                        "  WHERE "
-                        "    job_name = {job} "
-                        "    AND job_start_ts = ( "
-                        "      SELECT "
-                        "        MAX(job_start_ts) "
-                        "      FROM "
-                        "        {table} "
-                        "    ) "
-                        ") "
                         "SELECT "
-                        "  COUNT(*) as total_tasks, "
-                        "  COUNT(IF(status = 'FAILURE', 1, NULL)) as failed_tasks, "
-                        "  ROUND(COUNT(IF(status = 'SUCCESS', 1, NULL)) * 100.0 / COUNT(*), 2) as success_rate_percent, "
-                        "  ROUND(COUNT(IF(status = 'SUCCESS', 1, NULL)) * 1.0 / COUNT(*), 4) as data_quality_score, "
-                        "  COUNT(*) as tables_validated "
-                        "FROM "
-                        "  latest_run; "
+                        "  total_tasks, "
+                        "  success_count AS passed_tasks, "
+                        "  failure_count AS failed_tasks, "
+                        "  success_rate_percent, "
+                        "  data_quality_score, "
+                        "  critical_failures, "
+                        "  potential_impact_usd, "
+                        "  realized_impact_usd, "
+                        "  avg_expected_sla_hours, "
+                        "  total_tasks AS tables_validated "
+                        "FROM {run_summary} "
+                        "WHERE job_name = {job} "
+                        "ORDER BY run_id DESC "
+                        "LIMIT 1"
                     )
                 ],
             },
@@ -710,7 +820,23 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Detailed Run History",
                 "queryLines": [
                     q(
-                        "SELECT task_key, status, job_start_ts, to_json(result_payload) as payload_json, run_id, job_name FROM {table} WHERE job_name={job} ORDER BY job_start_ts DESC, task_key"
+                        "SELECT "
+                        "  task_key, "
+                        "  status, "
+                        "  job_start_ts, "
+                        "  to_json(result_payload) as payload_json, "
+                        "  run_id, "
+                        "  job_name, "
+                        "  business_priority, "
+                        "  business_domain, "
+                        "  business_owner "
+                        "FROM "
+                        "  {table} "
+                        "WHERE "
+                        "  job_name = {job} "
+                        "ORDER BY "
+                        "  job_start_ts DESC, "
+                        "  task_key; "
                     )
                 ],
             },
@@ -765,66 +891,70 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Business Impact Assessment",
                 "queryLines": [
                     q(
-                        "WITH impact_analysis AS ( "
-                        "  SELECT "
-                        "    source_catalog, "
-                        "    source_schema, "
-                        "    COUNT(*) as total_validations, "
-                        "    SUM( "
-                        "      CASE "
-                        "        WHEN status = 'FAILURE' THEN 1 "
-                        "        ELSE 0 "
-                        "      END "
-                        "    ) as failures, "
-                        "    ROUND( "
-                        "      100.0 "
-                        "      * SUM( "
-                        "        CASE "
-                        "          WHEN status = 'SUCCESS' THEN 1 "
-                        "          ELSE 0 "
-                        "        END "
-                        "      ) "
-                        "      / COUNT(*), "
-                        "      2 "
-                        "    ) as quality_score, "
-                        "    MAX( "
-                        "      CASE "
-                        "        WHEN status = 'FAILURE' THEN job_start_ts "
-                        "      END "
-                        "    ) as last_failure "
-                        "  FROM "
-                        "    ( "
-                        "      SELECT "
-                        "        *, "
-                        "        row_number() over (partition by run_id, task_key order by job_start_ts desc) as rn "
-                        "      FROM "
-                        "        {table} "
-                        "      WHERE "
-                        "        job_name = {job} "
-                        "    ) "
-                        "  WHERE "
-                        "    rn = 1 "
-                        "  GROUP BY "
-                        "    source_catalog, "
-                        "    source_schema "
-                        ") "
                         "SELECT "
-                        "  CONCAT_WS('.', source_catalog, source_schema) as source_schema, "
+                        "  business_domain, "
                         "  total_validations, "
-                        "  failures, "
-                        "  quality_score, "
+                        "  failed_validations, "
+                        "  success_rate_percent::DOUBLE || '%' AS quality_score, "
+                        "  '$' || FORMAT_NUMBER(potential_impact_usd, 2) AS potential_impact_usd, "
+                        "  '$' || FORMAT_NUMBER(realized_impact_usd, 2) AS realized_impact_usd, "
+                        "  avg_expected_sla_hours, "
                         "  CASE "
-                        "    WHEN failures = 0 THEN '🟢 Excellent' "
-                        "    WHEN quality_score >= 95 THEN '🟡 Good' "
-                        "    WHEN quality_score >= 90 THEN '🟠 Fair' "
+                        "    WHEN failed_validations = 0 THEN '🟢 Excellent' "
+                        "    WHEN success_rate_percent >= 95 THEN '🟡 Good' "
+                        "    WHEN success_rate_percent >= 90 THEN '🟠 Fair' "
                         "    ELSE '🔴 Needs Attention' "
                         "  END as health_status, "
-                        "  COALESCE(DATE_FORMAT(last_failure, 'yyyy-MM-dd HH:mm'), 'No failures') as last_issue "
-                        "FROM "
-                        "  impact_analysis "
-                        "ORDER BY "
-                        "  failures DESC, "
-                        "  quality_score ASC; "
+                        "  CASE "
+                        "    WHEN avg_expected_sla_hours IS NULL THEN 'Unknown SLA' "
+                        "    WHEN avg_expected_sla_hours <= 4 THEN 'Lightning Response (<=4h)' "
+                        "    WHEN avg_expected_sla_hours <= 12 THEN 'Business Hours (<=12h)' "
+                        "    WHEN avg_expected_sla_hours <= 24 THEN 'Standard (<=24h)' "
+                        "    ELSE 'Backlog Risk (>24h)' "
+                        "  END AS sla_profile, "
+                        "  COALESCE(DATE_FORMAT(last_failure_ts, 'yyyy-MM-dd HH:mm'), 'No failures') as last_issue "
+                        "FROM {domain_breakdown} "
+                        "WHERE job_name = {job} "
+                        "ORDER BY failed_validations DESC, potential_impact_usd DESC"
+                    )
+                ],
+            },
+            {
+                "name": "ds_owner_accountability",
+                "displayName": "Owner Accountability Overview",
+                "queryLines": [
+                    q(
+                        "SELECT "
+                        "  business_owner, "
+                        "  total_validations, "
+                        "  failed_validations, "
+                        "  success_rate_percent || '%' AS success_rate_percent, "
+                        "  '$' || FORMAT_NUMBER(potential_impact_usd, 2) AS potential_impact_usd, "
+                        "  '$' || FORMAT_NUMBER(realized_impact_usd, 2) AS realized_impact_usd, "
+                        "  avg_expected_sla_hours, "
+                        "  COALESCE(DATE_FORMAT(last_failure_ts, 'yyyy-MM-dd HH:mm'), 'No failures') as last_issue "
+                        "FROM {owner_breakdown} "
+                        "WHERE job_name = {job} "
+                        "ORDER BY failed_validations DESC, potential_impact_usd DESC"
+                    )
+                ],
+            },
+            {
+                "name": "ds_priority_profile",
+                "displayName": "Priority Risk Profile",
+                "queryLines": [
+                    q(
+                        "SELECT "
+                        "  business_priority, "
+                        "  total_validations, "
+                        "  failed_validations, "
+                        "  success_rate_percent, "
+                        "  potential_impact_usd, "
+                        "  realized_impact_usd, "
+                        "  COALESCE(DATE_FORMAT(last_failure_ts, 'yyyy-MM-dd HH:mm'), 'No failures') as last_issue "
+                        "FROM {priority_breakdown} "
+                        "WHERE job_name = {job} "
+                        "ORDER BY failed_validations DESC, potential_impact_usd DESC"
                     )
                 ],
             },
@@ -840,99 +970,218 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "    result_payload, "
                         "    run_id, "
                         "    job_name "
-                        "    FROM "
+                        "  FROM "
                         "    ( "
-                        "        SELECT "
-                        "           task_key, "
-                        "           status, "
-                        "           result_payload, "
-                        "           run_id, "
-                        "           job_name, "
-                        "           row_number() over (partition by run_id, task_key order by job_start_ts desc) AS rn "
-                        "        FROM "
-                        "           {table} "
-                        "        WHERE "
-                        "           job_name = {job} "
+                        "      SELECT "
+                        "        task_key, "
+                        "        status, "
+                        "        result_payload, "
+                        "        run_id, "
+                        "        job_name, "
+                        "        row_number() over ( "
+                        "          partition by run_id, "
+                        "          task_key "
+                        "          order by "
+                        "            job_start_ts desc "
+                        "        ) AS rn "
+                        "      FROM "
+                        "        {table} "
+                        "      WHERE "
+                        "        job_name = {job} "
                         "    ) "
-                        "    WHERE "
-                        "       rn = 1 "
+                        "  WHERE "
+                        "    rn = 1 "
                         "), "
                         "expanded_checks AS ( "
-                        "  SELECT task_key, 'Count Check' as check_type, "
-                        "    get_json_object(to_json(result_payload), '$.count_validation.status') as check_status, "
-                        "    CONCAT('Source: ', get_json_object(to_json(result_payload), '$.count_validation.source_count'), "
-                        "           ' | Target: ', get_json_object(to_json(result_payload), '$.count_validation.target_count'), "
-                        "           ' | Diff: ', get_json_object(to_json(result_payload), '$.count_validation.relative_diff_percent'), "
-                        "           ' | Tolerance: ', get_json_object(to_json(result_payload), '$.count_validation.tolerance_percent')) as details "
-                        "  FROM base_data "
-                        "  WHERE get_json_object(to_json(result_payload), '$.count_validation') IS NOT NULL "
+                        "  SELECT "
+                        "    task_key, "
+                        "    'Count Check' as check_type, "
+                        "    get_json_object( "
+                        "      to_json(result_payload), "
+                        "      '$.count_validation.status' "
+                        "    ) as check_status, "
+                        "    CONCAT( "
+                        "      'Source: ', "
+                        "      get_json_object( "
+                        "        to_json(result_payload), "
+                        "        '$.count_validation.source_count' "
+                        "      ), "
+                        "      ' | Target: ', "
+                        "      get_json_object( "
+                        "        to_json(result_payload), "
+                        "        '$.count_validation.target_count' "
+                        "      ), "
+                        "      ' | Diff: ', "
+                        "      get_json_object( "
+                        "        to_json(result_payload), "
+                        "        '$.count_validation.relative_diff_percent' "
+                        "      ), "
+                        "      ' | Tolerance: ', "
+                        "      get_json_object( "
+                        "        to_json(result_payload), "
+                        "        '$.count_validation.tolerance_percent' "
+                        "      ) "
+                        "    ) as details "
+                        "  FROM "
+                        "    base_data "
+                        "  WHERE "
+                        "    get_json_object(to_json(result_payload), '$.count_validation') IS NOT NULL "
                         "  UNION ALL "
-                        "  SELECT task_key, 'Row Hash Check' as check_type, "
-                        "    get_json_object(to_json(result_payload), '$.row_hash_validation.status') as check_status, "
-                        "    CONCAT('Compared: ', get_json_object(to_json(result_payload), '$.row_hash_validation.compared_rows'), "
-                        "           ' rows | Mismatches: ', get_json_object(to_json(result_payload), '$.row_hash_validation.mismatch_count'), "
-                        "           ' | Diff: ', get_json_object(to_json(result_payload), '$.row_hash_validation.mismatch_percent'), "
-                        "           ' | Tolerance: ', get_json_object(to_json(result_payload), '$.row_hash_validation.tolerance_percent')) as details "
-                        "  FROM base_data "
-                        "  WHERE get_json_object(to_json(result_payload), '$.row_hash_validation') IS NOT NULL "
+                        "  SELECT "
+                        "    task_key, "
+                        "    'Row Hash Check' as check_type, "
+                        "    get_json_object( "
+                        "      to_json(result_payload), "
+                        "      '$.row_hash_validation.status' "
+                        "    ) as check_status, "
+                        "    CONCAT( "
+                        "      'Compared: ', "
+                        "      get_json_object( "
+                        "        to_json(result_payload), "
+                        "        '$.row_hash_validation.compared_rows' "
+                        "      ), "
+                        "      ' rows | Mismatches: ', "
+                        "      get_json_object( "
+                        "        to_json(result_payload), "
+                        "        '$.row_hash_validation.mismatch_count' "
+                        "      ), "
+                        "      ' | Diff: ', "
+                        "      get_json_object( "
+                        "        to_json(result_payload), "
+                        "        '$.row_hash_validation.mismatch_percent' "
+                        "      ), "
+                        "      ' | Tolerance: ', "
+                        "      get_json_object( "
+                        "        to_json(result_payload), "
+                        "        '$.row_hash_validation.tolerance_percent' "
+                        "      ) "
+                        "    ) as details "
+                        "  FROM "
+                        "    base_data "
+                        "  WHERE "
+                        "    get_json_object(to_json(result_payload), '$.row_hash_validation') IS NOT NULL "
                         "  UNION ALL "
-                        "  SELECT task_key, CONCAT('Null Check: ', null_field) as check_type, "
+                        "  SELECT "
+                        "    task_key, "
+                        "    CONCAT('Null Check: ', null_field) as check_type, "
                         "    get_json_object(null_json, '$.status') as check_status, "
-                        "    CONCAT('Source nulls: ', get_json_object(null_json, '$.source_nulls'), "
-                        "           ' | Target nulls: ', get_json_object(null_json, '$.target_nulls'), "
-                        "           ' | Diff: ', get_json_object(null_json, '$.relative_diff_percent'), "
-                        "           ' | Tolerance: ', get_json_object(null_json, '$.tolerance_percent')) as details "
-                        "  FROM ("
-                        "    SELECT task_key, result_payload, "
-                        "           regexp_extract(key, 'null_validation_(.*)', 1) as null_field, "
-                        "           value as null_json "
-                        "    FROM base_data "
-                        "    LATERAL VIEW explode(from_json(to_json(result_payload), 'map<string,string>')) t AS key, value "
-                        "    WHERE key LIKE 'null_validation_%' "
-                        "  ) null_data "
-                        "  WHERE null_field IS NOT NULL "
+                        "    CONCAT( "
+                        "      'Source nulls: ', "
+                        "      get_json_object(null_json, '$.source_nulls'), "
+                        "      ' | Target nulls: ', "
+                        "      get_json_object(null_json, '$.target_nulls'), "
+                        "      ' | Diff: ', "
+                        "      get_json_object(null_json, '$.relative_diff_percent'), "
+                        "      ' | Tolerance: ', "
+                        "      get_json_object(null_json, '$.tolerance_percent') "
+                        "    ) as details "
+                        "  FROM "
+                        "    ( "
+                        "      SELECT "
+                        "        task_key, "
+                        "        result_payload, "
+                        "        regexp_extract(key, 'null_validation_(.*)', 1) as null_field, "
+                        "        value as null_json "
+                        "      FROM "
+                        "        base_data LATERAL VIEW explode( "
+                        "          from_json(to_json(result_payload), 'map<string,string>') "
+                        "        ) t AS key, "
+                        "        value "
+                        "      WHERE "
+                        "        key LIKE 'null_validation_%' "
+                        "    ) null_data "
+                        "  WHERE "
+                        "    null_field IS NOT NULL "
                         "  UNION ALL "
-                        "  SELECT task_key, CONCAT('Uniqueness Check: ', unique_field) as check_type, "
+                        "  SELECT "
+                        "    task_key, "
+                        "    CONCAT('Uniqueness Check: ', unique_field) as check_type, "
                         "    get_json_object(unique_json, '$.status') as check_status, "
-                        "    CONCAT('Source duplicates: ', COALESCE(get_json_object(unique_json, '$.source_duplicates'), '0'), "
-                        "           ' | Target duplicates: ', COALESCE(get_json_object(unique_json, '$.target_duplicates'), '0'), "
-                        "           ' | Tolerance: ', get_json_object(unique_json, '$.tolerance_percent')) as details "
-                        "  FROM ("
-                        "    SELECT task_key, result_payload, "
-                        "           regexp_extract(key, 'uniqueness_validation_(.*)', 1) as unique_field, "
-                        "           value as unique_json "
-                        "    FROM base_data "
-                        "    LATERAL VIEW explode(from_json(to_json(result_payload), 'map<string,string>')) t AS key, value "
-                        "    WHERE key LIKE 'uniqueness_validation_%' "
-                        "  ) unique_data "
-                        "  WHERE unique_field IS NOT NULL "
+                        "    CONCAT( "
+                        "      'Source duplicates: ', "
+                        "      COALESCE( "
+                        "        get_json_object(unique_json, '$.source_duplicates'), "
+                        "        '0' "
+                        "      ), "
+                        "      ' | Target duplicates: ', "
+                        "      COALESCE( "
+                        "        get_json_object(unique_json, '$.target_duplicates'), "
+                        "        '0' "
+                        "      ), "
+                        "      ' | Tolerance: ', "
+                        "      get_json_object(unique_json, '$.tolerance_percent') "
+                        "    ) as details "
+                        "  FROM "
+                        "    ( "
+                        "      SELECT "
+                        "        task_key, "
+                        "        result_payload, "
+                        "        regexp_extract(key, 'uniqueness_validation_(.*)', 1) as unique_field, "
+                        "        value as unique_json "
+                        "      FROM "
+                        "        base_data LATERAL VIEW explode( "
+                        "          from_json(to_json(result_payload), 'map<string,string>') "
+                        "        ) t AS key, "
+                        "        value "
+                        "      WHERE "
+                        "        key LIKE 'uniqueness_validation_%' "
+                        "    ) unique_data "
+                        "  WHERE "
+                        "    unique_field IS NOT NULL "
                         "  UNION ALL "
-                        "  SELECT task_key, CONCAT('Aggregation Check: ', agg_field) as check_type, "
+                        "  SELECT "
+                        "    task_key, "
+                        "    CONCAT('Aggregation Check: ', agg_field) as check_type, "
                         "    get_json_object(agg_json, '$.status') as check_status, "
-                        "    CONCAT('Source: ', get_json_object(agg_json, '$.source_value'), "
-                        "           ' | Target: ', get_json_object(agg_json, '$.target_value'), "
-                        "           ' | Diff: ', get_json_object(agg_json, '$.relative_diff_percent'), "
-                        "           ' | Tolerance: ', get_json_object(agg_json, '$.tolerance_percent')) as details "
-                        "  FROM ("
-                        "    SELECT task_key, result_payload, "
-                        "           regexp_extract(key, 'agg_validation_(.*)', 1) as agg_field, "
-                        "           value as agg_json "
-                        "    FROM base_data "
-                        "    LATERAL VIEW explode(from_json(to_json(result_payload), 'map<string,string>')) t AS key, value "
-                        "    WHERE key LIKE 'agg_validation_%' "
-                        "  ) agg_data "
-                        "  WHERE agg_field IS NOT NULL "
+                        "    CONCAT( "
+                        "      'Source: ', "
+                        "      get_json_object(agg_json, '$.source_value'), "
+                        "      ' | Target: ', "
+                        "      get_json_object(agg_json, '$.target_value'), "
+                        "      ' | Diff: ', "
+                        "      get_json_object(agg_json, '$.relative_diff_percent'), "
+                        "      ' | Tolerance: ', "
+                        "      get_json_object(agg_json, '$.tolerance_percent') "
+                        "    ) as details "
+                        "  FROM "
+                        "    ( "
+                        "      SELECT "
+                        "        task_key, "
+                        "        result_payload, "
+                        "        regexp_extract(key, 'agg_validation_(.*)', 1) as agg_field, "
+                        "        value as agg_json "
+                        "      FROM "
+                        "        base_data LATERAL VIEW explode( "
+                        "          from_json(to_json(result_payload), 'map<string,string>') "
+                        "        ) t AS key, "
+                        "        value "
+                        "      WHERE "
+                        "        key LIKE 'agg_validation_%' "
+                        "    ) agg_data "
+                        "  WHERE "
+                        "    agg_field IS NOT NULL "
+                        "), "
+                        "duped AS ( "
+                        "  SELECT "
+                        "    task_key as validation_name, "
+                        "    check_type, "
+                        "    CASE "
+                        "      check_status "
+                        "      WHEN 'PASS' THEN '✅ PASS' "
+                        "      WHEN 'FAIL' THEN '❌ FAIL' "
+                        "      ELSE '⚠️ ' || COALESCE(check_status, 'UNKNOWN') "
+                        "    END as status, "
+                        "    details "
+                        "  FROM "
+                        "    expanded_checks "
                         ") "
-                        "SELECT task_key as validation_name, "
-                        "  check_type, "
-                        "  CASE check_status "
-                        "    WHEN 'PASS' THEN '✅ PASS' "
-                        "    WHEN 'FAIL' THEN '❌ FAIL' "
-                        "    ELSE '⚠️ ' || COALESCE(check_status, 'UNKNOWN') "
-                        "  END as status, "
-                        "  details "
-                        "FROM expanded_checks "
-                        "ORDER BY task_key, check_type"
+                        "SELECT "
+                        "  DISTINCT * "
+                        "FROM "
+                        "  duped "
+                        "ORDER BY "
+                        "  validation_name, "
+                        "  check_type; "
                     )
                 ],
             },
@@ -961,6 +1210,11 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "CASE WHEN to_json(result_payload) LIKE '%agg_validation%' AND to_json(result_payload) NOT LIKE '%agg_validation%FAIL%' THEN '✅ Aggs' "
                         "     WHEN to_json(result_payload) LIKE '%agg_validation%FAIL%' THEN '❌ Aggs' "
                         "     ELSE '➖' END as agg_check, "
+                        "COALESCE(business_priority, 'UNSPECIFIED') AS business_priority, "
+                        "COALESCE(business_domain, 'Unspecified') AS business_domain, "
+                        "COALESCE(business_owner, 'Unassigned') AS business_owner, "
+                        "ROUND(expected_sla_hours, 2) AS expected_sla_hours, "
+                        "'$' || FORMAT_NUMBER(ROUND(estimated_impact_usd, 2), 2) AS estimated_impact_usd, "
                         "CONCAT_WS('.', source_catalog, source_schema, source_table) AS source_table, "
                         "CONCAT_WS('.', target_catalog, target_schema, target_table) AS target_table "
                         "FROM ( "
@@ -983,12 +1237,12 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "queryLines": [
                     q(
                         "SELECT task_key, "
-                        "AVG(CAST(unix_timestamp(validation_complete_ts) - unix_timestamp(validation_begin_ts) AS DOUBLE)) as avg_runtime_seconds, "
-                        "MIN(CAST(unix_timestamp(validation_complete_ts) - unix_timestamp(validation_begin_ts) AS DOUBLE)) as min_runtime_seconds, "
-                        "MAX(CAST(unix_timestamp(validation_complete_ts) - unix_timestamp(validation_begin_ts) AS DOUBLE)) as max_runtime_seconds, "
-                        "COUNT(*) as total_runs, "
-                        "SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) as successful_runs, "
-                        "ROUND(100.0 * SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) / COUNT(*), 2) as success_rate "
+                        "FORMAT_NUMBER(AVG(CAST(unix_timestamp(validation_complete_ts) - unix_timestamp(validation_begin_ts) AS DOUBLE)), 2) as avg_runtime_seconds, "
+                        "FORMAT_NUMBER(MIN(CAST(unix_timestamp(validation_complete_ts) - unix_timestamp(validation_begin_ts) AS BIGINT)), 0) as min_runtime_seconds, "
+                        "FORMAT_NUMBER(MAX(CAST(unix_timestamp(validation_complete_ts) - unix_timestamp(validation_begin_ts) AS BIGINT)), 0) as max_runtime_seconds, "
+                        "FORMAT_NUMBER(COUNT(*), 0) as total_runs, "
+                        "FORMAT_NUMBER(SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END), 0) as successful_runs, "
+                        "ROUND(100.0 * SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) / COUNT(*), 2) || '%' as success_rate "
                         "FROM {table} "
                         "WHERE job_name = {job} "
                         "AND validation_begin_ts IS NOT NULL AND validation_complete_ts IS NOT NULL "
@@ -1005,7 +1259,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "SELECT run_id, "
                         "MIN(job_start_ts) as job_start, "
                         "MAX(validation_complete_ts) as job_end, "
-                        "CAST(unix_timestamp(MAX(validation_complete_ts)) - unix_timestamp(MIN(validation_begin_ts)) AS DOUBLE) as total_runtime_seconds, "
+                        "CAST(unix_timestamp(MAX(validation_complete_ts)) - unix_timestamp(MIN(validation_begin_ts)) AS BIGINT) as total_runtime_seconds, "
                         "COUNT(DISTINCT task_key) as tasks_run, "
                         "SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) as successful_tasks, "
                         "SUM(CASE WHEN status = 'FAILURE' THEN 1 ELSE 0 END) as failed_tasks "
@@ -1015,6 +1269,146 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "GROUP BY run_id "
                         "ORDER BY job_start DESC "
                         "LIMIT 30"
+                    )
+                ],
+            },
+            {
+                "name": "ds_parallel_efficiency",
+                "displayName": "Parallelism & Throughput",
+                "queryLines": [
+                    q(
+                        "WITH base AS (\n"
+                        "  SELECT\n"
+                        "    run_id,\n"
+                        "    task_key,\n"
+                        "    validation_begin_ts,\n"
+                        "    validation_complete_ts,\n"
+                        "    CAST(unix_timestamp(validation_complete_ts) - unix_timestamp(validation_begin_ts) AS DOUBLE) AS task_runtime_seconds\n"
+                        "  FROM {table}\n"
+                        "  WHERE job_name = {job}\n"
+                        "    AND validation_begin_ts IS NOT NULL\n"
+                        "    AND validation_complete_ts IS NOT NULL\n"
+                        "),\n"
+                        "run_windows AS (\n"
+                        "  SELECT\n"
+                        "    run_id,\n"
+                        "    MIN(validation_begin_ts) AS run_start,\n"
+                        "    MAX(validation_complete_ts) AS run_end,\n"
+                        "    CAST(unix_timestamp(MAX(validation_complete_ts)) - unix_timestamp(MIN(validation_begin_ts)) AS DOUBLE) AS runtime_seconds,\n"
+                        "    COUNT(*) AS total_tasks\n"
+                        "  FROM base\n"
+                        "  GROUP BY run_id\n"
+                        "),\n"
+                        "concurrency AS (\n"
+                        "  SELECT\n"
+                        "    a.run_id,\n"
+                        "    a.task_key,\n"
+                        "    COUNT(*) AS concurrent_tasks\n"
+                        "  FROM base a\n"
+                        "  JOIN base b\n"
+                        "    ON a.run_id = b.run_id\n"
+                        "   AND a.validation_begin_ts <= b.validation_complete_ts\n"
+                        "   AND b.validation_begin_ts <= a.validation_complete_ts\n"
+                        "  GROUP BY a.run_id, a.task_key\n"
+                        "),\n"
+                        "aggregated AS (\n"
+                        "  SELECT\n"
+                        "    r.run_id,\n"
+                        "    r.run_start,\n"
+                        "    r.runtime_seconds,\n"
+                        "    r.total_tasks,\n"
+                        "    AVG(b.task_runtime_seconds) AS avg_task_duration_seconds,\n"
+                        "    percentile_approx(b.task_runtime_seconds, 0.95) AS p95_task_duration_seconds,\n"
+                        "    MAX(c.concurrent_tasks) AS peak_parallelism\n"
+                        "  FROM run_windows r\n"
+                        "  JOIN base b ON r.run_id = b.run_id\n"
+                        "  JOIN concurrency c ON c.run_id = b.run_id AND c.task_key = b.task_key\n"
+                        "  GROUP BY r.run_id, r.run_start, r.runtime_seconds, r.total_tasks\n"
+                        ")\n"
+                        "SELECT\n"
+                        "  run_id,\n"
+                        "  run_start,\n"
+                        "  runtime_seconds,\n"
+                        "  total_tasks,\n"
+                        "  ROUND(total_tasks / NULLIF(runtime_seconds / 60.0, 0), 2) AS tasks_per_minute,\n"
+                        "  ROUND(avg_task_duration_seconds, 2) AS avg_task_duration_seconds,\n"
+                        "  ROUND(p95_task_duration_seconds, 2) AS p95_task_duration_seconds,\n"
+                        "  peak_parallelism,\n"
+                        "  DENSE_RANK() OVER (ORDER BY run_start DESC) AS recency_rank\n"
+                        "FROM aggregated\n"
+                        "ORDER BY run_start DESC\n"
+                        "LIMIT 60"
+                    )
+                ],
+            },
+            {
+                "name": "ds_parallel_kpi",
+                "displayName": "Parallelism KPI Snapshot",
+                "queryLines": [
+                    q(
+                        "WITH base AS (\n"
+                        "  SELECT\n"
+                        "    run_id,\n"
+                        "    task_key,\n"
+                        "    validation_begin_ts,\n"
+                        "    validation_complete_ts,\n"
+                        "    CAST(unix_timestamp(validation_complete_ts) - unix_timestamp(validation_begin_ts) AS DOUBLE) AS task_runtime_seconds\n"
+                        "  FROM {table}\n"
+                        "  WHERE job_name = {job}\n"
+                        "    AND validation_begin_ts IS NOT NULL\n"
+                        "    AND validation_complete_ts IS NOT NULL\n"
+                        "),\n"
+                        "run_windows AS (\n"
+                        "  SELECT\n"
+                        "    run_id,\n"
+                        "    MIN(validation_begin_ts) AS run_start,\n"
+                        "    MAX(validation_complete_ts) AS run_end,\n"
+                        "    CAST(unix_timestamp(MAX(validation_complete_ts)) - unix_timestamp(MIN(validation_begin_ts)) AS DOUBLE) AS runtime_seconds,\n"
+                        "    COUNT(*) AS total_tasks\n"
+                        "  FROM base\n"
+                        "  GROUP BY run_id\n"
+                        "),\n"
+                        "concurrency AS (\n"
+                        "  SELECT\n"
+                        "    a.run_id,\n"
+                        "    a.task_key,\n"
+                        "    COUNT(*) AS concurrent_tasks\n"
+                        "  FROM base a\n"
+                        "  JOIN base b\n"
+                        "    ON a.run_id = b.run_id\n"
+                        "   AND a.validation_begin_ts <= b.validation_complete_ts\n"
+                        "   AND b.validation_begin_ts <= a.validation_complete_ts\n"
+                        "  GROUP BY a.run_id, a.task_key\n"
+                        "),\n"
+                        "aggregated AS (\n"
+                        "  SELECT\n"
+                        "    r.run_id,\n"
+                        "    r.run_start,\n"
+                        "    r.runtime_seconds,\n"
+                        "    r.total_tasks,\n"
+                        "    ROUND(r.total_tasks / NULLIF(r.runtime_seconds / 60.0, 0), 2) AS tasks_per_minute,\n"
+                        "    ROUND(AVG(b.task_runtime_seconds), 2) AS avg_task_duration_seconds,\n"
+                        "    ROUND(percentile_approx(b.task_runtime_seconds, 0.95), 2) AS p95_task_duration_seconds,\n"
+                        "    MAX(c.concurrent_tasks) AS peak_parallelism,\n"
+                        "    DENSE_RANK() OVER (ORDER BY r.run_start DESC) AS recency_rank\n"
+                        "  FROM run_windows r\n"
+                        "  JOIN base b ON r.run_id = b.run_id\n"
+                        "  JOIN concurrency c ON c.run_id = b.run_id AND c.task_key = b.task_key\n"
+                        "  GROUP BY r.run_id, r.run_start, r.runtime_seconds, r.total_tasks\n"
+                        ")\n"
+                        "SELECT\n"
+                        "  run_id,\n"
+                        "  run_start,\n"
+                        "  runtime_seconds,\n"
+                        "  total_tasks,\n"
+                        "  tasks_per_minute,\n"
+                        "  avg_task_duration_seconds,\n"
+                        "  p95_task_duration_seconds,\n"
+                        "  peak_parallelism\n"
+                        "FROM aggregated\n"
+                        "WHERE recency_rank = 1\n"
+                        "ORDER BY run_start DESC\n"
+                        "LIMIT 1"
                     )
                 ],
             },
@@ -1035,6 +1429,116 @@ Once created, users can ask questions in natural language to analyze data qualit
                     )
                 ],
             },
+            {
+                "name": "ds_cost_history",
+                "displayName": "Job Cost History",
+                "queryLines": [
+                    q(
+                        "WITH runs AS (\n"
+                        "  SELECT\n"
+                        "    j.job_id,\n"
+                        "    r.run_id,\n"
+                        "    MIN(r.period_start_time) AS run_start_time,\n"
+                        "    MAX(r.period_end_time) AS run_end_time\n"
+                        "  FROM\n"
+                        "    system.lakeflow.job_run_timeline r\n"
+                        "      JOIN system.lakeflow.jobs j\n"
+                        "        ON r.workspace_id = j.workspace_id\n"
+                        "        AND r.job_id = j.job_id\n"
+                        "  WHERE\n"
+                        "    j.name = 'DataPact Enterprise Demo'\n"
+                        "    AND r.period_start_time >= CURRENT_TIMESTAMP() - INTERVAL 30 DAYS\n"
+                        "  GROUP BY\n"
+                        "    j.job_id,\n"
+                        "    r.run_id\n"
+                        "),\n"
+                        "-- All statements for those runs (only present if the task used a SQL Warehouse)\n"
+                        "run_stmt AS (\n"
+                        "  SELECT\n"
+                        "    q.query_source.job_info.job_run_id AS run_id,\n"
+                        "    q.compute.warehouse_id AS warehouse_id,\n"
+                        "    date_trunc('hour', q.end_time) AS hour_ts,\n"
+                        "    SUM(q.total_duration_ms) AS run_ms_in_hour\n"
+                        "  FROM\n"
+                        "    system.query.history q\n"
+                        "  WHERE\n"
+                        "    q.query_source.job_info.job_run_id IN (\n"
+                        "      SELECT\n"
+                        "        run_id\n"
+                        "      FROM\n"
+                        "        runs\n"
+                        "    )\n"
+                        "  GROUP BY\n"
+                        "    ALL\n"
+                        "),\n"
+                        "-- Total statement time per warehouse-hour (denominator for apportioning)\n"
+                        "wh_hour_totals AS (\n"
+                        "  SELECT\n"
+                        "    q.compute.warehouse_id AS warehouse_id,\n"
+                        "    date_trunc('hour', q.end_time) AS hour_ts,\n"
+                        "    SUM(q.total_duration_ms) AS wh_ms_in_hour\n"
+                        "  FROM\n"
+                        "    system.query.history q\n"
+                        "  WHERE\n"
+                        "    (q.compute.warehouse_id, date_trunc('hour', q.end_time)) IN (\n"
+                        "      SELECT\n"
+                        "        warehouse_id,\n"
+                        "        hour_ts\n"
+                        "      FROM\n"
+                        "        run_stmt\n"
+                        "    )\n"
+                        "  GROUP BY\n"
+                        "    ALL\n"
+                        "),\n"
+                        "-- Dollar cost per warehouse-hour from system.billing.usage × list_prices\n"
+                        "wh_hour_cost AS (\n"
+                        "  SELECT\n"
+                        "    u.usage_metadata.warehouse_id AS warehouse_id,\n"
+                        "    date_trunc('hour', u.usage_end_time) AS hour_ts,\n"
+                        "    SUM(u.usage_quantity * lp.pricing.effective_list.default) AS usd_in_hour\n"
+                        "  FROM\n"
+                        "    system.billing.usage u\n"
+                        "      JOIN system.billing.list_prices lp\n"
+                        "        ON u.sku_name = lp.sku_name\n"
+                        "        AND u.cloud = lp.cloud\n"
+                        "        AND u.usage_end_time >= lp.price_start_time\n"
+                        "        AND (\n"
+                        "          lp.price_end_time IS NULL\n"
+                        "          OR u.usage_end_time < lp.price_end_time\n"
+                        "        )\n"
+                        "  WHERE\n"
+                        "    u.usage_metadata.warehouse_id IN (\n"
+                        "      SELECT DISTINCT\n"
+                        "        warehouse_id\n"
+                        "      FROM\n"
+                        "        run_stmt\n"
+                        "    )\n"
+                        "  GROUP BY\n"
+                        "    ALL\n"
+                        ")\n"
+                        "SELECT\n"
+                        "  'DataPact Enterprise Demo' AS job_name,\n"
+                        "  r.run_id,\n"
+                        "  MIN(r.run_start_time) AS run_start_time,\n"
+                        "  MAX(r.run_end_time) AS run_end_time,\n"
+                        "  SUM(wh.usd_in_hour * (rs.run_ms_in_hour / NULLIF(wt.wh_ms_in_hour, 0))) AS estimated_run_cost_usd\n"
+                        "FROM\n"
+                        "  runs r\n"
+                        "    JOIN run_stmt rs\n"
+                        "      ON r.run_id = rs.run_id\n"
+                        "    JOIN wh_hour_totals wt\n"
+                        "      ON rs.warehouse_id = wt.warehouse_id\n"
+                        "      AND rs.hour_ts = wt.hour_ts\n"
+                        "    JOIN wh_hour_cost wh\n"
+                        "      ON rs.warehouse_id = wh.warehouse_id\n"
+                        "      AND rs.hour_ts = wh.hour_ts\n"
+                        "GROUP BY\n"
+                        "  r.run_id\n"
+                        "ORDER BY\n"
+                        "  run_start_time;"
+                    )
+                ],
+            },
         ]
 
         widget_definitions: list[dict[str, Any]] = [
@@ -1049,15 +1553,29 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "ds_name": "ds_kpi",
                 "type": "COUNTER",
                 "title": "Critical Issues",
-                "pos": {"x": 2, "y": 0, "width": 2, "height": 3},
+                "pos": {"x": 2, "y": 0, "width": 1, "height": 3},
                 "value_col": "failed_tasks",
             },
             {
                 "ds_name": "ds_kpi",
                 "type": "COUNTER",
                 "title": "Total Validations",
-                "pos": {"x": 4, "y": 0, "width": 2, "height": 3},
+                "pos": {"x": 3, "y": 0, "width": 1, "height": 3},
                 "value_col": "tables_validated",
+            },
+            {
+                "ds_name": "ds_parallel_kpi",
+                "type": "COUNTER",
+                "title": "Peak Parallelism",
+                "pos": {"x": 4, "y": 0, "width": 1, "height": 3},
+                "value_col": "peak_parallelism",
+            },
+            {
+                "ds_name": "ds_parallel_kpi",
+                "type": "COUNTER",
+                "title": "Throughput (tasks/min)",
+                "pos": {"x": 5, "y": 0, "width": 1, "height": 3},
+                "value_col": "tasks_per_minute",
             },
             {
                 "ds_name": "ds_summary",
@@ -1090,23 +1608,39 @@ Once created, users can ask questions in natural language to analyze data qualit
             {
                 "ds_name": "ds_business_impact",
                 "type": "TABLE",
-                "title": "Source Schema Quality Summary",
-                "pos": {"x": 0, "y": 23, "width": 6, "height": 5},
+                "title": "Business Domain Quality Summary",
+                "pos": {"x": 0, "y": 23, "width": 3, "height": 5},
+            },
+            {
+                "ds_name": "ds_owner_accountability",
+                "type": "TABLE",
+                "title": "Owner Accountability",
+                "pos": {"x": 3, "y": 23, "width": 3, "height": 5},
             },
             {
                 "ds_name": "ds_exploded_checks",
                 "type": "TABLE",
                 "title": "Check Details",
-                "pos": {"x": 0, "y": 34, "width": 6, "height": 8},
+                "pos": {"x": 0, "y": 33, "width": 6, "height": 9},
             },
             {
                 "ds_name": "ds_top_failures",
                 "type": "BAR",
                 "title": "Top Failing Validations",
-                "pos": {"x": 0, "y": 28, "width": 6, "height": 5},
+                "pos": {"x": 0, "y": 28, "width": 3, "height": 5},
                 "x_field": "task_key",
                 "y_field": "failure_count",
                 "y_agg": None,  # Already aggregated in query
+            },
+            {
+                "ds_name": "ds_priority_profile",
+                "type": "BAR",
+                "title": "Priority Risk Profile",
+                "pos": {"x": 3, "y": 28, "width": 3, "height": 5},
+                "x_field": "business_priority",
+                "y_field": "failed_validations",
+                "y_agg": None,
+                "y_display": "Failures",
             },
         ]
 
@@ -1146,10 +1680,88 @@ Once created, users can ask questions in natural language to analyze data qualit
                                 }
                             ]
                         },
-                        "frame": {"showTitle": True, "title": "Status"},
+                        "frame": {"showTitle": True, "title": "Test Status"},
                     },
                 },
-                "position": {"x": 0, "y": 14, "width": 6, "height": 1},
+                "position": {"x": 0, "y": 14, "width": 2, "height": 1},
+            },
+            {
+                "widget": {
+                    "name": "4c785157",
+                    "queries": [
+                        {
+                            "name": "filter_business_priority_1",
+                            "query": {
+                                "datasetName": "ds_validation_details",
+                                "fields": [
+                                    {
+                                        "name": "business_priority",
+                                        "expression": "`business_priority`",
+                                    },
+                                    {
+                                        "name": "business_priority_associativity",
+                                        "expression": "COUNT_IF(`associative_filter_predicate_group`)",
+                                    },
+                                ],
+                                "disaggregated": False,
+                            },
+                        }
+                    ],
+                    "spec": {
+                        "version": 2,
+                        "widgetType": "filter-multi-select",
+                        "encodings": {
+                            "fields": [
+                                {
+                                    "fieldName": "business_priority",
+                                    "displayName": "business_priority",
+                                    "queryName": "filter_business_priority_1",
+                                }
+                            ]
+                        },
+                        "frame": {"showTitle": True, "title": "Business Priority"},
+                    },
+                },
+                "position": {"x": 2, "y": 14, "width": 2, "height": 1},
+            },
+            {
+                "widget": {
+                    "name": "b82f2304",
+                    "queries": [
+                        {
+                            "name": "filter_business_owner_1",
+                            "query": {
+                                "datasetName": "ds_validation_details",
+                                "fields": [
+                                    {
+                                        "name": "business_owner",
+                                        "expression": "`business_owner`",
+                                    },
+                                    {
+                                        "name": "business_owner_associativity",
+                                        "expression": "COUNT_IF(`associative_filter_predicate_group`)",
+                                    },
+                                ],
+                                "disaggregated": False,
+                            },
+                        }
+                    ],
+                    "spec": {
+                        "version": 2,
+                        "widgetType": "filter-multi-select",
+                        "encodings": {
+                            "fields": [
+                                {
+                                    "fieldName": "business_owner",
+                                    "displayName": "business_owner",
+                                    "queryName": "filter_business_owner_1",
+                                }
+                            ]
+                        },
+                        "frame": {"showTitle": True, "title": "Data Owner"},
+                    },
+                },
+                "position": {"x": 4, "y": 14, "width": 2, "height": 1},
             },
             {
                 "widget": {
@@ -1204,32 +1816,85 @@ Once created, users can ask questions in natural language to analyze data qualit
 
                 # Add conditional formatting for counters
                 if w_def.get("title") == "Critical Issues":
+                    encodings["value"] = {
+                        "fieldName": "failed_tasks",
+                        "style": {
+                            "rules": [
+                                {
+                                    "condition": {
+                                        "operator": ">",
+                                        "operand": {"type": "data-value", "value": "0"},
+                                    },
+                                    "color": {
+                                        "themeColorType": "visualizationColors",
+                                        "position": 1,
+                                    },
+                                },
+                                {
+                                    "condition": {
+                                        "operator": "=",
+                                        "operand": {"type": "data-value", "value": "0"},
+                                    },
+                                    "color": "#00A972",
+                                },
+                            ]
+                        },
+                        "displayName": "failed_tasks",
+                    }
+                elif w_def.get("title") == "Peak Parallelism":
                     encodings["value"]["format"] = {
                         "type": "number",
                         "conditionalFormats": [
                             {
-                                "condition": {"type": "equals", "value": 0},
-                                "textColor": "#00A972",  # Green for 0
-                                "backgroundColor": "#E8F5E9",
+                                "condition": {
+                                    "type": "greaterThanOrEquals",
+                                    "value": 16,
+                                },
+                                "textColor": "#22D3EE",
+                                "backgroundColor": "#051B2C",
                             },
                             {
-                                "condition": {"type": "greaterThan", "value": 0},
-                                "textColor": "#FF3621",  # Red for > 0
-                                "backgroundColor": "#FFEBEE",
+                                "condition": {
+                                    "type": "between",
+                                    "min": 8,
+                                    "max": 15.99,
+                                },
+                                "textColor": "#FACC15",
+                                "backgroundColor": "#2B1A05",
+                            },
+                            {
+                                "condition": {"type": "lessThan", "value": 8},
+                                "textColor": "#F87171",
+                                "backgroundColor": "#2C0A0A",
                             },
                         ],
                     }
-                elif w_def.get("title") == "Total Validations":
+                elif w_def.get("title") == "Throughput (tasks/min)":
                     encodings["value"]["format"] = {
                         "type": "number",
+                        "decimalPlaces": {"type": "max", "places": 2},
                         "conditionalFormats": [
                             {
-                                "condition": {"type": "greaterThan", "value": 100},
-                                "textColor": "#00A972",  # Green for high volume
+                                "condition": {
+                                    "type": "greaterThanOrEquals",
+                                    "value": 12,
+                                },
+                                "textColor": "#34D399",
+                                "backgroundColor": "#0A2D1F",
                             },
                             {
-                                "condition": {"type": "lessThanOrEquals", "value": 100},
-                                "textColor": "#FF9800",  # Orange for lower volume
+                                "condition": {
+                                    "type": "between",
+                                    "min": 8,
+                                    "max": 11.99,
+                                },
+                                "textColor": "#FBBF24",
+                                "backgroundColor": "#32200A",
+                            },
+                            {
+                                "condition": {"type": "lessThan", "value": 8},
+                                "textColor": "#F87171",
+                                "backgroundColor": "#2C0A0A",
                             },
                         ],
                     }
@@ -1255,33 +1920,33 @@ Once created, users can ask questions in natural language to analyze data qualit
                             "format": {
                                 "type": "number-percent",
                                 "decimalPlaces": {"type": "max", "places": 2},
-                                "conditionalFormats": [
+                            },
+                            "style": {
+                                "rules": [
                                     {
                                         "condition": {
-                                            "type": "greaterThanOrEquals",
-                                            "value": 0.99,
+                                            "operator": "<",
+                                            "operand": {
+                                                "type": "data-value",
+                                                "value": "100",
+                                            },
                                         },
-                                        "textColor": "#00A972",  # Green for >= 99%
-                                        "backgroundColor": "#E8F5E9",
+                                        "color": {
+                                            "themeColorType": "visualizationColors",
+                                            "position": 1,
+                                        },
                                     },
                                     {
                                         "condition": {
-                                            "type": "between",
-                                            "min": 0.95,
-                                            "max": 0.99,
+                                            "operator": "=",
+                                            "operand": {
+                                                "type": "data-value",
+                                                "value": "100",
+                                            },
                                         },
-                                        "textColor": "#FF9800",  # Orange for 95-99%
-                                        "backgroundColor": "#FFF3E0",
+                                        "color": "#00A972",
                                     },
-                                    {
-                                        "condition": {
-                                            "type": "lessThan",
-                                            "value": 0.95,
-                                        },
-                                        "textColor": "#FF3621",  # Red for < 95%
-                                        "backgroundColor": "#FFEBEE",
-                                    },
-                                ],
+                                ]
                             },
                         }
                     },
@@ -1398,18 +2063,25 @@ Once created, users can ask questions in natural language to analyze data qualit
                     },
                 }
 
-                # Add color coding for failure-related bars
-                if (
-                    "failure" in y_field.lower()
-                    or "fail" in w_def.get("title", "").lower()
-                ):
+                if w_def.get("title") == "Issue Classification":
                     encodings["color"] = {
-                        "fieldName": y_alias,
+                        "fieldName": "failure_count",
                         "scale": {
                             "type": "quantitative",
-                            "colorScheme": "redyellowgreen",
-                            "reverse": True,  # High values = red, low = green
+                            "reverse": False,
+                            "colorRamp": {"mode": "scheme", "scheme": "orangered"},
                         },
+                        "displayName": "failure_count",
+                    }
+                elif w_def.get("title") == "Top Failing Validations":
+                    encodings["color"] = {
+                        "fieldName": "failure_count",
+                        "scale": {
+                            "type": "quantitative",
+                            "reverse": True,
+                            "colorRamp": {"mode": "scheme", "scheme": "magma"},
+                        },
+                        "displayName": "failure_count",
                     }
 
                 spec = {
@@ -1437,19 +2109,27 @@ Once created, users can ask questions in natural language to analyze data qualit
                 # Different table widgets need different columns
                 if w_def["ds_name"] == "ds_business_impact":
                     columns = [
-                        "source_schema",
+                        "business_domain",
                         "total_validations",
-                        "failures",
+                        "failed_validations",
                         "quality_score",
+                        "potential_impact_usd",
+                        "realized_impact_usd",
+                        "avg_expected_sla_hours",
                         "health_status",
+                        "sla_profile",
                         "last_issue",
                     ]
                     display_names = [
-                        "Schema",
+                        "Business Domain",
                         "Total Validations",
                         "Failures",
-                        "Quality Score (%)",
+                        "Quality Score",
+                        "Potential Financial Impact",
+                        "Realized Financial Impact",
+                        "Avg SLA (hrs)",
                         "Health Status",
+                        "SLA Profile",
                         "Last Issue",
                     ]
                 elif w_def["ds_name"] == "ds_validation_details":
@@ -1461,6 +2141,11 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "null_check",
                         "unique_check",
                         "agg_check",
+                        "business_priority",
+                        "business_domain",
+                        "business_owner",
+                        "expected_sla_hours",
+                        "estimated_impact_usd",
                         "source_table",
                         "target_table",
                     ]
@@ -1472,8 +2157,34 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "Nulls",
                         "Unique",
                         "Aggs",
-                        "Source",
-                        "Target",
+                        "Priority",
+                        "Domain",
+                        "Owner",
+                        "SLA (hrs)",
+                        "Financial Impact",
+                        "Source Table",
+                        "Target Table",
+                    ]
+                elif w_def["ds_name"] == "ds_owner_accountability":
+                    columns = [
+                        "business_owner",
+                        "total_validations",
+                        "failed_validations",
+                        "success_rate_percent",
+                        "potential_impact_usd",
+                        "realized_impact_usd",
+                        "avg_expected_sla_hours",
+                        "last_issue",
+                    ]
+                    display_names = [
+                        "Owner",
+                        "Validations",
+                        "Failures",
+                        "Success Rate",
+                        "Potential Financial Impact",
+                        "Realized Financial Impact",
+                        "Avg SLA (hrs)",
+                        "Last Issue",
                     ]
                 elif w_def["ds_name"] == "ds_exploded_checks":
                     columns = [
@@ -1658,44 +2369,6 @@ Once created, users can ask questions in natural language to analyze data qualit
                     "name": "main_page",
                     "displayName": "Executive Data Quality Dashboard",
                     "layout": layout_widgets,
-                    "filters": [
-                        {
-                            "name": "job_name",
-                            "dataset": "ds_history",
-                            "field": "job_name",
-                            "displayName": "Job Name",
-                            "allowMultipleValues": False,
-                        },
-                        {
-                            "name": "run_id",
-                            "dataset": "ds_history",
-                            "field": "run_id",
-                            "displayName": "Run ID",
-                            "allowMultipleValues": False,
-                        },
-                        {
-                            "name": "status_filter",
-                            "dataset": "ds_validation_details",
-                            "field": "overall_status",
-                            "displayName": "Validation Status",
-                            "allowMultipleValues": True,
-                            "defaultValues": [],  # Show all by default
-                        },
-                        {
-                            "name": "task_key_filter_main",
-                            "dataset": "ds_validation_details",
-                            "field": "validation_name",
-                            "displayName": "Validation Name",
-                            "allowMultipleValues": True,
-                        },
-                        {
-                            "name": "time_range",
-                            "dataset": "ds_history",
-                            "field": "validation_begin_ts",
-                            "displayName": "Time Range",
-                            "type": "date_range",
-                        },
-                    ],
                     "pageType": "PAGE_TYPE_CANVAS",
                 },
                 {
@@ -1735,6 +2408,18 @@ Once created, users can ask questions in natural language to analyze data qualit
                                                     "name": "job_name",
                                                     "expression": "`job_name`",
                                                 },
+                                                {
+                                                    "name": "business_priority",
+                                                    "expression": "`business_priority`",
+                                                },
+                                                {
+                                                    "name": "business_domain",
+                                                    "expression": "`business_domain`",
+                                                },
+                                                {
+                                                    "name": "business_owner",
+                                                    "expression": "`business_owner`",
+                                                },
                                             ],
                                             "disaggregated": False,
                                         },
@@ -1754,8 +2439,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                                                 "displayName": "Status",
                                             },
                                             {
-                                                "fieldName": "validation_begin_ts",
-                                                "displayName": "Job Complete Timestamp",
+                                                "fieldName": "job_start_ts",
+                                                "displayName": "Job Start Timestamp",
                                             },
                                             {
                                                 "fieldName": "payload_json",
@@ -1768,6 +2453,18 @@ Once created, users can ask questions in natural language to analyze data qualit
                                             {
                                                 "fieldName": "job_name",
                                                 "displayName": "Job Name",
+                                            },
+                                            {
+                                                "fieldName": "business_priority",
+                                                "displayName": "Business Priority",
+                                            },
+                                            {
+                                                "fieldName": "business_domain",
+                                                "displayName": "Business Domain",
+                                            },
+                                            {
+                                                "fieldName": "business_owner",
+                                                "displayName": "Business Owner",
                                             },
                                         ]
                                     },
@@ -1813,7 +2510,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                                         "y": {
                                             "fieldName": "avg(success_rate)",
                                             "scale": {"type": "quantitative"},
-                                            "displayName": "Success Rate (%)",
+                                            "displayName": "Success Rate",
                                         },
                                     },
                                     "frame": {
@@ -1824,43 +2521,194 @@ Once created, users can ask questions in natural language to analyze data qualit
                             },
                             "position": {"x": 0, "y": 18, "width": 6, "height": 9},
                         },
-                    ],
-                    "filters": [
                         {
-                            "name": "status_filter_details",
-                            "dataset": "ds_latest_run_details",
-                            "field": "status",
-                            "displayName": "Status",
-                            "allowMultipleValues": True,
-                            "defaultValues": [],  # Show all by default
+                            "widget": {
+                                "name": "f56055e3",
+                                "queries": [
+                                    {
+                                        "name": "main_query",
+                                        "query": {
+                                            "datasetName": "ds_cost_history",
+                                            "fields": [
+                                                {
+                                                    "name": "run_end_time",
+                                                    "expression": "`run_end_time`",
+                                                },
+                                                {
+                                                    "name": "job_name",
+                                                    "expression": "`job_name`",
+                                                },
+                                                {
+                                                    "name": "run_start_time",
+                                                    "expression": "`run_start_time`",
+                                                },
+                                                {
+                                                    "name": "estimated_run_cost_usd",
+                                                    "expression": "`estimated_run_cost_usd`",
+                                                },
+                                            ],
+                                            "disaggregated": True,
+                                        },
+                                    }
+                                ],
+                                "spec": {
+                                    "version": 3,
+                                    "widgetType": "scatter",
+                                    "encodings": {
+                                        "x": {
+                                            "fieldName": "run_start_time",
+                                            "scale": {"type": "temporal"},
+                                            "displayName": "Job Start Time",
+                                        },
+                                        "y": {
+                                            "fieldName": "estimated_run_cost_usd",
+                                            "scale": {"type": "quantitative"},
+                                            "displayName": "Job Cost ($)",
+                                        },
+                                        "extra": [
+                                            {
+                                                "fieldName": "run_end_time",
+                                                "displayName": "Job End Tme",
+                                            },
+                                            {
+                                                "fieldName": "job_name",
+                                                "displayName": "Job Name",
+                                            },
+                                        ],
+                                    },
+                                    "frame": {
+                                        "showTitle": True,
+                                        "title": "Job Cost Over Time",
+                                        "showDescription": True,
+                                        "description": "How much money each job run cost over time",
+                                    },
+                                    "mark": {"size": 1},
+                                },
+                            },
+                            "position": {"x": 0, "y": 28, "width": 6, "height": 12},
                         },
                         {
-                            "name": "task_key_filter",
-                            "dataset": "ds_latest_run_details",
-                            "field": "task_key",
-                            "displayName": "Task Key",
-                            "allowMultipleValues": True,
+                            "widget": {
+                                "name": "a87e3364",
+                                "queries": [
+                                    {
+                                        "name": "filter_task_key",
+                                        "query": {
+                                            "datasetName": "ds_history",
+                                            "fields": [
+                                                {
+                                                    "name": "task_key",
+                                                    "expression": "`task_key`",
+                                                },
+                                                {
+                                                    "name": "task_key_associativity",
+                                                    "expression": "COUNT_IF(`associative_filter_predicate_group`)",
+                                                },
+                                            ],
+                                            "disaggregated": False,
+                                        },
+                                    }
+                                ],
+                                "spec": {
+                                    "version": 2,
+                                    "widgetType": "filter-multi-select",
+                                    "encodings": {
+                                        "fields": [
+                                            {
+                                                "fieldName": "task_key",
+                                                "displayName": "task_key",
+                                                "queryName": "filter_task_key",
+                                            }
+                                        ]
+                                    },
+                                    "frame": {"showTitle": True, "title": "Task Key"},
+                                },
+                            },
+                            "position": {"x": 0, "y": 0, "width": 2, "height": 1},
                         },
                         {
-                            "name": "job_name_details",
-                            "dataset": "ds_latest_run_details",
-                            "field": "job_name",
-                            "displayName": "Job Name",
-                            "allowMultipleValues": True,
+                            "widget": {
+                                "name": "ed13b7d0",
+                                "queries": [
+                                    {
+                                        "name": "filter_business_priority_2",
+                                        "query": {
+                                            "datasetName": "ds_history",
+                                            "fields": [
+                                                {
+                                                    "name": "business_priority",
+                                                    "expression": "`business_priority`",
+                                                },
+                                                {
+                                                    "name": "business_priority_associativity",
+                                                    "expression": "COUNT_IF(`associative_filter_predicate_group`)",
+                                                },
+                                            ],
+                                            "disaggregated": False,
+                                        },
+                                    }
+                                ],
+                                "spec": {
+                                    "version": 2,
+                                    "widgetType": "filter-multi-select",
+                                    "encodings": {
+                                        "fields": [
+                                            {
+                                                "fieldName": "business_priority",
+                                                "displayName": "business_priority",
+                                                "queryName": "filter_business_priority_2",
+                                            }
+                                        ]
+                                    },
+                                    "frame": {
+                                        "showTitle": True,
+                                        "title": "Business Priority",
+                                    },
+                                },
+                            },
+                            "position": {"x": 2, "y": 0, "width": 2, "height": 1},
                         },
                         {
-                            "name": "run_id_details",
-                            "dataset": "ds_latest_run_details",
-                            "field": "run_id",
-                            "displayName": "Run ID",
-                            "allowMultipleValues": True,
-                        },
-                        {
-                            "name": "time_range_details",
-                            "dataset": "ds_latest_run_details",
-                            "field": "validation_begin_ts",
-                            "displayName": "Time Range",
-                            "type": "date_range",
+                            "widget": {
+                                "name": "fc07e7f7",
+                                "queries": [
+                                    {
+                                        "name": "filter_business_domain_2",
+                                        "query": {
+                                            "datasetName": "ds_history",
+                                            "fields": [
+                                                {
+                                                    "name": "business_domain",
+                                                    "expression": "`business_domain`",
+                                                },
+                                                {
+                                                    "name": "business_domain_associativity",
+                                                    "expression": "COUNT_IF(`associative_filter_predicate_group`)",
+                                                },
+                                            ],
+                                            "disaggregated": False,
+                                        },
+                                    }
+                                ],
+                                "spec": {
+                                    "version": 2,
+                                    "widgetType": "filter-multi-select",
+                                    "encodings": {
+                                        "fields": [
+                                            {
+                                                "fieldName": "business_domain",
+                                                "displayName": "business_domain",
+                                                "queryName": "filter_business_domain_2",
+                                            }
+                                        ]
+                                    },
+                                    "frame": {
+                                        "showTitle": True,
+                                        "title": "Business Domain",
+                                    },
+                                },
+                            },
+                            "position": {"x": 4, "y": 0, "width": 2, "height": 1},
                         },
                     ],
                     "pageType": "PAGE_TYPE_CANVAS",
@@ -2049,7 +2897,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                                             },
                                             {
                                                 "fieldName": "success_rate",
-                                                "displayName": "Success Rate (%)",
+                                                "displayName": "Success Rate",
                                                 "format": {
                                                     "type": "number",
                                                     "decimalPlaces": {
@@ -2067,6 +2915,51 @@ Once created, users can ask questions in natural language to analyze data qualit
                                 },
                             },
                             "position": {"x": 0, "y": 8, "width": 6, "height": 10},
+                        },
+                        {
+                            "widget": {
+                                "name": "parallel_throughput_chart",
+                                "queries": [
+                                    {
+                                        "name": "main_query",
+                                        "query": {
+                                            "datasetName": "ds_parallel_efficiency",
+                                            "fields": [
+                                                {
+                                                    "name": "run_start",
+                                                    "expression": "`run_start`",
+                                                },
+                                                {
+                                                    "name": "tasks_per_minute",
+                                                    "expression": "`tasks_per_minute`",
+                                                },
+                                            ],
+                                            "disaggregated": False,
+                                        },
+                                    }
+                                ],
+                                "spec": {
+                                    "version": 3,
+                                    "widgetType": "line",
+                                    "encodings": {
+                                        "x": {
+                                            "fieldName": "run_start",
+                                            "scale": {"type": "temporal"},
+                                            "displayName": "Run Start",
+                                        },
+                                        "y": {
+                                            "fieldName": "tasks_per_minute",
+                                            "scale": {"type": "quantitative"},
+                                            "displayName": "Tasks per Minute",
+                                        },
+                                    },
+                                    "frame": {
+                                        "title": "Hyper-Scale Throughput",
+                                        "showTitle": True,
+                                    },
+                                },
+                            },
+                            "position": {"x": 0, "y": 18, "width": 3, "height": 8},
                         },
                         {
                             "widget": {
@@ -2111,16 +3004,63 @@ Once created, users can ask questions in natural language to analyze data qualit
                                     },
                                 },
                             },
-                            "position": {"x": 0, "y": 18, "width": 6, "height": 8},
+                            "position": {"x": 3, "y": 18, "width": 3, "height": 8},
                         },
-                    ],
-                    "filters": [
                         {
-                            "name": "job_name_perf",
-                            "dataset": "ds_job_performance",
-                            "field": "run_id",
-                            "displayName": "Filter by Run",
-                            "allowMultipleValues": True,
+                            "widget": {
+                                "name": "peak_parallelism_chart",
+                                "queries": [
+                                    {
+                                        "name": "main_query",
+                                        "query": {
+                                            "datasetName": "ds_parallel_efficiency",
+                                            "fields": [
+                                                {
+                                                    "name": "run_id",
+                                                    "expression": "`run_id`",
+                                                },
+                                                {
+                                                    "name": "peak_parallelism",
+                                                    "expression": "`peak_parallelism`",
+                                                },
+                                            ],
+                                            "disaggregated": False,
+                                        },
+                                    }
+                                ],
+                                "spec": {
+                                    "version": 3,
+                                    "widgetType": "bar",
+                                    "encodings": {
+                                        "x": {
+                                            "fieldName": "run_id",
+                                            "scale": {"type": "categorical"},
+                                            "displayName": "Run",
+                                        },
+                                        "y": {
+                                            "fieldName": "peak_parallelism",
+                                            "scale": {"type": "quantitative"},
+                                            "displayName": "Peak Concurrent Tasks",
+                                        },
+                                        "color": {
+                                            "fieldName": "peak_parallelism",
+                                            "scale": {
+                                                "type": "quantitative",
+                                                "colorRamp": {
+                                                    "mode": "scheme",
+                                                    "scheme": "magma",
+                                                },
+                                            },
+                                            "displayName": "peak_parallelism",
+                                        },
+                                    },
+                                    "frame": {
+                                        "title": "Peak Parallelism by Run",
+                                        "showTitle": True,
+                                    },
+                                },
+                            },
+                            "position": {"x": 0, "y": 26, "width": 6, "height": 7},
                         },
                     ],
                     "pageType": "PAGE_TYPE_CANVAS",
@@ -2128,19 +3068,19 @@ Once created, users can ask questions in natural language to analyze data qualit
             ],
             "uiSettings": {
                 "theme": {
-                    "canvasBackgroundColor": {"light": "#FFFFFF", "dark": "#000000"},
-                    "widgetBackgroundColor": {"light": "#FFFFFF", "dark": "#000000"},
-                    "widgetBorderColor": {"light": "#000000", "dark": "#7F00FF"},
-                    "fontColor": {"light": "#000000", "dark": "#0096FF"},
-                    "selectionColor": {"light": "#FF00FF", "dark": "#FFFFFF"},
+                    "canvasBackgroundColor": {"light": "#1F1B2E", "dark": "#0C0B1D"},
+                    "widgetBackgroundColor": {"light": "#2A2442", "dark": "#1B1833"},
+                    "widgetBorderColor": {"light": "#5E5A80", "dark": "#3F3B60"},
+                    "fontColor": {"light": "#FDFDFD", "dark": "#F5F5F5"},
+                    "selectionColor": {"light": "#FF6EC7", "dark": "#FF6EC7"},
                     "visualizationColors": [
-                        "#EE7733",
-                        "#0077BB",
-                        "#33BBEE",
-                        "#EE3377",
-                        "#CC3311",
-                        "#009988",
-                        "#BBBBBB",
+                        "#FF6EC7",
+                        "#00FFF7",
+                        "#BF00FF",
+                        "#FF5F1F",
+                        "#FFFF4D",
+                        "#D9007F",
+                        "#007FFF",
                     ],
                     "widgetHeaderAlignment": "LEFT",
                 }

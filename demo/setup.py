@@ -134,7 +134,7 @@ def execute_sql_commands(
         f"Found {len(sql_commands)} individual SQL statements to execute sequentially."
     )
     logger.info(
-        "Creating enterprise-scale demo data (10M page views, 5M transactions)..."
+        "Creating hyperscale demo data (25M+ financial txns, 15M sessions, 12M streaming events)..."
     )
     for i, command in enumerate(sql_commands):
         logger.info(f"Executing statement {i + 1}/{len(sql_commands)}...")
@@ -226,14 +226,17 @@ def print_success_and_instructions(profile: str) -> None:
         "\nYou have just set up a realistic, multi-faceted data environment. The upcoming validation run will showcase:"
     )
     logger.info(
-        "  - Validation across a 14-table enterprise model (Sales, HR, Marketing, Finance, Operations)."
+        "  - Validation across a 20-task executive model covering Sales, Finance, HR, Marketing, Streaming Ops, AI/ML, FinOps, and Compliance."
+    )
+    logger.info(
+        "  - Hyperscale datasets: 5M customers, 25M+ transactions, 12M streaming events, 15M digital sessions, 10K HR records, and multi-cloud FinOps telemetry."
     )
     logger.info("  - A mix of PASSING and FAILING tasks to demonstrate rich reporting.")
     logger.info(
-        "  - Advanced features like accepted tolerance and selective column hashing."
+        "  - Advanced features like tolerance bands, selective hashing, ROI storytelling, and AI-ready feature store governance."
     )
     logger.info(
-        "  - Graceful handling of edge cases like empty tables and tables without primary keys."
+        "  - Executive ROI tables (exec_run_summary, exec_domain_breakdown, exec_owner_breakdown, exec_priority_breakdown) populated automatically."
     )
     logger.info(
         "\nRun the demo validation with the following command (ensure your .databrickscfg has 'datapact_warehouse' set):"

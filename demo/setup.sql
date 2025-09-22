@@ -11,7 +11,7 @@ CREATE SCHEMA IF NOT EXISTS datapact_demo_catalog.reference_data COMMENT 'Master
 -- Business Context: Customer 360 data powering $2B annual revenue
 -- Critical for: Personalization, Marketing Campaigns, Customer Retention Analytics
 -- =========================================================================================
--- Table 1: Customer Master (1M+ customers, enterprise CRM backbone)
+-- Table 1: Customer Master (5M+ customers, global CRM backbone)
 CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.users AS
 SELECT id AS user_id,
   md5(CAST(id AS STRING)) || '@' || CASE
@@ -44,7 +44,7 @@ SELECT id AS user_id,
   END as segment,
   ROUND(rand() * 10, 1) as satisfaction_score
 FROM (
-    SELECT explode(sequence(1, 1000000)) AS id
+    SELECT explode(sequence(1, 5000000)) AS id
   );
 -- Simulating real-world ETL issues and data quality problems
 CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.users AS TABLE datapact_demo_catalog.source_data.users;
@@ -69,7 +69,7 @@ SELECT id AS user_id,
   'Unknown' as segment,
   NULL as satisfaction_score
 FROM (
-    SELECT explode(sequence(1000001, 1003000)) AS id
+    SELECT explode(sequence(5000001, 5050000)) AS id
   );
 -- Data Quality Issue #4: Timezone conversion error (10% date corruption)
 UPDATE datapact_demo_catalog.target_data.users
@@ -84,7 +84,7 @@ UPDATE datapact_demo_catalog.target_data.users
 SET total_logins = total_logins * 2
 WHERE country = 'CAN';
 -- Canadian metrics doubled due to dual-system reporting
--- Table 2: Financial Transactions (5M+ records, $500M+ transaction volume)
+-- Table 2: Financial Transactions (25M+ records, $2.5B+ annual volume)
 CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.transactions AS
 SELECT uuid() AS transaction_id,
   (abs(rand()) * 999999 + 1)::INT AS user_id,
@@ -118,7 +118,7 @@ SELECT uuid() AS transaction_id,
     ELSE NULL
   END as discount_code
 FROM (
-    SELECT explode(sequence(1, 5000000)) AS id
+    SELECT explode(sequence(1, 2500000)) AS id
   );
 -- Clean replication to demonstrate successful validation
 CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.transactions AS TABLE datapact_demo_catalog.source_data.transactions;
@@ -704,6 +704,386 @@ DELETE FROM datapact_demo_catalog.target_data.privacy_requests
 WHERE request_date >= to_date('2024-10-01')
   AND status = 'PENDING';
 -- Recent pending requests not yet synced
+-- =========================================================================================
+-- Domain: INDUSTRIAL IoT OPERATIONS
+-- Business Context: 2K devices, 150 plants, 20M telemetry events monthly
+-- =========================================================================================
+CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.iot_events AS
+SELECT uuid() AS event_id,
+  CONCAT(
+    'device-',
+    lpad(CAST((id % 2000) AS STRING), 5, '0')
+  ) AS device_id,
+  CONCAT(
+    'plant-',
+    lpad(CAST((id % 150) AS STRING), 3, '0')
+  ) AS facility_id,
+  CASE
+    WHEN rand() < 0.32 THEN 'NAM'
+    WHEN rand() < 0.57 THEN 'EMEA'
+    WHEN rand() < 0.83 THEN 'APAC'
+    ELSE 'LATAM'
+  END AS fleet_region,
+  current_timestamp() - (rand() * 45 * 24) * INTERVAL '1 hour' AS event_ts,
+  ROUND((rand() * 90) - 20, 2) AS temperature_c,
+  ROUND(rand() * 45 + 90, 2) AS pressure_kpa,
+  ROUND(rand() * 5, 2) AS vibration_g,
+  CASE
+    WHEN rand() < 0.015 THEN 'CRITICAL'
+    WHEN rand() < 0.07 THEN 'WARNING'
+    ELSE 'NORMAL'
+  END AS event_status,
+  CASE
+    WHEN rand() < 0.12 THEN TRUE
+    ELSE FALSE
+  END AS requires_maintenance
+FROM (
+    SELECT id
+    FROM range(0, 20000000)
+  );
+CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.iot_events AS
+SELECT *
+FROM datapact_demo_catalog.source_data.iot_events;
+DELETE FROM datapact_demo_catalog.target_data.iot_events
+WHERE fleet_region = 'EMEA'
+  AND mod(hash(device_id), 24) = 0;
+UPDATE datapact_demo_catalog.target_data.iot_events
+SET temperature_c = temperature_c + 45
+WHERE fleet_region = 'APAC'
+  AND event_status = 'WARNING';
+INSERT INTO datapact_demo_catalog.target_data.iot_events
+SELECT event_id,
+  device_id,
+  facility_id,
+  fleet_region,
+  event_ts + INTERVAL '4 minutes',
+  temperature_c,
+  pressure_kpa,
+  vibration_g,
+  event_status,
+  requires_maintenance
+FROM datapact_demo_catalog.target_data.iot_events
+WHERE fleet_region = 'LATAM'
+  AND requires_maintenance = TRUE
+  AND mod(hash(event_id), 50) = 0;
+-- =========================================================================================
+-- Domain: GLOBAL SUPPLY CHAIN & LOGISTICS
+-- Business Context: 180 hubs, 12M shipments, hazmat compliance
+-- =========================================================================================
+CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.shipments AS
+SELECT uuid() AS shipment_id,
+  CONCAT(
+    'order-',
+    lpad(CAST((id % 7000000) AS STRING), 8, '0')
+  ) AS order_id,
+  CONCAT('hub-', lpad(CAST((id % 180) AS STRING), 3, '0')) AS origin_hub,
+  CONCAT(
+    'hub-',
+    lpad(CAST(((id + 17) % 180) AS STRING), 3, '0')
+  ) AS destination_hub,
+  date_add('2022-01-01', CAST(rand() * 720 AS INT)) AS ship_date,
+  date_add('2022-01-03', CAST(rand() * 730 AS INT)) AS expected_delivery_date,
+  ROUND(rand() * 1500 + 50, 2) AS shipment_value_usd,
+  ROUND(rand() * 600 + 24, 1) AS transit_hours,
+  CASE
+    WHEN rand() < 0.03 THEN 'LOST'
+    WHEN rand() < 0.09 THEN 'DELAYED'
+    WHEN rand() < 0.85 THEN 'IN_TRANSIT'
+    ELSE 'DELIVERED'
+  END AS shipment_status,
+  CASE
+    WHEN rand() < 0.18 THEN TRUE
+    ELSE FALSE
+  END AS hazmat_flag
+FROM (
+    SELECT id
+    FROM range(0, 12000000)
+  );
+CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.shipments AS
+SELECT *
+FROM datapact_demo_catalog.source_data.shipments;
+DELETE FROM datapact_demo_catalog.target_data.shipments
+WHERE origin_hub = 'hub-042'
+  AND ship_date BETWEEN '2023-07-01' AND '2023-08-31';
+UPDATE datapact_demo_catalog.target_data.shipments
+SET hazmat_flag = FALSE
+WHERE hazmat_flag = TRUE
+  AND destination_hub = 'hub-117';
+INSERT INTO datapact_demo_catalog.target_data.shipments
+SELECT uuid() AS shipment_id,
+  order_id,
+  origin_hub,
+  destination_hub,
+  ship_date,
+  expected_delivery_date,
+  shipment_value_usd,
+  transit_hours,
+  shipment_status,
+  hazmat_flag
+FROM datapact_demo_catalog.source_data.shipments
+WHERE shipment_status = 'IN_TRANSIT'
+  AND mod(hash(order_id), 105) = 0;
+-- =========================================================================================
+-- Domain: DIGITAL EXPERIENCE & GROWTH ANALYTICS
+-- Business Context: 5M users, 15M sessions, bot mitigation
+-- =========================================================================================
+CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.clickstream_sessions AS
+SELECT CONCAT('session-', lpad(CAST(id AS STRING), 12, '0')) AS session_id,
+  CONCAT(
+    'user-',
+    lpad(CAST((id % 5000000) AS STRING), 8, '0')
+  ) AS user_key,
+  date_add('2023-01-01', CAST(rand() * 365 AS INT)) AS session_date,
+  ROUND(rand() * 18 + 1, 0) AS page_views,
+  ROUND(rand() * 1200 + 60, 2) AS dwell_seconds,
+  ROUND(rand() * 5, 1) AS conversion_score,
+  CASE
+    WHEN rand() < 0.42 THEN 'MOBILE'
+    WHEN rand() < 0.78 THEN 'DESKTOP'
+    ELSE 'TABLET'
+  END AS device_type,
+  CASE
+    WHEN rand() < 0.22 THEN 'SEARCH'
+    WHEN rand() < 0.53 THEN 'SOCIAL'
+    WHEN rand() < 0.81 THEN 'DIRECT'
+    ELSE 'EMAIL'
+  END AS acquisition_channel
+FROM (
+    SELECT id
+    FROM range(0, 15000000)
+  );
+CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.clickstream_sessions AS
+SELECT *
+FROM datapact_demo_catalog.source_data.clickstream_sessions;
+UPDATE datapact_demo_catalog.target_data.clickstream_sessions
+SET page_views = page_views * 3,
+  dwell_seconds = GREATEST(dwell_seconds / 4, 10)
+WHERE device_type = 'MOBILE'
+  AND acquisition_channel = 'SEARCH'
+  AND mod(hash(session_id), 40) = 0;
+UPDATE datapact_demo_catalog.target_data.clickstream_sessions
+SET conversion_score = 0
+WHERE acquisition_channel = 'SOCIAL'
+  AND mod(hash(session_id), 25) = 0;
+-- =========================================================================================
+-- Domain: REAL-TIME INTELLIGENCE & STREAMING OPERATIONS
+-- Business Context: 12M+ events per day powering proactive reliability automation
+-- =========================================================================================
+CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.stream_events AS
+SELECT event_id,
+  device_id,
+  region,
+  event_type,
+  ingest_ts,
+  latency_ms,
+  anomaly_score,
+  requires_oncall,
+  TIMESTAMPADD(
+    SECOND,
+    CAST(latency_ms / 1000 AS DOUBLE),
+    ingest_ts
+  ) AS processed_ts
+FROM (
+    SELECT CONCAT('evt-', lpad(CAST(id AS STRING), 12, '0')) AS event_id,
+      CONCAT(
+        'device-',
+        lpad(CAST(id % 250000 AS STRING), 8, '0')
+      ) AS device_id,
+      CASE
+        WHEN rand() < 0.35 THEN 'NA'
+        WHEN rand() < 0.60 THEN 'EMEA'
+        WHEN rand() < 0.80 THEN 'APAC'
+        ELSE 'LATAM'
+      END AS region,
+      CASE
+        WHEN rand() < 0.45 THEN 'HEARTBEAT'
+        WHEN rand() < 0.70 THEN 'ANOMALY_SIGNAL'
+        WHEN rand() < 0.90 THEN 'SERVICE_METRIC'
+        ELSE 'SECURITY_ALERT'
+      END AS event_type,
+      timestamp('2024-01-01') + CAST(rand() * 90 AS INT) * INTERVAL 1 DAY + CAST(rand() * 86400 AS INT) * INTERVAL 1 SECOND AS ingest_ts,
+      ROUND(rand() * 320 + 20, 2) AS latency_ms,
+      ROUND(rand() * 1.5, 3) AS anomaly_score,
+      CASE
+        WHEN rand() < 0.12 THEN TRUE
+        ELSE FALSE
+      END AS requires_oncall
+    FROM (
+        SELECT id
+        FROM range(0, 12000000)
+      )
+  ) base;
+CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.stream_events AS
+SELECT event_id,
+  device_id,
+  region,
+  event_type,
+  ingest_ts,
+  adjusted_latency_ms AS latency_ms,
+  anomaly_score_adjusted AS anomaly_score,
+  requires_oncall,
+  TIMESTAMPADD(
+    SECOND,
+    CAST(adjusted_latency_ms / 1000 AS BIGINT),
+    ingest_ts
+  ) AS processed_ts
+FROM (
+    SELECT event_id,
+      device_id,
+      region,
+      event_type,
+      ingest_ts,
+      CASE
+        WHEN mod(hash(device_id), 97) = 0 THEN latency_ms * 12
+        WHEN event_type = 'SECURITY_ALERT'
+        AND mod(hash(event_id), 111) = 0 THEN latency_ms * 6
+        ELSE latency_ms
+      END AS adjusted_latency_ms,
+      anomaly_score + CASE
+        WHEN mod(hash(event_id), 85) = 0 THEN 2
+        ELSE 0
+      END AS anomaly_score_adjusted,
+      requires_oncall
+    FROM datapact_demo_catalog.source_data.stream_events
+  ) enriched;
+DELETE FROM datapact_demo_catalog.target_data.stream_events
+WHERE mod(hash(event_id), 400) = 0
+  AND event_type = 'HEARTBEAT';
+-- Simulate packet loss in specific partitions
+-- =========================================================================================
+-- Domain: AI PERSONALIZATION & FEATURE STORES
+-- Business Context: 1M+ customer vectors powering generative experiences
+-- =========================================================================================
+CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.customer_features AS
+SELECT CONCAT('cust-', lpad(CAST(id AS STRING), 10, '0')) AS customer_id,
+  202404 + (id % 6) AS feature_version,
+  ROUND(rand() * 100, 2) AS recency_score,
+  CASE
+    WHEN rand() < 0.20 THEN 'DIAMOND'
+    WHEN rand() < 0.55 THEN 'PLATINUM'
+    WHEN rand() < 0.80 THEN 'GOLD'
+    ELSE 'SILVER'
+  END AS lifetime_value_segment,
+  ROUND(rand() * 0.95, 4) AS propensity_score,
+  DATEADD(
+    day,
+    CAST(rand() * 30 AS INT),
+    timestamp('2024-03-01')
+  ) AS prediction_ts,
+  CONCAT('reco-model-', 12 + (id % 3)) AS model_version,
+  ROUND(rand() * 12 + 3, 4) AS feature_vector_norm,
+  ROUND(rand() * 0.75, 4) AS shap_contribution,
+  CASE
+    WHEN rand() < 0.18 THEN TRUE
+    ELSE FALSE
+  END AS multi_touch_attribution_flag
+FROM (
+    SELECT id
+    FROM range(0, 1000000)
+  );
+CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.customer_features AS
+SELECT customer_id,
+  feature_version,
+  recency_score,
+  lifetime_value_segment,
+  CASE
+    WHEN mod(hash(customer_id), 421) = 0 THEN propensity_score * 0.82
+    WHEN mod(hash(customer_id), 137) = 0 THEN propensity_score * 1.18
+    ELSE propensity_score
+  END AS propensity_score,
+  prediction_ts,
+  model_version,
+  CASE
+    WHEN feature_version % 3 = 0 THEN feature_vector_norm * 1.07
+    ELSE feature_vector_norm
+  END AS feature_vector_norm,
+  shap_contribution,
+  multi_touch_attribution_flag
+FROM datapact_demo_catalog.source_data.customer_features;
+UPDATE datapact_demo_catalog.target_data.customer_features
+SET model_version = CONCAT(model_version, '-hotfix')
+WHERE feature_version = 202406
+  AND mod(hash(customer_id), 333) = 0;
+-- =========================================================================================
+-- Domain: FINOPS & CLOUD COST MANAGEMENT
+-- Business Context: Multi-cloud footprint with aggressive savings commitments
+-- =========================================================================================
+CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.cloud_costs AS
+SELECT concat(
+    date_format(month, 'yyyy-MM'),
+    '-',
+    provider,
+    '-',
+    region,
+    '-',
+    service
+  ) AS record_id,
+  month AS billing_month,
+  provider AS cloud_provider,
+  region,
+  service AS service_name,
+  ROUND(base_cost * (1 + rand() * 0.02), 2) AS cost_usd,
+  ROUND(base_cost * reserved_ratio, 2) AS reserved_savings_usd,
+  ROUND(rand() * 0.45, 3) AS carbon_intensity_kg_per_kwh,
+  ROUND(base_cost * (1 + rand() * 0.02) * 0.12, 2) AS glidepath_budget_usd
+FROM (
+    SELECT date_add('2023-01-01', (month_idx * 30)) AS month,
+      provider,
+      region,
+      service,
+      base_cost,
+      reserved_ratio
+    FROM (
+        SELECT explode(sequence(0, 17)) as month_idx
+      ) months
+      CROSS JOIN (
+        SELECT explode(array('AWS', 'AZURE', 'GCP')) as provider
+      ) providers
+      CROSS JOIN (
+        SELECT explode(
+            array(
+              'us-east-1',
+              'us-west-2',
+              'eu-west-1',
+              'ap-southeast-1'
+            )
+          ) as region
+      ) regions
+      CROSS JOIN (
+        SELECT explode(
+            array('COMPUTE', 'STORAGE', 'NETWORK', 'DATABASE')
+          ) as service
+      ) services
+      CROSS JOIN (
+        SELECT 125000 as base_cost,
+          0.27 as reserved_ratio
+      ) defaults
+  );
+CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.cloud_costs AS
+SELECT record_id,
+  billing_month,
+  cloud_provider,
+  region,
+  service_name,
+  CASE
+    WHEN region = 'eu-west-1'
+    AND service_name = 'COMPUTE' THEN cost_usd * 1.08
+    WHEN cloud_provider = 'GCP'
+    AND service_name = 'NETWORK' THEN cost_usd * 1.12
+    ELSE cost_usd
+  END AS cost_usd,
+  reserved_savings_usd,
+  carbon_intensity_kg_per_kwh + CASE
+    WHEN cloud_provider = 'AZURE' THEN 0.08
+    ELSE 0
+  END AS carbon_intensity_kg_per_kwh,
+  glidepath_budget_usd
+FROM datapact_demo_catalog.source_data.cloud_costs;
+DELETE FROM datapact_demo_catalog.target_data.cloud_costs
+WHERE cloud_provider = 'AWS'
+  AND region = 'us-east-1'
+  AND billing_month BETWEEN '2023-09-01' AND '2023-10-31';
+-- Simulate missing FinOps feeds
 -- =========================================================================================
 -- Additional Enterprise Reference Data
 -- =========================================================================================

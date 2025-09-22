@@ -133,13 +133,11 @@ class TestExecutiveDashboardFixes:
             )
             query = " ".join(kpi_dataset["queryLines"])
 
-            # Should count all validations, not distinct tables
-            assert "COUNT(*) as tables_validated" in query
-            assert (
-                "COUNT(DISTINCT" not in query
-                or "COUNT(DISTINCT"
-                not in query.split("tables_validated")[0].split("\n")[-1]
-            )
+            # Should source metrics from the aggregated run summary table
+            assert "exec_run_summary" in query
+            assert "failed_tasks" in query
+            assert "potential_impact_usd" in query
+            assert "tables_validated" in query
 
             # Check widget title reflects the change
             pages = dashboard["pages"]
@@ -196,10 +194,12 @@ class TestExecutiveDashboardFixes:
             )
             query = " ".join(val_details["queryLines"])
 
-            # Should use simple CASE status logic
+            # Should use simple CASE status logic and expose business context
             assert "CASE status" in query
             assert "WHEN 'SUCCESS' THEN '✅'" in query
             assert "WHEN 'FAILURE' THEN '❌'" in query
+            assert "business_priority" in query
+            assert "estimated_impact_usd" in query
 
     def test_source_target_columns_at_end(self):
         """Test that Source and Target columns appear after check statuses."""
@@ -302,7 +302,7 @@ class TestExecutiveDashboardFixes:
                 widget = widget_def.get("widget", {})
                 if "ds_business_impact" in str(widget.get("queries", [])):
                     title = widget["spec"]["frame"]["title"]
-                    assert "Source Schema" in title
+                    assert "Business Domain" in title
                     break
 
     def test_exploded_checks_no_unresolved_column(self):
@@ -390,6 +390,8 @@ class TestExecutiveDashboardFixes:
             assert "success_rate_percent" in query
             assert "data_quality_score" in query
             assert "failed_tasks" in query
+            assert "potential_impact_usd" in query
+            assert "realized_impact_usd" in query
 
             # Check business impact dataset
             impact_dataset = next(
@@ -402,6 +404,16 @@ class TestExecutiveDashboardFixes:
             assert "🟡 Good" in impact_query
             assert "🟠 Fair" in impact_query
             assert "🔴 Needs Attention" in impact_query
+            assert "sla_profile" in impact_query
+
+            owner_dataset = next(
+                d
+                for d in dashboard["datasets"]
+                if d["name"] == "ds_owner_accountability"
+            )
+            owner_query = " ".join(owner_dataset["queryLines"])
+            assert "business_owner" in owner_query
+            assert "potential_impact_usd" in owner_query
 
 
 class TestExecutiveUsability:

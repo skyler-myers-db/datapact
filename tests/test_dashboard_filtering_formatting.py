@@ -178,6 +178,39 @@ class TestDashboardFilteringAndFormatting:
         )
         assert low_tier["textColor"] == "#FF3621"  # Red
 
+    def test_parallelism_counters_have_conditional_formatting(self, mock_client):
+        """Peak parallelism and throughput counters should use vibrant formats."""
+        dashboard_json = self._get_dashboard_json(mock_client)
+
+        main_page = next(p for p in dashboard_json["pages"] if p["name"] == "main_page")
+
+        def _find_counter(title: str):
+            for widget_config in main_page["layout"]:
+                widget = widget_config["widget"]
+                frame = widget.get("spec", {}).get("frame", {})
+                if frame.get("title") == title:
+                    return widget
+            return None
+
+        peak_widget = _find_counter("Peak Parallelism")
+        throughput_widget = _find_counter("Throughput (tasks/min)")
+
+        assert peak_widget is not None
+        assert throughput_widget is not None
+
+        peak_formats = peak_widget["spec"]["encodings"]["value"]["format"][
+            "conditionalFormats"
+        ]
+        peak_colors = {fmt["textColor"] for fmt in peak_formats}
+        assert {"#22D3EE", "#FACC15", "#F87171"}.issubset(peak_colors)
+
+        throughput_format = throughput_widget["spec"]["encodings"]["value"]["format"]
+        assert throughput_format["decimalPlaces"]["places"] == 2
+        throughput_colors = {
+            fmt["textColor"] for fmt in throughput_format["conditionalFormats"]
+        }
+        assert {"#34D399", "#FBBF24", "#F87171"}.issubset(throughput_colors)
+
     def test_table_status_columns_have_formatting(self, mock_client):
         """Test that table status columns have conditional formatting."""
         dashboard_json = self._get_dashboard_json(mock_client)
