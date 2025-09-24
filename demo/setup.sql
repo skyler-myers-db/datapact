@@ -457,8 +457,11 @@ SELECT id as posting_id,
     ELSE '4000-EXPENSE'
   END as account_code,
   ROUND(
-    (rand() * 100000 - 50000) * CASE
-      WHEN id % 100 = 0 THEN 10 -- Large adjustments
+    (rand() * 80000 + 500) * CASE
+      WHEN rand() < 0.68 THEN 1
+      ELSE -1
+    END * CASE
+      WHEN id % 100 = 0 THEN 10 -- Large adjustments remain impactful
       ELSE 1
     END,
     2

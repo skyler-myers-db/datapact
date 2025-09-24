@@ -403,6 +403,17 @@ Pipeline steps:
 4. A Lakeview dashboard is regenerated and published with embedded credentials.
 5. Genie datasets are rebuilt (`genie_current_status`, `genie_table_quality`, `genie_issues`).
 
+### Business metadata parameters (optional but powerful)
+Every validation in `demo/demo_config.yml` can carry executive-facing context that flows end-to-end through the pipeline. These optional keys make the dashboards and ROI tables instantly actionable:
+
+- `business_domain` – which pillar (Finance, Marketing, Supply Chain, etc.) owns the data.
+- `business_owner` – the accountable leader; surfaced in the Owner Accountability table.
+- `business_priority` – `CRITICAL`, `HIGH`, `MEDIUM`, or `LOW`; drives the Priority Risk profile.
+- `expected_sla_hours` – target remediation window that powers SLA storytelling.
+- `estimated_impact_usd` – potential dollar exposure if the check fails; rolls into ROI metrics.
+
+Any combination of these fields can be omitted; when present, they enrich the serialized run history, the Genie-ready tables, and every Lakeview widget that references the executive summary tables.
+
 ### 3. Lakeview dashboard
 Main page widgets:
 - **Data Quality Score**, **Critical Issues**, **Total Validations**, **Peak Parallelism**, **Throughput (tasks/min)**
