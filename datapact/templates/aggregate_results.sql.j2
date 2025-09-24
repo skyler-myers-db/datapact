@@ -34,10 +34,9 @@ SELECT
   SUM(COALESCE(estimated_impact_usd, 0.0)) AS potential_impact_usd,
   SUM(CASE WHEN status = 'FAILURE' THEN COALESCE(estimated_impact_usd, 0.0) ELSE 0.0 END) AS realized_impact_usd,
   AVG(expected_sla_hours) AS avg_expected_sla_hours,
-  FILTER(collect_list(task_key), x -> x IS NOT NULL) AS failed_task_keys,
+  FILTER(collect_list(CASE WHEN status = 'FAILURE' THEN task_key END), x -> x IS NOT NULL) AS failed_task_keys,
   CURRENT_TIMESTAMP() AS generated_at
-FROM agg_run_results
-WHERE status = 'FAILURE';
+FROM agg_run_results;
 
 CREATE OR REPLACE TEMP VIEW agg_domain_breakdown AS
 SELECT
