@@ -44,7 +44,7 @@ SELECT id AS user_id,
   END as segment,
   ROUND(rand() * 10, 1) as satisfaction_score
 FROM (
-    SELECT explode(sequence(1, 5000000)) AS id
+    SELECT id FROM range(1, 5000001)
   );
 -- Simulating real-world ETL issues and data quality problems
 CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.users AS TABLE datapact_demo_catalog.source_data.users;
