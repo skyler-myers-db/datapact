@@ -274,7 +274,7 @@ validations:
     <<: *defaults
     source_table: "customer_features"
     target_table: "customer_features"
-    business_domain: "AI & Personalization"
+    business_domain: "AI and Personalization"
     business_owner: "Chief Data Scientist"
     business_priority: "High"
     expected_sla_hours: 3
