@@ -11,7 +11,7 @@ CREATE SCHEMA IF NOT EXISTS datapact_demo_catalog.reference_data COMMENT 'Master
 -- Business Context: Customer 360 data powering $2B annual revenue
 -- Critical for: Personalization, Marketing Campaigns, Customer Retention Analytics
 -- =========================================================================================
--- Table 1: Customer Master (5M+ customers, global CRM backbone)
+-- Table 1: Customer Master (5M customers, global CRM backbone)
 CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.users AS
 SELECT id AS user_id,
   md5(CAST(id AS STRING)) || '@' || CASE
