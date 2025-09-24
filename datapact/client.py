@@ -2568,7 +2568,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                                         "extra": [
                                             {
                                                 "fieldName": "run_end_time",
-                                                "displayName": "Job End Tme",
+                                                "displayName": "Job End Time",
                                             },
                                             {
                                                 "fieldName": "job_name",
