@@ -6,6 +6,8 @@
 # - Marketing Operations
 # - Human Capital Management
 # - Financial Reporting & Compliance
+# - Manufacturing Operations (IoT)
+# - Supply Chain & Logistics
 # - Digital Operations
 # - Regulatory Compliance
 
@@ -22,6 +24,11 @@ validations:
     <<: *defaults
     source_table: "users"
     target_table: "users"
+    business_domain: "Sales"
+    business_owner: "VP Sales Operations"
+    business_priority: "Critical"
+    expected_sla_hours: 2
+    estimated_impact_usd: 500000
     primary_keys: ["user_id"]
     count_tolerance: 0.01 # FAILS: 1.7% customer records missing
     pk_row_hash_check: true
@@ -41,6 +48,11 @@ validations:
     <<: *defaults
     source_table: "transactions"
     target_table: "transactions"
+    business_domain: "Finance"
+    business_owner: "Corporate Controller"
+    business_priority: "Critical"
+    expected_sla_hours: 1
+    estimated_impact_usd: 2500000
     primary_keys: ["transaction_id"]
     count_tolerance: 0.0 # Zero tolerance for financial data
     pk_row_hash_check: true
@@ -58,6 +70,11 @@ validations:
     <<: *defaults
     source_table: "products"
     target_table: "products"
+    business_domain: "Merchandising"
+    business_owner: "VP Merchandising"
+    business_priority: "High"
+    expected_sla_hours: 8
+    estimated_impact_usd: 150000
     primary_keys: ["product_id"]
     pk_row_hash_check: true
     pk_hash_tolerance: 0.025 # 2.5% tolerance for approved price changes
@@ -73,6 +90,11 @@ validations:
     <<: *defaults
     source_table: "campaigns"
     target_table: "campaigns"
+    business_domain: "Marketing"
+    business_owner: "Director of Performance Marketing"
+    business_priority: "High"
+    expected_sla_hours: 6
+    estimated_impact_usd: 90000
     primary_keys: ["campaign_id"]
     pk_row_hash_check: true
     pk_hash_tolerance: 0.0 # FAILS: Campaign status out of sync
@@ -87,6 +109,11 @@ validations:
     <<: *defaults
     source_table: "ad_spend"
     target_table: "ad_spend"
+    business_domain: "Marketing"
+    business_owner: "Head of Digital Acquisition"
+    business_priority: "Critical"
+    expected_sla_hours: 4
+    estimated_impact_usd: 320000
     primary_keys: ["ad_id"]
     agg_validations:
       - column: "daily_spend"
@@ -102,6 +129,11 @@ validations:
     <<: *defaults
     source_table: "employees"
     target_table: "employees"
+    business_domain: "Human Resources"
+    business_owner: "Chief People Officer"
+    business_priority: "High"
+    expected_sla_hours: 6
+    estimated_impact_usd: 180000
     primary_keys: ["employee_id"]
     count_tolerance: 0.0 # FAILS: New hires/terminations not synced
     agg_validations:
@@ -115,6 +147,11 @@ validations:
     <<: *defaults
     source_table: "salary_bands"
     target_table: "salary_bands"
+    business_domain: "Human Resources"
+    business_owner: "Director of Total Rewards"
+    business_priority: "Medium"
+    expected_sla_hours: 12
+    estimated_impact_usd: 75000
     primary_keys: ["band_id"]
     pk_row_hash_check: true
     pk_hash_tolerance: 0.0 # Zero tolerance for compensation data
@@ -127,6 +164,11 @@ validations:
     <<: *defaults
     source_table: "gl_postings"
     target_table: "gl_postings"
+    business_domain: "Finance"
+    business_owner: "Chief Accounting Officer"
+    business_priority: "Critical"
+    expected_sla_hours: 1
+    estimated_impact_usd: 5000000
     primary_keys: ["posting_id"]
     count_tolerance: 0.01 # FAILS: 2.5% missing exceeds 1% tolerance
     agg_validations:
@@ -136,12 +178,156 @@ validations:
     null_validation_tolerance: 0.0
     null_validation_columns: ["account_code", "fiscal_period"] # Required for reporting
 
+  # ============================ INDUSTRIAL IoT DOMAIN ============================
+  # 9. ALERT: Manufacturing telemetry gaps and sensor drift
+  - task_key: "validate_iot_fleet_FAIL"
+    <<: *defaults
+    source_table: "iot_events"
+    target_table: "iot_events"
+    business_domain: "Manufacturing Operations"
+    business_owner: "VP Plant Reliability"
+    business_priority: "Critical"
+    expected_sla_hours: 1
+    estimated_impact_usd: 4200000
+    primary_keys: ["event_id"]
+    count_tolerance: 0.05 # Missing packets in EMEA facility
+    pk_row_hash_check: true
+    pk_hash_tolerance: 0.01
+    hash_columns:
+      ["device_id", "facility_id", "event_status", "requires_maintenance"]
+    agg_validations:
+      - column: "temperature_c"
+        validations:
+          [{ agg: "AVG", tolerance: 0.02 }, { agg: "MAX", tolerance: 0.03 }]
+      - column: "pressure_kpa"
+        validations: [{ agg: "AVG", tolerance: 0.015 }]
+
+  # ============================ SUPPLY CHAIN DOMAIN ============================
+  # 10. CRITICAL: Hazmat shipment integrity across global hubs
+  - task_key: "validate_supply_chain_shipments_PASS"
+    <<: *defaults
+    source_table: "shipments"
+    target_table: "shipments"
+    business_domain: "Supply Chain"
+    business_owner: "Chief Logistics Officer"
+    business_priority: "Critical"
+    expected_sla_hours: 3
+    estimated_impact_usd: 3100000
+    primary_keys: ["shipment_id"]
+    count_tolerance: 0.04
+    pk_row_hash_check: true
+    pk_hash_tolerance: 0.01
+    agg_validations:
+      - column: "shipment_value_usd"
+        validations: [{ agg: "SUM", tolerance: 0.02 }]
+      - column: "transit_hours"
+        validations: [{ agg: "AVG", tolerance: 0.05 }]
+
+  # ============================ DIGITAL EXPERIENCE DOMAIN ============================
+  # 11. WARNING: Bot inflation & conversion loss in clickstream sessions
+  - task_key: "validate_clickstream_sessions_PASS"
+    <<: *defaults
+    source_table: "clickstream_sessions"
+    target_table: "clickstream_sessions"
+    business_domain: "Digital Experience"
+    business_owner: "Chief Digital Officer"
+    business_priority: "High"
+    expected_sla_hours: 6
+    estimated_impact_usd: 600000
+    primary_keys: ["session_id"]
+    pk_row_hash_check: true
+    hash_columns:
+      ["user_key", "session_date", "device_type", "acquisition_channel"]
+    agg_validations:
+      - column: "page_views"
+        validations: [{ agg: "AVG", tolerance: 0.25 }]
+      - column: "conversion_score"
+        validations: [{ agg: "AVG", tolerance: 0.15 }]
+
+  # ============================ REAL-TIME OPERATIONS DOMAIN ============================
+  # 12. CRITICAL: Streaming telemetry latency and packet loss
+  - task_key: "validate_stream_events_latency_FAIL"
+    <<: *defaults
+    source_table: "stream_events"
+    target_table: "stream_events"
+    business_domain: "Digital Operations"
+    business_owner: "VP Site Reliability Engineering"
+    business_priority: "Critical"
+    expected_sla_hours: 1
+    estimated_impact_usd: 7800000
+    primary_keys: ["event_id"]
+    count_tolerance: 0.02 # Packet loss at hyperscale edge sites
+    pk_row_hash_check: true
+    pk_hash_tolerance: 0.02
+    hash_columns: ["device_id", "region", "event_type", "requires_oncall"]
+    null_validation_tolerance: 0.0
+    null_validation_columns: ["processed_ts"]
+    agg_validations:
+      - column: "latency_ms"
+        validations:
+          - { agg: "AVG", tolerance: 0.05 }
+          - { agg: "MAX", tolerance: 0.15 }
+
+  # ============================ AI & ML PLATFORM DOMAIN ============================
+  # 13. HIGH VALUE: Feature store drift for personalization vectors
+  - task_key: "validate_customer_features_FAIL"
+    <<: *defaults
+    source_table: "customer_features"
+    target_table: "customer_features"
+    business_domain: "AI and Personalization"
+    business_owner: "Chief Data Scientist"
+    business_priority: "High"
+    expected_sla_hours: 3
+    estimated_impact_usd: 2500000
+    primary_keys: ["customer_id"]
+    pk_row_hash_check: true
+    pk_hash_tolerance: 0.01
+    uniqueness_columns: ["customer_id", "feature_version"]
+    uniqueness_tolerance: 0.0
+    agg_validations:
+      - column: "propensity_score"
+        validations: [{ agg: "AVG", tolerance: 0.1 }]
+      - column: "feature_vector_norm"
+        validations: [{ agg: "AVG", tolerance: 0.05 }]
+      - column: "shap_contribution"
+        validations: [{ agg: "AVG", tolerance: 0.1 }]
+
+  # ============================ FINOPS & SUSTAINABILITY DOMAIN ============================
+  # 14. CRITICAL: Cloud cost anomalies vs glidepath budget
+  - task_key: "validate_cloud_costs_FAIL"
+    <<: *defaults
+    source_table: "cloud_costs"
+    target_table: "cloud_costs"
+    business_domain: "FinOps"
+    business_owner: "VP Cloud Center of Excellence"
+    business_priority: "Critical"
+    expected_sla_hours: 4
+    estimated_impact_usd: 5200000
+    primary_keys: ["record_id"]
+    count_tolerance: 0.01
+    pk_row_hash_check: true
+    pk_hash_tolerance: 0.01
+    null_validation_tolerance: 0.0
+    null_validation_columns: ["cloud_provider", "region", "service_name"]
+    agg_validations:
+      - column: "cost_usd"
+        validations: [{ agg: "SUM", tolerance: 0.03 }]
+      - column: "reserved_savings_usd"
+        validations: [{ agg: "SUM", tolerance: 0.05 }]
+      - column: "carbon_intensity_kg_per_kwh"
+        validations: [{ agg: "AVG", tolerance: 0.1 }]
+
   # ============================ LOGGING & OPS DOMAIN ============================
-  # 9. ACCEPTABLE: Web Analytics - Timestamp drift within tolerance
+  # 15. ACCEPTABLE: Web Analytics - Timestamp drift within tolerance
   - task_key: "validate_web_analytics_PASS"
     <<: *defaults
     source_table: "page_views"
     target_table: "page_views"
+    business_domain: "Digital Experience"
+    business_owner: "Director of Web Analytics"
+    business_priority: "Medium"
+    expected_sla_hours: 24
+    estimated_impact_usd: 45000
     primary_keys: ["session_id"]
     pk_row_hash_check: true
     pk_hash_tolerance: 0.0
@@ -150,26 +336,41 @@ validations:
       - column: "time_on_page_seconds"
         validations: [{ agg: "AVG", tolerance: 0.05 }] # Engagement metrics
 
-  # 10. MONITORING: Application Logs - Volume mismatch detected
+  # 16. MONITORING: Application Logs - Volume mismatch detected
   - task_key: "validate_application_logs_FAIL"
     <<: *defaults
     source_table: "log_messages"
     target_table: "log_messages"
+    business_domain: "Platform Engineering"
+    business_owner: "SRE Manager"
+    business_priority: "High"
+    expected_sla_hours: 4
+    estimated_impact_usd: 60000
     count_tolerance: 0.0 # FAILS: Additional logs in target
     # Note: No PK available for row-level validation
 
-  # 11. COMPLIANT: Audit Trail - Clean period (no violations)
+  # 17. COMPLIANT: Audit Trail - Clean period (no violations)
   - task_key: "validate_audit_trail_PASS"
     <<: *defaults
     source_table: "empty_audits"
     target_table: "empty_audits"
+    business_domain: "Compliance"
+    business_owner: "Head of Internal Audit"
+    business_priority: "Medium"
+    expected_sla_hours: 24
+    estimated_impact_usd: 25000
     count_tolerance: 0.0 # Both empty - compliance period clean
 
-  # 12. DATA QUALITY: API Status Codes - Category mapping failures
+  # 18. DATA QUALITY: API Status Codes - Category mapping failures
   - task_key: "validate_api_status_codes_FAIL"
     <<: *defaults
     source_table: "status_codes"
     target_table: "status_codes"
+    business_domain: "Platform Engineering"
+    business_owner: "API Product Manager"
+    business_priority: "High"
+    expected_sla_hours: 3
+    estimated_impact_usd: 120000
     primary_keys: ["code"]
     null_validation_tolerance: 0.01 # FAILS: Critical codes losing categorization
     null_validation_columns: ["category", "severity"]
@@ -178,19 +379,29 @@ validations:
 
   # ============================ CROSS-DOMAIN VALIDATIONS ============================
 
-  # 13. REGIONAL COMPLIANCE: Customer uniqueness by region
+  # 19. REGIONAL COMPLIANCE: Customer uniqueness by region
   - task_key: "validate_customer_regional_uniqueness_PASS"
     <<: *defaults
     source_table: "users"
     target_table: "users"
+    business_domain: "Regulatory"
+    business_owner: "Data Protection Officer"
+    business_priority: "High"
+    expected_sla_hours: 6
+    estimated_impact_usd: 90000
     uniqueness_columns: ["email", "country"]
     uniqueness_tolerance: 0.0 # Enforce regional data integrity
 
-  # 14. PRIVACY COMPLIANCE: GDPR/CCPA request tracking
+  # 20. PRIVACY COMPLIANCE: GDPR/CCPA request tracking
   - task_key: "validate_privacy_requests_FAIL"
     <<: *defaults
     source_table: "privacy_requests"
     target_table: "privacy_requests"
+    business_domain: "Privacy"
+    business_owner: "Chief Privacy Officer"
+    business_priority: "Critical"
+    expected_sla_hours: 2
+    estimated_impact_usd: 750000
     primary_keys: ["request_id"]
     count_tolerance: 0.005 # FAILS: Recent requests missing
     null_validation_tolerance: 0.0

@@ -50,6 +50,14 @@ class TestDashboardQueryFixes:
             dashboard = json.loads(dashboard_json)
             datasets = dashboard["datasets"]
 
+            kpi_dataset = next(d for d in datasets if d["name"] == "ds_kpi")
+            kpi_query = (
+                " ".join(kpi_dataset["queryLines"])
+                if "queryLines" in kpi_dataset
+                else kpi_dataset.get("query", "")
+            )
+            assert "exec_run_summary" in kpi_query
+
             # Test 1: Validation details should check individual validation statuses
             validation_details = next(
                 d for d in datasets if d["name"] == "ds_validation_details"
@@ -90,6 +98,8 @@ class TestDashboardQueryFixes:
                 "CASE WHEN to_json(result_payload) LIKE '%agg_validation%' AND to_json(result_payload) NOT LIKE '%agg_validation%FAIL%'"
                 in query
             )
+            assert "business_priority" in query
+            assert "estimated_impact_usd" in query
 
             # Test 4: Business impact should handle null schemas gracefully
             business_impact = next(
@@ -100,7 +110,29 @@ class TestDashboardQueryFixes:
                 if "queryLines" in business_impact
                 else business_impact.get("query", "")
             )
-            assert "SELECT source_schema" in bi_query
+            assert "business_domain" in bi_query
+            assert "sla_profile" in bi_query
+
+            owner_dataset = next(
+                d for d in datasets if d["name"] == "ds_owner_accountability"
+            )
+            owner_query = (
+                " ".join(owner_dataset["queryLines"])
+                if "queryLines" in owner_dataset
+                else owner_dataset.get("query", "")
+            )
+            assert "business_owner" in owner_query
+            assert "potential_impact_usd" in owner_query
+
+            priority_dataset = next(
+                d for d in datasets if d["name"] == "ds_priority_profile"
+            )
+            priority_query = (
+                " ".join(priority_dataset["queryLines"])
+                if "queryLines" in priority_dataset
+                else priority_dataset.get("query", "")
+            )
+            assert "business_priority" in priority_query
 
             # Test 5: Exploded checks should not have UDTF alias mismatch
             exploded_checks = next(

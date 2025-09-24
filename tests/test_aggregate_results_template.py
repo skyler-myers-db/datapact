@@ -15,11 +15,11 @@ def test_aggregate_results_template_exact():
     env = _make_env()
     t = env.get_template("aggregate_results.sql.j2")
     sql = t.render(results_table="`datapact`.`results`.`run_history`").strip()
-    assert "WITH run_results AS (" in sql
-    assert (
-        "SELECT * FROM `datapact`.`results`.`run_history` WHERE run_id = :run_id" in sql
-    )
-    assert "agg_metrics AS (" in sql
+    assert "CREATE OR REPLACE TEMP VIEW agg_run_results" in sql
+    assert "FROM `datapact`.`results`.`run_history`" in sql
+    assert "CREATE TABLE IF NOT EXISTS `datapact`.`results`.`exec_run_summary`" in sql
+    assert "INSERT INTO `datapact`.`results`.`exec_run_summary`" in sql
+    assert "INSERT INTO `datapact`.`results`.`exec_domain_breakdown`" in sql
     assert "SELECT CASE" in sql
-    assert "RAISE_ERROR(CONCAT('DataPact validation tasks failed: '" in sql
+    assert "failed_task_keys" in sql
     assert sql.endswith(";")

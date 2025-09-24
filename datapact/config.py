@@ -61,6 +61,11 @@ class ValidationTask(BaseModel):
         null_validation_tolerance (float | None): Tolerance for acceptable null value differences. Optional.
         null_validation_columns (list[str] | None): Columns to include in null value validation. Optional.
         agg_validations (list[AggValidation] | None): List of aggregate validation rules to apply. Optional.
+        business_domain (str | None): Business pillar (Sales, Finance, etc.) for executive grouping.
+        business_owner (str | None): Executive or team accountable for this dataset.
+        business_priority (str | None): Priority classification (Critical/High/Medium/Low).
+        expected_sla_hours (float | None): Target remediation window in hours for failures.
+        estimated_impact_usd (float | None): Estimated financial exposure if the check fails.
     """
 
     task_key: str
@@ -81,6 +86,12 @@ class ValidationTask(BaseModel):
     # New optional validations
     uniqueness_columns: list[str] | None = None
     uniqueness_tolerance: float | None = None
+    # Business metadata used for executive dashboards and ROI calculations
+    business_domain: str | None = None
+    business_owner: str | None = None
+    business_priority: str | None = None
+    expected_sla_hours: float | None = None
+    estimated_impact_usd: float | None = None
 
     @field_validator(
         "count_tolerance",
@@ -105,6 +116,32 @@ class ValidationTask(BaseModel):
         if v is not None and not (0.0 <= v <= 1.0):
             raise ValueError("Tolerance must be a float between 0.0 and 1.0")
         return v
+
+    @field_validator("business_priority")
+    @classmethod
+    def validate_business_priority(cls, value: str | None) -> str | None:
+        """Ensure business priority values stay within a simple controlled list."""
+
+        if value is None:
+            return value
+        allowed = {"critical", "high", "medium", "low"}
+        normalized = value.strip().lower()
+        if normalized not in allowed:
+            raise ValueError(
+                "business_priority must be one of: Critical, High, Medium, Low"
+            )
+        return normalized.upper()
+
+    @field_validator("expected_sla_hours", "estimated_impact_usd")
+    @classmethod
+    def validate_non_negative(cls, value: float | None, field) -> float | None:
+        """Validate that numeric business metadata values are non-negative."""
+
+        if value is None:
+            return value
+        if value < 0:
+            raise ValueError(f"{field.name} must be greater than or equal to 0")
+        return value
 
 
 # This is the root model for the entire YAML file

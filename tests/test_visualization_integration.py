@@ -227,12 +227,14 @@ class TestVisualizationIntegration:
         query = " ".join(kpi_dataset["queryLines"])
 
         # Verify calculations
-        # Data Quality Score should be decimal (0-1)
-        assert "* 1.0 / COUNT(*), 4) as data_quality_score" in query
+        # Data Quality Score should be returned directly from summary table
+        assert "data_quality_score" in query
         # Success rate should be percentage
-        assert "* 100.0 / COUNT(*), 2) as success_rate_percent" in query
-        # Tables validated should count all validations
-        assert "COUNT(*) as tables_validated" in query
+        assert "success_rate_percent" in query
+        # Tables validated should surface total tasks value
+        assert "total_tasks AS tables_validated" in query
+        # Impact metrics should be exposed
+        assert "potential_impact_usd" in query
         # Average runtime calculation removed since timestamps are no longer in payload
         # This metric would need to be calculated differently if needed
 

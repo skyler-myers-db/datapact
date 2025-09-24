@@ -16,6 +16,22 @@ CASE
 END
 {%- endmacro %}
 
+{% macro sql_string(value) -%}
+{%- if value is undefined or value is none -%}
+NULL
+{%- else -%}
+'{{ value | replace("'", "''") }}'
+{%- endif -%}
+{%- endmacro %}
+
+{% macro sql_number(value) -%}
+{%- if value is undefined or value is none -%}
+NULL
+{%- else -%}
+{{ value }}
+{%- endif -%}
+{%- endmacro %}
+
 DECLARE VARIABLE validation_begin_ts TIMESTAMP DEFAULT current_timestamp();
 
 {# Begin view creation #}
@@ -34,6 +50,11 @@ CREATE OR REPLACE TEMP VIEW final_metrics_view AS SELECT
   '{{ target_catalog }}' AS target_catalog,
   '{{ target_schema }}' AS target_schema,
   '{{ target_table }}' AS target_table,
+  {{ sql_string(business_domain) }} AS business_domain,
+  {{ sql_string(business_owner) }} AS business_owner,
+  {{ sql_string(business_priority) }} AS business_priority,
+  {{ sql_number(expected_sla_hours) }} AS expected_sla_hours,
+  {{ sql_number(estimated_impact_usd) }} AS estimated_impact_usd,
   parse_json(to_json(struct('No validations configured for task {{ task_key_ }}' as message))) as result_payload,
   true as overall_validation_passed;
 {% else %}
@@ -164,6 +185,11 @@ SELECT
   '{{ target_catalog }}' AS target_catalog,
   '{{ target_schema }}' AS target_schema,
   '{{ target_table }}' AS target_table,
+  {{ sql_string(business_domain) }} AS business_domain,
+  {{ sql_string(business_owner) }} AS business_owner,
+  {{ sql_string(business_priority) }} AS business_priority,
+  {{ sql_number(expected_sla_hours) }} AS expected_sla_hours,
+  {{ sql_number(estimated_impact_usd) }} AS estimated_impact_usd,
   parse_json(to_json(struct(
   {%- set comma = joiner(',') -%}
     {# Count payload #}
@@ -294,9 +320,9 @@ FROM
 ;
 {% endif %}
 
-INSERT INTO {{ results_table }} (task_key, status, run_id, job_id, job_name, job_start_ts, validation_begin_ts, validation_complete_ts, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, result_payload)
+INSERT INTO {{ results_table }} (task_key, status, run_id, job_id, job_name, job_start_ts, validation_begin_ts, validation_complete_ts, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, business_domain, business_owner, business_priority, expected_sla_hours, estimated_impact_usd, result_payload)
 SELECT '{{ task_key_ }}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
-:run_id, :job_id, '{{ job_name }}', :job_start_ts, validation_begin_ts, current_timestamp(), source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, result_payload FROM final_metrics_view;
+:run_id, :job_id, '{{ job_name }}', :job_start_ts, validation_begin_ts, current_timestamp(), source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, business_domain, business_owner, business_priority, expected_sla_hours, estimated_impact_usd, result_payload FROM final_metrics_view;
 
 SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: {{ task_key_ }}. Payload: \n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false;
 

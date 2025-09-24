@@ -88,6 +88,8 @@ def test_ensure_results_table_exists_emits_expected_sql(monkeypatch):
             validation_complete_ts TIMESTAMP,
             source_catalog STRING, source_schema STRING, source_table STRING,
             target_catalog STRING, target_schema STRING, target_table STRING,
+            business_domain STRING, business_owner STRING, business_priority STRING,
+            expected_sla_hours DOUBLE, estimated_impact_usd DOUBLE,
             result_payload VARIANT) USING DELTA
         """
         )

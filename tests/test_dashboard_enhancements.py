@@ -308,6 +308,8 @@ class TestExecutiveDashboardPerspective:
         assert "Data Quality Score" in widgets_at_top
         assert "Critical Issues" in widgets_at_top
         assert "Total Validations" in widgets_at_top
+        assert "Peak Parallelism" in widgets_at_top
+        assert "Throughput (tasks/min)" in widgets_at_top
 
     def test_clear_visual_indicators_for_status(self, mock_client):
         """Test that status indicators use clear visual symbols."""

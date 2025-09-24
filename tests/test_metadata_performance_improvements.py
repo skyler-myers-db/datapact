@@ -47,10 +47,19 @@ class TestMetadataAndPerformanceImprovements:
         assert "'tgt_cat' AS target_catalog," in sql
         assert "'tgt_sch' AS target_schema," in sql
         assert "'tgt_tbl' AS target_table," in sql
+        assert "NULL AS business_domain," in sql
+        assert "NULL AS business_owner," in sql
+        assert "NULL AS business_priority," in sql
+        assert "NULL AS expected_sla_hours," in sql
+        assert "NULL AS estimated_impact_usd," in sql
 
         # Should not be in the parse_json struct
         assert (
             "'src_cat' AS source_catalog"
+            not in sql.split("parse_json(to_json(struct(")[1].split("))")[0]
+        )
+        assert (
+            "business_domain"
             not in sql.split("parse_json(to_json(struct(")[1].split("))")[0]
         )
 
@@ -132,6 +141,11 @@ class TestMetadataAndPerformanceImprovements:
         assert "target_catalog" in insert_line
         assert "target_schema" in insert_line
         assert "target_table" in insert_line
+        assert "business_domain" in insert_line
+        assert "business_owner" in insert_line
+        assert "business_priority" in insert_line
+        assert "expected_sla_hours" in insert_line
+        assert "estimated_impact_usd" in insert_line
         assert "result_payload" in insert_line
 
     @pytest.fixture

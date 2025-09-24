@@ -1,13 +1,223 @@
-WITH run_results AS (
-    SELECT * FROM {{ results_table }} WHERE run_id = :run_id
-),
-agg_metrics AS (
-    SELECT
-      (SELECT COUNT(1) FROM run_results WHERE status = 'FAILURE') AS failure_count,
-      (SELECT COLLECT_LIST(task_key) FROM run_results WHERE status = 'FAILURE') as failed_tasks
-)
+{% set cleaned = results_table.replace('`', '').replace('\n', ' ').strip() %}
+{% set parts = cleaned.split('.') %}
+{% if parts | length >= 3 %}
+{% set catalog = parts[0].strip() %}
+{% set schema = parts[1].strip() %}
+{% else %}
+{% set catalog = 'datapact' %}
+{% set schema = 'results' %}
+{% endif %}
+{% macro fq(name) -%}
+`{{ catalog }}`.`{{ schema }}`.`{{ name }}`
+{%- endmacro %}
+
+CREATE OR REPLACE TEMP VIEW agg_run_results AS
+SELECT *
+FROM {{ results_table }}
+WHERE run_id = {% raw %}{{run_id}}{% endraw %};
+
+CREATE OR REPLACE TEMP VIEW agg_metrics_view AS
+SELECT
+  FIRST(run_id) AS run_id,
+  FIRST(job_id) AS job_id,
+  FIRST(job_name) AS job_name,
+  COUNT(*) AS total_tasks,
+  SUM(CASE WHEN status = 'FAILURE' THEN 1 ELSE 0 END) AS failure_count,
+  SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) AS success_count,
+  CASE WHEN COUNT(*) = 0 THEN 0.0
+       ELSE ROUND(SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2)
+  END AS success_rate_percent,
+  CASE WHEN COUNT(*) = 0 THEN 0.0
+       ELSE ROUND(SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 4)
+  END AS data_quality_score,
+  SUM(CASE WHEN status = 'FAILURE' AND COALESCE(business_priority, '') = 'CRITICAL' THEN 1 ELSE 0 END) AS critical_failures,
+  SUM(COALESCE(estimated_impact_usd, 0.0)) AS potential_impact_usd,
+  SUM(CASE WHEN status = 'FAILURE' THEN COALESCE(estimated_impact_usd, 0.0) ELSE 0.0 END) AS realized_impact_usd,
+  AVG(expected_sla_hours) AS avg_expected_sla_hours,
+  FILTER(collect_list(CASE WHEN status = 'FAILURE' THEN task_key END), x -> x IS NOT NULL) AS failed_task_keys,
+  CURRENT_TIMESTAMP() AS generated_at
+FROM agg_run_results;
+
+CREATE OR REPLACE TEMP VIEW agg_domain_breakdown AS
+SELECT
+  run_id,
+  job_name,
+  COALESCE(NULLIF(TRIM(business_domain), ''), 'Unspecified') AS business_domain,
+  COUNT(*) AS total_validations,
+  SUM(CASE WHEN status = 'FAILURE' THEN 1 ELSE 0 END) AS failed_validations,
+  CASE WHEN COUNT(*) = 0 THEN 0.0
+       ELSE ROUND(SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2)
+  END AS success_rate_percent,
+  AVG(expected_sla_hours) AS avg_expected_sla_hours,
+  SUM(COALESCE(estimated_impact_usd, 0.0)) AS potential_impact_usd,
+  SUM(CASE WHEN status = 'FAILURE' THEN COALESCE(estimated_impact_usd, 0.0) ELSE 0.0 END) AS realized_impact_usd,
+  MAX(CASE WHEN status = 'FAILURE' THEN validation_begin_ts END) AS last_failure_ts,
+  CURRENT_TIMESTAMP() AS generated_at
+FROM agg_run_results
+GROUP BY 1, 2, 3;
+
+CREATE OR REPLACE TEMP VIEW agg_owner_breakdown AS
+SELECT
+  run_id,
+  job_name,
+  COALESCE(NULLIF(TRIM(business_owner), ''), 'Unassigned') AS business_owner,
+  COUNT(*) AS total_validations,
+  SUM(CASE WHEN status = 'FAILURE' THEN 1 ELSE 0 END) AS failed_validations,
+  CASE WHEN COUNT(*) = 0 THEN 0.0
+       ELSE ROUND(SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2)
+  END AS success_rate_percent,
+  AVG(expected_sla_hours) AS avg_expected_sla_hours,
+  SUM(COALESCE(estimated_impact_usd, 0.0)) AS potential_impact_usd,
+  SUM(CASE WHEN status = 'FAILURE' THEN COALESCE(estimated_impact_usd, 0.0) ELSE 0.0 END) AS realized_impact_usd,
+  MAX(CASE WHEN status = 'FAILURE' THEN validation_begin_ts END) AS last_failure_ts,
+  CURRENT_TIMESTAMP() AS generated_at
+FROM agg_run_results
+GROUP BY 1, 2, 3;
+
+CREATE OR REPLACE TEMP VIEW agg_priority_breakdown AS
+SELECT
+  run_id,
+  job_name,
+  COALESCE(NULLIF(TRIM(business_priority), ''), 'UNSPECIFIED') AS business_priority,
+  COUNT(*) AS total_validations,
+  SUM(CASE WHEN status = 'FAILURE' THEN 1 ELSE 0 END) AS failed_validations,
+  CASE WHEN COUNT(*) = 0 THEN 0.0
+       ELSE ROUND(SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2)
+  END AS success_rate_percent,
+  SUM(COALESCE(estimated_impact_usd, 0.0)) AS potential_impact_usd,
+  SUM(CASE WHEN status = 'FAILURE' THEN COALESCE(estimated_impact_usd, 0.0) ELSE 0.0 END) AS realized_impact_usd,
+  MAX(CASE WHEN status = 'FAILURE' THEN validation_begin_ts END) AS last_failure_ts,
+  CURRENT_TIMESTAMP() AS generated_at
+FROM agg_run_results
+GROUP BY 1, 2, 3;
+
+CREATE TABLE IF NOT EXISTS {{ fq('exec_run_summary') }} (
+  run_id BIGINT,
+  job_id BIGINT,
+  job_name STRING,
+  total_tasks BIGINT,
+  failure_count BIGINT,
+  success_count BIGINT,
+  success_rate_percent DOUBLE,
+  data_quality_score DOUBLE,
+  critical_failures BIGINT,
+  potential_impact_usd DOUBLE,
+  realized_impact_usd DOUBLE,
+  avg_expected_sla_hours DOUBLE,
+  failed_task_keys ARRAY<STRING>,
+  generated_at TIMESTAMP
+) USING DELTA;
+
+CREATE TABLE IF NOT EXISTS {{ fq('exec_domain_breakdown') }} (
+  run_id BIGINT,
+  job_name STRING,
+  business_domain STRING,
+  total_validations BIGINT,
+  failed_validations BIGINT,
+  success_rate_percent DOUBLE,
+  avg_expected_sla_hours DOUBLE,
+  potential_impact_usd DOUBLE,
+  realized_impact_usd DOUBLE,
+  last_failure_ts TIMESTAMP,
+  generated_at TIMESTAMP
+) USING DELTA;
+
+CREATE TABLE IF NOT EXISTS {{ fq('exec_owner_breakdown') }} (
+  run_id BIGINT,
+  job_name STRING,
+  business_owner STRING,
+  total_validations BIGINT,
+  failed_validations BIGINT,
+  success_rate_percent DOUBLE,
+  avg_expected_sla_hours DOUBLE,
+  potential_impact_usd DOUBLE,
+  realized_impact_usd DOUBLE,
+  last_failure_ts TIMESTAMP,
+  generated_at TIMESTAMP
+) USING DELTA;
+
+CREATE TABLE IF NOT EXISTS {{ fq('exec_priority_breakdown') }} (
+  run_id BIGINT,
+  job_name STRING,
+  business_priority STRING,
+  total_validations BIGINT,
+  failed_validations BIGINT,
+  success_rate_percent DOUBLE,
+  potential_impact_usd DOUBLE,
+  realized_impact_usd DOUBLE,
+  last_failure_ts TIMESTAMP,
+  generated_at TIMESTAMP
+) USING DELTA;
+
+DELETE FROM {{ fq('exec_run_summary') }} WHERE run_id = {% raw %}{{run_id}}{% endraw %};
+INSERT INTO {{ fq('exec_run_summary') }}
+SELECT
+  run_id,
+  job_id,
+  job_name,
+  total_tasks,
+  failure_count,
+  success_count,
+  success_rate_percent,
+  data_quality_score,
+  critical_failures,
+  potential_impact_usd,
+  realized_impact_usd,
+  avg_expected_sla_hours,
+  failed_task_keys,
+  generated_at
+FROM agg_metrics_view;
+
+DELETE FROM {{ fq('exec_domain_breakdown') }} WHERE run_id = {% raw %}{{run_id}}{% endraw %};
+INSERT INTO {{ fq('exec_domain_breakdown') }}
+SELECT
+  run_id,
+  job_name,
+  business_domain,
+  total_validations,
+  failed_validations,
+  success_rate_percent,
+  avg_expected_sla_hours,
+  potential_impact_usd,
+  realized_impact_usd,
+  last_failure_ts,
+  generated_at
+FROM agg_domain_breakdown;
+
+DELETE FROM {{ fq('exec_owner_breakdown') }} WHERE run_id = {% raw %}{{run_id}}{% endraw %};
+INSERT INTO {{ fq('exec_owner_breakdown') }}
+SELECT
+  run_id,
+  job_name,
+  business_owner,
+  total_validations,
+  failed_validations,
+  success_rate_percent,
+  avg_expected_sla_hours,
+  potential_impact_usd,
+  realized_impact_usd,
+  last_failure_ts,
+  generated_at
+FROM agg_owner_breakdown;
+
+DELETE FROM {{ fq('exec_priority_breakdown') }} WHERE run_id = {% raw %}{{run_id}}{% endraw %};
+INSERT INTO {{ fq('exec_priority_breakdown') }}
+SELECT
+  run_id,
+  job_name,
+  business_priority,
+  total_validations,
+  failed_validations,
+  success_rate_percent,
+  potential_impact_usd,
+  realized_impact_usd,
+  last_failure_ts,
+  generated_at
+FROM agg_priority_breakdown;
+
 SELECT CASE
-    WHEN (SELECT failure_count FROM agg_metrics) > 0
-    THEN RAISE_ERROR(CONCAT('DataPact validation tasks failed: ', to_json((SELECT failed_tasks FROM agg_metrics))))
+    WHEN failure_count > 0
+    THEN RAISE_ERROR(CONCAT('DataPact validation tasks failed: ', to_json(failed_task_keys)))
     ELSE 'All DataPact validations passed successfully!'
-END;
+END
+FROM agg_metrics_view;

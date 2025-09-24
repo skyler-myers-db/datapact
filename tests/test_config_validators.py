@@ -54,3 +54,27 @@ def test_tolerance_validator_rejects_out_of_range(field, value):
     with pytest.raises(ValidationError) as ei:
         _minimal_task(**kwargs)
     assert "Tolerance must be a float between 0.0 and 1.0" in str(ei.value)
+
+
+def test_business_priority_normalized_and_validated():
+    task = _minimal_task(business_priority="Critical")
+    assert task.business_priority == "CRITICAL"
+
+
+def test_business_priority_invalid_value():
+    with pytest.raises(ValidationError) as ei:
+        _minimal_task(business_priority="urgent")
+    assert "business_priority must be one of" in str(ei.value)
+
+
+@pytest.mark.parametrize("field", ["expected_sla_hours", "estimated_impact_usd"])
+def test_business_numeric_metadata_must_be_positive(field):
+    task = _minimal_task(**{field: 12.5})
+    assert getattr(task, field) == 12.5
+
+
+@pytest.mark.parametrize("field", ["expected_sla_hours", "estimated_impact_usd"])
+def test_business_numeric_metadata_cannot_be_negative(field):
+    with pytest.raises(ValidationError) as ei:
+        _minimal_task(**{field: -1})
+    assert f"{field} must be greater than or equal to 0" in str(ei.value)

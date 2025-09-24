@@ -63,6 +63,11 @@ SELECT
   'cat' AS target_catalog,
   'sch' AS target_schema,
   'tgt' AS target_table,
+  NULL AS business_domain,
+  NULL AS business_owner,
+  NULL AS business_priority,
+  NULL AS expected_sla_hours,
+  NULL AS estimated_impact_usd,
   parse_json(to_json(struct(
     struct(
       FORMAT_NUMBER(source_count, '#,##0') AS source_count,
@@ -205,9 +210,9 @@ FROM
 count_metrics CROSS JOIN row_hash_metrics CROSS JOIN null_metrics_v1 CROSS JOIN null_metrics_v2 CROSS JOIN agg_metrics_v1_SUM CROSS JOIN agg_metrics_v1_AVG CROSS JOIN agg_metrics_v2_SUM
 ;
 
-INSERT INTO `cat`.`res`.`history` (task_key, status, run_id, job_id, job_name, job_start_ts, validation_begin_ts, validation_complete_ts, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, result_payload)
+INSERT INTO `cat`.`res`.`history` (task_key, status, run_id, job_id, job_name, job_start_ts, validation_begin_ts, validation_complete_ts, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, business_domain, business_owner, business_priority, expected_sla_hours, estimated_impact_usd, result_payload)
 SELECT 't_complex', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
-:run_id, :job_id, 'complex_job', :job_start_ts, validation_begin_ts, current_timestamp(), source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, result_payload FROM final_metrics_view;
+:run_id, :job_id, 'complex_job', :job_start_ts, validation_begin_ts, current_timestamp(), source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, business_domain, business_owner, business_priority, expected_sla_hours, estimated_impact_usd, result_payload FROM final_metrics_view;
 
 SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: t_complex. Payload: \n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false;
 
