@@ -134,7 +134,7 @@ def execute_sql_commands(
         f"Found {len(sql_commands)} individual SQL statements to execute sequentially."
     )
     logger.info(
-        "Creating hyperscale demo data (25M+ financial txns, 15M sessions, 12M streaming events)..."
+        "Creating hyperscale demo data (25M+ financial transactions, 15M sessions, 12M streaming events)..."
     )
     for i, command in enumerate(sql_commands):
         logger.info(f"Executing statement {i + 1}/{len(sql_commands)}...")
