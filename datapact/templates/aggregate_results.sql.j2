@@ -36,7 +36,8 @@ SELECT
   AVG(expected_sla_hours) AS avg_expected_sla_hours,
   FILTER(collect_list(task_key), x -> x IS NOT NULL) AS failed_task_keys,
   CURRENT_TIMESTAMP() AS generated_at
-FROM agg_run_results;
+FROM agg_run_results
+WHERE status = 'FAILURE';
 
 CREATE OR REPLACE TEMP VIEW agg_domain_breakdown AS
 SELECT
