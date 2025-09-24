@@ -1,6 +1,6 @@
 <br/>
 <p align="center">
-<img src="https://i.imgur.com/Y4L121k.png" alt="DataPact Animated Demo">
+<img src="https://i.imgur.com/H5HLT0P.png" alt="DataPact Animated Demo">
 </p>
 <br/>
 
