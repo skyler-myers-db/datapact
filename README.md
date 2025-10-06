@@ -485,3 +485,8 @@ All metadata flows into dashboards, ROI tables, and Genie datasets.
 Ideas, issues, or contributions are welcome! Reach out: `myers_skyler@icloud.com`
 
 Happy validating! 🎯
+
+### Current Limitations
+
+* The primary hard limitation/requirement of DataPact is that, since all computations are fully run and executed on Databricks, both the source and target data need to be accessible via Unity Catalog. This means that, for data sources outside of Databricks, they need to be available to and configured with [Lakehouse Federation](https://docs.databricks.com/aws/en/query-federation/) (or, at least, synced to a Databricks UC table)
+* DataPact is currently limited to the preconfigured testing scenarios (counts, hash checks for equality, aggregations, nulls, etc.). A future release will open it up to creating your own custom test cases (such as custom SQL)
