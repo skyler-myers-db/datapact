@@ -119,3 +119,16 @@ def build_safe_filter(column: str, value: Any, operator: str = "=") -> str:
         raise ValueError(f"Invalid operator: {operator}")
 
     return f"{safe_column} {operator} {safe_value}"
+
+
+def make_sql_identifier(value: str, prefix: str = "cte") -> str:
+    """Generate a lowercase SQL-safe identifier derived from free-form text."""
+
+    cleaned = re.sub(r"\s+", "_", value.strip())
+    cleaned = re.sub(r"[^\w]", "_", cleaned)
+    cleaned = re.sub(r"_+", "_", cleaned).strip("_").lower()
+    if not cleaned:
+        cleaned = prefix
+    if cleaned[0].isdigit():
+        cleaned = f"{prefix}_{cleaned}"
+    return cleaned

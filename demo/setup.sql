@@ -2,17 +2,17 @@
 -- Executive-Ready Demo: Simulating Real-World Data Quality Challenges at Scale
 -- This setup creates a comprehensive data ecosystem mirroring Fortune 500 enterprise scenarios
 -- Step 1: Enterprise Data Foundation
-CREATE CATALOG IF NOT EXISTS datapact_demo_catalog COMMENT 'Enterprise Data Quality Validation Catalog';
-CREATE SCHEMA IF NOT EXISTS datapact_demo_catalog.source_data COMMENT 'Production Source Systems';
-CREATE SCHEMA IF NOT EXISTS datapact_demo_catalog.target_data COMMENT 'Analytics & BI Target Systems';
-CREATE SCHEMA IF NOT EXISTS datapact_demo_catalog.reference_data COMMENT 'Master Data & Reference Tables';
+CREATE CATALOG IF NOT EXISTS datapact COMMENT 'Enterprise Data Quality Validation Catalog';
+CREATE SCHEMA IF NOT EXISTS datapact.source_data COMMENT 'Production Source Systems';
+CREATE SCHEMA IF NOT EXISTS datapact.target_data COMMENT 'Analytics & BI Target Systems';
+CREATE SCHEMA IF NOT EXISTS datapact.reference_data COMMENT 'Master Data & Reference Tables';
 -- =========================================================================================
 -- Domain: CUSTOMER EXPERIENCE & CRM
 -- Business Context: Customer 360 data powering $2B annual revenue
 -- Critical for: Personalization, Marketing Campaigns, Customer Retention Analytics
 -- =========================================================================================
 -- Table 1: Customer Master (5M customers, global CRM backbone)
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.users AS
+CREATE OR REPLACE TABLE datapact.source_data.users AS
 SELECT id AS user_id,
   md5(CAST(id AS STRING)) || '@' || CASE
     WHEN rand() < 0.3 THEN 'gmail.com'
@@ -47,18 +47,18 @@ FROM (
     SELECT id FROM range(1, 5000001)
   );
 -- Simulating real-world ETL issues and data quality problems
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.users AS TABLE datapact_demo_catalog.source_data.users;
+CREATE OR REPLACE TABLE datapact.target_data.users AS TABLE datapact.source_data.users;
 -- Data Quality Issue #1: PII Masking gone wrong (5% records affected)
-UPDATE datapact_demo_catalog.target_data.users
+UPDATE datapact.target_data.users
 SET email = md5(email) || '@masked.com'
 WHERE user_id % 20 = 0;
 -- Data Quality Issue #2: Failed CDC batch (2% records missing)
-DELETE FROM datapact_demo_catalog.target_data.users
+DELETE FROM datapact.target_data.users
 WHERE user_id % 50 = 0
   AND status != 'premium';
 -- Premium customers protected
 -- Data Quality Issue #3: Duplicate prevention failure (0.3% duplicates)
-INSERT INTO datapact_demo_catalog.target_data.users
+INSERT INTO datapact.target_data.users
 SELECT id AS user_id,
   'dup_' || md5(CAST(id AS STRING)) || '@duplicate.com' AS email,
   'UNKNOWN' as country,
@@ -72,20 +72,20 @@ FROM (
     SELECT explode(sequence(5000001, 5050000)) AS id
   );
 -- Data Quality Issue #4: Timezone conversion error (10% date corruption)
-UPDATE datapact_demo_catalog.target_data.users
+UPDATE datapact.target_data.users
 SET signup_date = NULL
 WHERE user_id % 10 = 0;
 -- Data Quality Issue #5: Status mapping failure (4% status corruption)
-UPDATE datapact_demo_catalog.target_data.users
+UPDATE datapact.target_data.users
 SET status = NULL
 WHERE user_id % 25 = 0;
 -- Data Quality Issue #6: Metric calculation error (Regional aggregation issue)
-UPDATE datapact_demo_catalog.target_data.users
+UPDATE datapact.target_data.users
 SET total_logins = total_logins * 2
 WHERE country = 'CAN';
 -- Canadian metrics doubled due to dual-system reporting
 -- Table 2: Financial Transactions (25M+ records, $2.5B+ annual volume)
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.transactions AS
+CREATE OR REPLACE TABLE datapact.source_data.transactions AS
 SELECT uuid() AS transaction_id,
   (abs(rand()) * 999999 + 1)::INT AS user_id,
   ROUND(
@@ -121,10 +121,10 @@ FROM (
     SELECT explode(sequence(1, 2500000)) AS id
   );
 -- Clean replication to demonstrate successful validation
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.transactions AS TABLE datapact_demo_catalog.source_data.transactions;
+CREATE OR REPLACE TABLE datapact.target_data.transactions AS TABLE datapact.source_data.transactions;
 -- This table passes all validations - demonstrating system works correctly when data is clean
 -- Table 3: Product Catalog (5K SKUs, supporting $2B revenue)
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.products AS
+CREATE OR REPLACE TABLE datapact.source_data.products AS
 SELECT uuid() as product_id,
   CONCAT(
     CASE
@@ -163,9 +163,9 @@ FROM (
     SELECT explode(sequence(1, 5000)) as id
   );
 -- Simulating approved price updates (within tolerance)
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.products AS TABLE datapact_demo_catalog.source_data.products;
+CREATE OR REPLACE TABLE datapact.target_data.products AS TABLE datapact.source_data.products;
 -- Business-approved price adjustments (2% of products, within 2.5% tolerance)
-UPDATE datapact_demo_catalog.target_data.products
+UPDATE datapact.target_data.products
 SET price = ROUND(price * 1.08, 2),
   -- 8% increase for inflation
   margin_rate = ROUND(margin_rate * 0.95, 2) -- Margin compression
@@ -176,7 +176,7 @@ WHERE abs(hash(product_id)) % 50 = 0;
 -- Critical for: ROI Analysis, Attribution, Budget Optimization
 -- =========================================================================================
 -- Table 4: Marketing Campaigns (Driving 40% of new customer acquisition)
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.campaigns AS
+CREATE OR REPLACE TABLE datapact.source_data.campaigns AS
 SELECT id as campaign_id,
   CONCAT(
     CASE
@@ -213,14 +213,14 @@ FROM (
     SELECT explode(sequence(1, 200)) as id
   );
 -- Campaign status synchronization issues
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.campaigns AS TABLE datapact_demo_catalog.source_data.campaigns;
+CREATE OR REPLACE TABLE datapact.target_data.campaigns AS TABLE datapact.source_data.campaigns;
 -- Status update lag from marketing automation platform
-UPDATE datapact_demo_catalog.target_data.campaigns
+UPDATE datapact.target_data.campaigns
 SET status = 'completed',
   spend_to_date = budget * 0.98 -- Near-full spend
 WHERE campaign_id IN (10, 20, 30, 40, 50);
 -- Table 5: Digital Ad Spend (Daily granularity, $50M annual)
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.ad_spend AS
+CREATE OR REPLACE TABLE datapact.source_data.ad_spend AS
 SELECT id as ad_id,
   (id % 200 + 1) as campaign_id,
   date_add('2024-01-01', id % 365) as spend_date,
@@ -246,7 +246,7 @@ FROM (
     SELECT explode(sequence(1, 10000)) as id
   );
 -- Currency conversion rounding issues
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.ad_spend AS
+CREATE OR REPLACE TABLE datapact.target_data.ad_spend AS
 SELECT ad_id,
   campaign_id,
   spend_date,
@@ -258,14 +258,14 @@ SELECT ad_id,
   ROUND(cpc * 1.001, 2) as cpc,
   -- Matching FX drift
   platform
-FROM datapact_demo_catalog.source_data.ad_spend;
+FROM datapact.source_data.ad_spend;
 -- =========================================================================================
 -- Domain: HUMAN CAPITAL MANAGEMENT
 -- Business Context: 10,000+ employees, $1B+ annual payroll
 -- Critical for: Compliance, Talent Analytics, Succession Planning
 -- =========================================================================================
 -- Table 6: Employee Master (Supporting HR compliance and analytics)
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.employees AS
+CREATE OR REPLACE TABLE datapact.source_data.employees AS
 SELECT id as employee_id,
   CONCAT(
     'emp-',
@@ -315,14 +315,14 @@ FROM (
     SELECT explode(sequence(1, 10000)) as id
   );
 -- HR system sync issues - typical month-end scenario
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.employees AS
+CREATE OR REPLACE TABLE datapact.target_data.employees AS
 SELECT *
-FROM datapact_demo_catalog.source_data.employees
+FROM datapact.source_data.employees
 WHERE employee_id <= 9950 -- Recent terminations not yet synced
   OR employee_id > 10000;
 -- Keep any overflow
 -- New hires added but not in source system yet
-INSERT INTO datapact_demo_catalog.target_data.employees
+INSERT INTO datapact.target_data.employees
 SELECT 10000 + id as employee_id,
   CONCAT('newhire-', id, '@enterprise.com') as email,
   CONCAT('New Hire ', id) as full_name,
@@ -337,7 +337,7 @@ FROM (
     SELECT explode(sequence(1, 25)) as id
   );
 -- Table 7: Compensation Bands (Global pay equity framework)
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.salary_bands (
+CREATE OR REPLACE TABLE datapact.source_data.salary_bands (
     band_id STRING,
     band_name STRING,
     level STRING,
@@ -346,7 +346,7 @@ CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.salary_bands (
     midpoint DECIMAL(10, 2),
     geographic_modifier DECIMAL(3, 2)
   );
-INSERT INTO datapact_demo_catalog.source_data.salary_bands
+INSERT INTO datapact.source_data.salary_bands
 VALUES (
     'IC1',
     'Individual Contributor I',
@@ -438,7 +438,7 @@ VALUES (
     1.0
   );
 -- Reference data - should be identical
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.salary_bands AS TABLE datapact_demo_catalog.source_data.salary_bands;
+CREATE OR REPLACE TABLE datapact.target_data.salary_bands AS TABLE datapact.source_data.salary_bands;
 -- This is master data that should never change without approval
 -- =========================================================================================
 -- Domain: FINANCIAL REPORTING & COMPLIANCE
@@ -446,7 +446,7 @@ CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.salary_bands AS TABLE 
 -- Critical for: Financial Close, Audit, Regulatory Reporting
 -- =========================================================================================
 -- Table 8: General Ledger (Core financial records, audit-critical)
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.gl_postings AS
+CREATE OR REPLACE TABLE datapact.source_data.gl_postings AS
 SELECT id as posting_id,
   CONCAT('JE-2024-', LPAD(CAST(id AS STRING), 8, '0')) as journal_entry,
   CASE
@@ -487,9 +487,9 @@ FROM (
     SELECT explode(sequence(1, 100000)) as id
   );
 -- Critical financial data with reconciliation issues
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.gl_postings AS
+CREATE OR REPLACE TABLE datapact.target_data.gl_postings AS
 SELECT *
-FROM datapact_demo_catalog.source_data.gl_postings
+FROM datapact.source_data.gl_postings
 WHERE posting_id <= 97500;
 -- 2.5% of entries missing (failed batch load)
 -- This represents a critical issue that would trigger SOX compliance alerts
@@ -499,7 +499,7 @@ WHERE posting_id <= 97500;
 -- Critical for: Site Reliability, Performance, Security Monitoring
 -- =========================================================================================
 -- Table 9: Web Analytics (10M daily page views - enterprise traffic volume)
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.page_views AS
+CREATE OR REPLACE TABLE datapact.source_data.page_views AS
 SELECT (abs(rand()) * 999999 + 1)::INT AS user_id,
   uuid() as session_id,
   CASE
@@ -528,7 +528,7 @@ FROM (
     SELECT explode(sequence(1, 1000000)) as id
   );
 -- Timestamp drift issue (common in distributed logging)
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.page_views AS
+CREATE OR REPLACE TABLE datapact.target_data.page_views AS
 SELECT user_id,
   session_id,
   page_path,
@@ -537,9 +537,9 @@ SELECT user_id,
   time_on_page_seconds,
   traffic_source,
   device_type
-FROM datapact_demo_catalog.source_data.page_views;
+FROM datapact.source_data.page_views;
 -- Table 10: Application Logs (High-volume, no PK, critical for debugging)
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.log_messages (
+CREATE OR REPLACE TABLE datapact.source_data.log_messages (
     ts TIMESTAMP,
     level STRING,
     service STRING,
@@ -548,7 +548,7 @@ CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.log_messages (
     user_id INT,
     latency_ms DOUBLE
   );
-INSERT INTO datapact_demo_catalog.source_data.log_messages
+INSERT INTO datapact.source_data.log_messages
 SELECT current_timestamp() - (rand() * 24) * INTERVAL '1 hour' as ts,
   CASE
     WHEN rand() < 0.7 THEN 'INFO'
@@ -582,9 +582,9 @@ FROM (
     SELECT explode(sequence(1, 10000)) as id
   );
 -- Log shipping delay causing count mismatch
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.log_messages AS TABLE datapact_demo_catalog.source_data.log_messages;
+CREATE OR REPLACE TABLE datapact.target_data.log_messages AS TABLE datapact.source_data.log_messages;
 -- Additional logs in target (from different service)
-INSERT INTO datapact_demo_catalog.target_data.log_messages
+INSERT INTO datapact.target_data.log_messages
 SELECT current_timestamp() as ts,
   'INFO' as level,
   'data-pipeline' as service,
@@ -596,14 +596,14 @@ FROM (
     SELECT explode(sequence(1, 50)) as id
   );
 -- Table 11: Audit Trail (Empty - representing fresh compliance period)
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.empty_audits (
+CREATE OR REPLACE TABLE datapact.source_data.empty_audits (
     audit_id STRING,
     action_type STRING,
     user_id INT,
     timestamp TIMESTAMP,
     details STRING
   ) COMMENT 'Audit trail for SOX compliance - cleared quarterly';
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.empty_audits (
+CREATE OR REPLACE TABLE datapact.target_data.empty_audits (
     audit_id STRING,
     action_type STRING,
     user_id INT,
@@ -611,7 +611,7 @@ CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.empty_audits (
     details STRING
   ) COMMENT 'Audit trail replica - should match source exactly';
 -- Table 12: API Response Codes (Reference data with categorization issues)
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.status_codes AS
+CREATE OR REPLACE TABLE datapact.source_data.status_codes AS
 SELECT id as code,
   CASE
     id
@@ -661,9 +661,9 @@ WHERE id IN (
     304
   );
 -- Data quality issue: Category mapping failures
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.status_codes AS TABLE datapact_demo_catalog.source_data.status_codes;
+CREATE OR REPLACE TABLE datapact.target_data.status_codes AS TABLE datapact.source_data.status_codes;
 -- Introduce null category for common codes (mapping failure)
-UPDATE datapact_demo_catalog.target_data.status_codes
+UPDATE datapact.target_data.status_codes
 SET category = NULL
 WHERE code IN (200, 404, 500);
 -- Critical codes losing categorization
@@ -672,7 +672,7 @@ WHERE code IN (200, 404, 500);
 -- Business Context: GDPR, CCPA, SOX compliance, $100M+ potential exposure
 -- =========================================================================================
 -- Table 13: Data Privacy Requests (GDPR/CCPA compliance tracking)
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.privacy_requests AS
+CREATE OR REPLACE TABLE datapact.source_data.privacy_requests AS
 SELECT uuid() as request_id,
   (rand() * 1000000)::INT as user_id,
   CASE
@@ -701,9 +701,9 @@ SELECT uuid() as request_id,
 FROM (
     SELECT explode(sequence(1, 5000)) as id
   );
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.privacy_requests AS TABLE datapact_demo_catalog.source_data.privacy_requests;
+CREATE OR REPLACE TABLE datapact.target_data.privacy_requests AS TABLE datapact.source_data.privacy_requests;
 -- Compliance reporting delay
-DELETE FROM datapact_demo_catalog.target_data.privacy_requests
+DELETE FROM datapact.target_data.privacy_requests
 WHERE request_date >= to_date('2024-10-01')
   AND status = 'PENDING';
 -- Recent pending requests not yet synced
@@ -711,7 +711,7 @@ WHERE request_date >= to_date('2024-10-01')
 -- Domain: INDUSTRIAL IoT OPERATIONS
 -- Business Context: 2K devices, 150 plants, 20M telemetry events monthly
 -- =========================================================================================
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.iot_events AS
+CREATE OR REPLACE TABLE datapact.source_data.iot_events AS
 SELECT uuid() AS event_id,
   CONCAT(
     'device-',
@@ -744,17 +744,17 @@ FROM (
     SELECT id
     FROM range(0, 20000000)
   );
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.iot_events AS
+CREATE OR REPLACE TABLE datapact.target_data.iot_events AS
 SELECT *
-FROM datapact_demo_catalog.source_data.iot_events;
-DELETE FROM datapact_demo_catalog.target_data.iot_events
+FROM datapact.source_data.iot_events;
+DELETE FROM datapact.target_data.iot_events
 WHERE fleet_region = 'EMEA'
   AND mod(hash(device_id), 24) = 0;
-UPDATE datapact_demo_catalog.target_data.iot_events
+UPDATE datapact.target_data.iot_events
 SET temperature_c = temperature_c + 45
 WHERE fleet_region = 'APAC'
   AND event_status = 'WARNING';
-INSERT INTO datapact_demo_catalog.target_data.iot_events
+INSERT INTO datapact.target_data.iot_events
 SELECT event_id,
   device_id,
   facility_id,
@@ -765,7 +765,7 @@ SELECT event_id,
   vibration_g,
   event_status,
   requires_maintenance
-FROM datapact_demo_catalog.target_data.iot_events
+FROM datapact.target_data.iot_events
 WHERE fleet_region = 'LATAM'
   AND requires_maintenance = TRUE
   AND mod(hash(event_id), 50) = 0;
@@ -773,7 +773,7 @@ WHERE fleet_region = 'LATAM'
 -- Domain: GLOBAL SUPPLY CHAIN & LOGISTICS
 -- Business Context: 180 hubs, 12M shipments, hazmat compliance
 -- =========================================================================================
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.shipments AS
+CREATE OR REPLACE TABLE datapact.source_data.shipments AS
 SELECT uuid() AS shipment_id,
   CONCAT(
     'order-',
@@ -802,17 +802,17 @@ FROM (
     SELECT id
     FROM range(0, 12000000)
   );
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.shipments AS
+CREATE OR REPLACE TABLE datapact.target_data.shipments AS
 SELECT *
-FROM datapact_demo_catalog.source_data.shipments;
-DELETE FROM datapact_demo_catalog.target_data.shipments
+FROM datapact.source_data.shipments;
+DELETE FROM datapact.target_data.shipments
 WHERE origin_hub = 'hub-042'
   AND ship_date BETWEEN '2023-07-01' AND '2023-08-31';
-UPDATE datapact_demo_catalog.target_data.shipments
+UPDATE datapact.target_data.shipments
 SET hazmat_flag = FALSE
 WHERE hazmat_flag = TRUE
   AND destination_hub = 'hub-117';
-INSERT INTO datapact_demo_catalog.target_data.shipments
+INSERT INTO datapact.target_data.shipments
 SELECT uuid() AS shipment_id,
   order_id,
   origin_hub,
@@ -823,14 +823,14 @@ SELECT uuid() AS shipment_id,
   transit_hours,
   shipment_status,
   hazmat_flag
-FROM datapact_demo_catalog.source_data.shipments
+FROM datapact.source_data.shipments
 WHERE shipment_status = 'IN_TRANSIT'
   AND mod(hash(order_id), 105) = 0;
 -- =========================================================================================
 -- Domain: DIGITAL EXPERIENCE & GROWTH ANALYTICS
 -- Business Context: 5M users, 15M sessions, bot mitigation
 -- =========================================================================================
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.clickstream_sessions AS
+CREATE OR REPLACE TABLE datapact.source_data.clickstream_sessions AS
 SELECT CONCAT('session-', lpad(CAST(id AS STRING), 12, '0')) AS session_id,
   CONCAT(
     'user-',
@@ -855,24 +855,24 @@ FROM (
     SELECT id
     FROM range(0, 15000000)
   );
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.clickstream_sessions AS
+CREATE OR REPLACE TABLE datapact.target_data.clickstream_sessions AS
 SELECT *
-FROM datapact_demo_catalog.source_data.clickstream_sessions;
-UPDATE datapact_demo_catalog.target_data.clickstream_sessions
-SET page_views = page_views * 3,
-  dwell_seconds = GREATEST(dwell_seconds / 4, 10)
+FROM datapact.source_data.clickstream_sessions;
+UPDATE datapact.target_data.clickstream_sessions
+SET page_views = ROUND(page_views * 1.25, 0),
+  dwell_seconds = ROUND(dwell_seconds * 0.9, 2)
 WHERE device_type = 'MOBILE'
   AND acquisition_channel = 'SEARCH'
   AND mod(hash(session_id), 40) = 0;
-UPDATE datapact_demo_catalog.target_data.clickstream_sessions
-SET conversion_score = 0
+UPDATE datapact.target_data.clickstream_sessions
+SET conversion_score = ROUND(conversion_score * 0.88, 2)
 WHERE acquisition_channel = 'SOCIAL'
   AND mod(hash(session_id), 25) = 0;
 -- =========================================================================================
 -- Domain: REAL-TIME INTELLIGENCE & STREAMING OPERATIONS
 -- Business Context: 12M+ events per day powering proactive reliability automation
 -- =========================================================================================
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.stream_events AS
+CREATE OR REPLACE TABLE datapact.source_data.stream_events AS
 SELECT event_id,
   device_id,
   region,
@@ -916,7 +916,7 @@ FROM (
         FROM range(0, 12000000)
       )
   ) base;
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.stream_events AS
+CREATE OR REPLACE TABLE datapact.target_data.stream_events AS
 SELECT event_id,
   device_id,
   region,
@@ -947,9 +947,9 @@ FROM (
         ELSE 0
       END AS anomaly_score_adjusted,
       requires_oncall
-    FROM datapact_demo_catalog.source_data.stream_events
+    FROM datapact.source_data.stream_events
   ) enriched;
-DELETE FROM datapact_demo_catalog.target_data.stream_events
+DELETE FROM datapact.target_data.stream_events
 WHERE mod(hash(event_id), 400) = 0
   AND event_type = 'HEARTBEAT';
 -- Simulate packet loss in specific partitions
@@ -957,7 +957,7 @@ WHERE mod(hash(event_id), 400) = 0
 -- Domain: AI PERSONALIZATION & FEATURE STORES
 -- Business Context: 1M+ customer vectors powering generative experiences
 -- =========================================================================================
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.customer_features AS
+CREATE OR REPLACE TABLE datapact.source_data.customer_features AS
 SELECT CONCAT('cust-', lpad(CAST(id AS STRING), 10, '0')) AS customer_id,
   202404 + (id % 6) AS feature_version,
   ROUND(rand() * 100, 2) AS recency_score,
@@ -984,7 +984,7 @@ FROM (
     SELECT id
     FROM range(0, 1000000)
   );
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.customer_features AS
+CREATE OR REPLACE TABLE datapact.target_data.customer_features AS
 SELECT customer_id,
   feature_version,
   recency_score,
@@ -1002,8 +1002,8 @@ SELECT customer_id,
   END AS feature_vector_norm,
   shap_contribution,
   multi_touch_attribution_flag
-FROM datapact_demo_catalog.source_data.customer_features;
-UPDATE datapact_demo_catalog.target_data.customer_features
+FROM datapact.source_data.customer_features;
+UPDATE datapact.target_data.customer_features
 SET model_version = CONCAT(model_version, '-hotfix')
 WHERE feature_version = 202406
   AND mod(hash(customer_id), 333) = 0;
@@ -1011,7 +1011,7 @@ WHERE feature_version = 202406
 -- Domain: FINOPS & CLOUD COST MANAGEMENT
 -- Business Context: Multi-cloud footprint with aggressive savings commitments
 -- =========================================================================================
-CREATE OR REPLACE TABLE datapact_demo_catalog.source_data.cloud_costs AS
+CREATE OR REPLACE TABLE datapact.source_data.cloud_costs AS
 SELECT concat(
     date_format(month, 'yyyy-MM'),
     '-',
@@ -1062,7 +1062,7 @@ FROM (
           0.27 as reserved_ratio
       ) defaults
   );
-CREATE OR REPLACE TABLE datapact_demo_catalog.target_data.cloud_costs AS
+CREATE OR REPLACE TABLE datapact.target_data.cloud_costs AS
 SELECT record_id,
   billing_month,
   cloud_provider,
@@ -1081,17 +1081,133 @@ SELECT record_id,
     ELSE 0
   END AS carbon_intensity_kg_per_kwh,
   glidepath_budget_usd
-FROM datapact_demo_catalog.source_data.cloud_costs;
-DELETE FROM datapact_demo_catalog.target_data.cloud_costs
+FROM datapact.source_data.cloud_costs;
+DELETE FROM datapact.target_data.cloud_costs
 WHERE cloud_provider = 'AWS'
   AND region = 'us-east-1'
   AND billing_month BETWEEN '2023-09-01' AND '2023-10-31';
 -- Simulate missing FinOps feeds
 -- =========================================================================================
+-- Domain: AI SAFETY & GENERATIVE GOVERNANCE
+-- =========================================================================================
+CREATE OR REPLACE TABLE datapact.source_data.prompt_guardrails AS
+SELECT CONCAT('interaction-', LPAD(CAST(id AS STRING), 12, '0')) AS interaction_id,
+  CONCAT('prompt-', LPAD(CAST(id % 200000 AS STRING), 8, '0')) AS prompt_id,
+  CASE
+    WHEN rand() < 0.35 THEN 'gpt-4o'
+    WHEN rand() < 0.6 THEN 'mixtral-8x7b'
+    WHEN rand() < 0.8 THEN 'llama-3-70b'
+    ELSE 'phi-4'
+  END AS model_family,
+  CASE
+    WHEN rand() < 0.3 THEN 'NA'
+    WHEN rand() < 0.5 THEN 'EU'
+    WHEN rand() < 0.7 THEN 'APAC'
+    WHEN rand() < 0.85 THEN 'LATAM'
+    ELSE 'ME'
+  END AS region,
+  CASE
+    WHEN rand() < 0.25 THEN 'Customer Support'
+    WHEN rand() < 0.45 THEN 'Financial Advice'
+    WHEN rand() < 0.7 THEN 'Creative'
+    WHEN rand() < 0.85 THEN 'Internal Knowledge'
+    ELSE 'Healthcare'
+  END AS prompt_category,
+  ROUND(rand() * 0.25, 4) AS response_toxicity_score,
+  CASE
+    WHEN rand() < 0.06 THEN TRUE
+    ELSE FALSE
+  END AS contains_pii,
+  CASE
+    WHEN rand() < 0.04 THEN CAST(rand() * 5 AS INT)
+    ELSE 0
+  END AS guardrail_trigger_count,
+  ROUND(rand() * 1800 + 200, 2) AS latency_ms,
+  timestamp('2024-01-01') + CAST(rand() * 120 AS INT) * INTERVAL 1 DAY + CAST(rand() * 86400 AS INT) * INTERVAL 1 SECOND AS created_ts,
+  CASE
+    WHEN guardrail_trigger_count >= 3 OR response_toxicity_score > 0.15 THEN 'BLOCK'
+    WHEN guardrail_trigger_count > 0 OR contains_pii THEN 'WARN'
+    ELSE 'CLEAR'
+  END AS safety_severity
+FROM (
+    SELECT id
+    FROM range(0, 3000000)
+  );
+CREATE OR REPLACE TABLE datapact.target_data.prompt_guardrails AS
+SELECT *
+FROM datapact.source_data.prompt_guardrails;
+UPDATE datapact.target_data.prompt_guardrails
+SET response_toxicity_score = LEAST(response_toxicity_score * 4 + 0.1, 1.0),
+  safety_severity = 'BLOCK'
+WHERE model_family = 'mixtral-8x7b'
+  AND region = 'EU'
+  AND prompt_category = 'Financial Advice'
+  AND guardrail_trigger_count > 0;
+DELETE FROM datapact.target_data.prompt_guardrails
+WHERE region = 'APAC'
+  AND guardrail_trigger_count >= 3
+  AND mod(hash(interaction_id), 5) = 0;
+UPDATE datapact.target_data.prompt_guardrails
+SET contains_pii = TRUE,
+  safety_severity = 'WARN'
+WHERE prompt_category = 'Internal Knowledge'
+  AND mod(hash(interaction_id), 37) = 0;
+-- =========================================================================================
+-- Domain: CLIMATE & ESG REPORTING
+-- =========================================================================================
+CREATE OR REPLACE TABLE datapact.source_data.carbon_ledger AS
+SELECT CONCAT('ledger-', LPAD(CAST(id AS STRING), 9, '0')) AS ledger_id,
+  CASE
+    WHEN rand() < 0.3 THEN 'AMER'
+    WHEN rand() < 0.55 THEN 'EMEA'
+    WHEN rand() < 0.8 THEN 'APJ'
+    ELSE 'LATAM'
+  END AS region,
+  CASE
+    WHEN rand() < 0.4 THEN 'Data Center'
+    WHEN rand() < 0.6 THEN 'Corporate Campus'
+    WHEN rand() < 0.8 THEN 'Field Operations'
+    ELSE 'Supply Chain'
+  END AS business_unit,
+  CASE
+    WHEN rand() < 0.5 THEN 'Scope 1'
+    WHEN rand() < 0.8 THEN 'Scope 2'
+    ELSE 'Scope 3'
+  END AS emission_scope,
+  date_trunc('month', date_add('2023-01-01', CAST(rand() * 540 AS INT))) AS reporting_period,
+  ROUND(rand() * 2500 + 250, 2) AS emissions_tco2e,
+  ROUND(rand() * 800, 2) AS offsets_tco2e,
+  ROUND(rand() * 0.25 + 0.7, 3) AS data_quality_score,
+  CASE
+    WHEN rand() < 0.5 THEN 'IoT Meter'
+    WHEN rand() < 0.75 THEN 'ERP Feed'
+    ELSE 'Vendor Statement'
+  END AS data_source
+FROM (
+    SELECT id
+    FROM range(0, 250000)
+  );
+CREATE OR REPLACE TABLE datapact.target_data.carbon_ledger AS
+SELECT *
+FROM datapact.source_data.carbon_ledger;
+UPDATE datapact.target_data.carbon_ledger
+SET offsets_tco2e = offsets_tco2e * 0.65
+WHERE business_unit = 'Data Center'
+  AND emission_scope = 'Scope 2'
+  AND region = 'EMEA';
+UPDATE datapact.target_data.carbon_ledger
+SET data_quality_score = data_quality_score - 0.25
+WHERE data_source = 'Vendor Statement'
+  AND reporting_period >= date('2024-06-01');
+DELETE FROM datapact.target_data.carbon_ledger
+WHERE emission_scope = 'Scope 3'
+  AND region = 'LATAM'
+  AND mod(hash(ledger_id), 13) = 0;
+-- =========================================================================================
 -- Additional Enterprise Reference Data
 -- =========================================================================================
 -- Currency Exchange Rates (for multi-national operations)
-CREATE OR REPLACE TABLE datapact_demo_catalog.reference_data.exchange_rates AS
+CREATE OR REPLACE TABLE datapact.reference_data.exchange_rates AS
 SELECT currency_pair,
   rate,
   date_add('2024-01-01', id % 365) as rate_date,
@@ -1120,7 +1236,7 @@ FROM (
       )
   );
 -- Business Metrics Summary (Executive KPIs)
-CREATE OR REPLACE TABLE datapact_demo_catalog.reference_data.business_metrics AS
+CREATE OR REPLACE TABLE datapact.reference_data.business_metrics AS
 SELECT date_add('2024-01-01', id) as metric_date,
   ROUND(2000000 + rand() * 500000, 2) as daily_revenue,
   (80000 + (rand() * 20000))::INT as daily_orders,
@@ -1142,4 +1258,4 @@ SELECT 'DataPact Enterprise Demo Environment Setup Complete!' as message,
   'Ready for validation testing' as status
 FROM information_schema.tables
 WHERE table_schema IN ('source_data', 'target_data', 'reference_data')
-  AND table_catalog = 'datapact_demo_catalog';
+  AND table_catalog = 'datapact';

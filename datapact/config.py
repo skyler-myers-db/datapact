@@ -10,7 +10,55 @@ Classes:
 These models are intended to be used for parsing and validating DataPact YAML configuration files.
 """
 
-from pydantic import BaseModel, Field, field_validator
+import re
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+class CustomSqlTest(BaseModel):
+    """
+    Represents a user-defined SQL validation that runs against both source and target tables.
+
+    Attributes:
+        name (str): Friendly identifier that appears in rendered results.
+        sql (str): SQL query (without trailing semicolon) executed independently against the
+            source and target tables. Results are compared for exact equality. The string
+            may reference templated fields such as ``{{ table_fqn }}``, ``{{ source_fqn }}``,
+            or ``{{ target_fqn }}``.
+        description (str | None): Optional human-friendly context about what the custom SQL checks.
+    """
+
+    name: str
+    sql: str
+    description: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        """Ensure the custom SQL test name is non-empty and identifier-friendly."""
+
+        trimmed = value.strip()
+        if not trimmed:
+            raise ValueError("Custom SQL test name cannot be empty.")
+        if len(trimmed) > 128:
+            raise ValueError("Custom SQL test name must be 128 characters or fewer.")
+        # Allow letters, numbers, spaces, underscores, and hyphens to keep friendly labels.
+        if not re.fullmatch(r"[A-Za-z0-9_\-\s]+", trimmed):
+            raise ValueError(
+                "Custom SQL test name may only contain letters, numbers, spaces, underscores, and hyphens."
+            )
+        return trimmed
+
+    @field_validator("sql")
+    @classmethod
+    def validate_sql(cls, value: str) -> str:
+        """Ensure SQL is present and does not include trailing semicolons."""
+
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Custom SQL must be provided.")
+        if stripped.endswith(";"):
+            raise ValueError("Custom SQL should not include a trailing semicolon.")
+        return stripped
 
 
 # Represents the innermost validation: { agg: "SUM", tolerance: 0.05 }
@@ -66,6 +114,7 @@ class ValidationTask(BaseModel):
         business_priority (str | None): Priority classification (Critical/High/Medium/Low).
         expected_sla_hours (float | None): Target remediation window in hours for failures.
         estimated_impact_usd (float | None): Estimated financial exposure if the check fails.
+        custom_sql_tests (list[CustomSqlTest] | None): User-defined SQL validations to execute on source and target.
     """
 
     task_key: str
@@ -92,6 +141,7 @@ class ValidationTask(BaseModel):
     business_priority: str | None = None
     expected_sla_hours: float | None = None
     estimated_impact_usd: float | None = None
+    custom_sql_tests: list[CustomSqlTest] | None = None
 
     @field_validator(
         "count_tolerance",
@@ -142,6 +192,21 @@ class ValidationTask(BaseModel):
         if value < 0:
             raise ValueError(f"{field.name} must be greater than or equal to 0")
         return value
+
+    @model_validator(mode="after")
+    def validate_custom_sql_tests(self) -> "ValidationTask":
+        """Ensure custom SQL test names are unique within the task."""
+
+        tests = self.custom_sql_tests or []
+        seen: set[str] = set()
+        for test in tests:
+            lowered = test.name.lower()
+            if lowered in seen:
+                raise ValueError(
+                    f"Duplicate custom SQL test name detected: '{test.name}'. Names must be unique per task."
+                )
+            seen.add(lowered)
+        return self
 
 
 # This is the root model for the entire YAML file

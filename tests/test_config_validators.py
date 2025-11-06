@@ -78,3 +78,38 @@ def test_business_numeric_metadata_cannot_be_negative(field):
     with pytest.raises(ValidationError) as ei:
         _minimal_task(**{field: -1})
     assert f"{field} must be greater than or equal to 0" in str(ei.value)
+
+
+def test_custom_sql_test_requires_unique_names_case_insensitive():
+    with pytest.raises(ValidationError) as ei:
+        _minimal_task(
+            custom_sql_tests=[
+                {"name": "Balance Check", "sql": "SELECT 1"},
+                {"name": "balance check", "sql": "SELECT 1"},
+            ]
+        )
+    assert "Duplicate custom SQL test name detected" in str(ei.value)
+
+
+def test_custom_sql_test_rejects_trailing_semicolon():
+    with pytest.raises(ValidationError) as ei:
+        _minimal_task(
+            custom_sql_tests=[
+                {"name": "Trailing", "sql": "SELECT 1;"},
+            ]
+        )
+    assert "should not include a trailing semicolon" in str(ei.value)
+
+
+def test_custom_sql_test_valid_config():
+    task = _minimal_task(
+        custom_sql_tests=[
+            {
+                "name": "Daily Totals",
+                "sql": "SELECT date, SUM(amount) FROM {{ table_fqn }} GROUP BY date",
+                "description": "Ensure aggregated totals remain stable",
+            }
+        ]
+    )
+    assert task.custom_sql_tests is not None
+    assert task.custom_sql_tests[0].name == "Daily Totals"

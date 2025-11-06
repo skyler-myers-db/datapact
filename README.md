@@ -13,6 +13,7 @@
 ## Highlights
 - **Executive ROI intelligence** – every run persists curated Delta tables (`exec_run_summary`, `exec_domain_breakdown`, `exec_owner_breakdown`, `exec_priority_breakdown`) that feed impact counters, SLA heatmaps, and accountability views.
 - **Declarative, auditable validation** – describe row-count, hash, null, aggregate, and uniqueness checks in YAML. Add business metadata (domain, owner, priority, SLA, impact) to drive storytelling.
+- **Bring-your-own SQL** – author `custom_sql_tests` to run bespoke SQL on both source and target tables, then compare the result sets for exact equality.
 - **One-click Lakeview experience** – DataPact publishes an interactive dashboard with ROI metrics, trend lines, remediation drill-downs, and check-level payloads. Genie datasets are ready for conversational analytics.
 - **Databricks-first orchestration** – runs natively through Databricks Jobs and Serverless SQL; no clusters to babysit or dashboards to wire manually.
 - **Enterprise mega-demo** – spin up 5M customers, 25M+ transactions, 12M streaming telemetry events, 15M digital sessions, an AI feature store, and multi-cloud FinOps telemetry to showcase Databricks-scale validation out of the box.
@@ -40,6 +41,14 @@ DataPact provides a rich suite of validations to cover the most critical data qu
   - Config entry: `validate_users_email_country_uniqueness_FAIL` in `demo/demo_config.yml`.
   - What it does: Enforces uniqueness on the composite key `(email, country)` with a strict `uniqueness_tolerance: 0.0`.
   - Where to see it: In the results payload, look for `uniqueness_validation_email_country` within the latest run’s details table on the “Run Details” page. The “Failures by Validation Type” chart also includes a “uniqueness” bucket.
+- AI guardrail drift analytics:
+  - Config entry: `validate_prompt_guardrails_FAIL` marries count, hash, null, aggregate, and custom SQL checks on multimodal moderation data.
+  - What it does: Detects toxicity spikes, PII detector regressions, and missing APAC guardrail telemetry across millions of prompt interactions.
+  - Where to see it: Custom SQL payloads (`Guardrail Violations`, `PII Incident Watch`) in the dashboard’s exploded checks table highlight which regions and models triggered blocks.
+- Sustainability ledger assurance:
+  - Config entry: `validate_carbon_ledger_FAIL` reconciles emissions, offsets, and data quality scores for ESG disclosure.
+  - What it does: Surfaces missing Scope 3 entries and offset misstatements with both aggregate tolerances and bespoke SQL rollups.
+  - Where to see it: Inspect the custom SQL payloads to break down variances by emission scope, region, and data source.
 
 | Validation               | **Business Question It Answers**                                                              | **Example Configuration**                                                                                                                                |
 | ------------------------ | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -49,8 +58,21 @@ DataPact provides a rich suite of validations to cover the most critical data qu
 | **Aggregate Validation** | _"Has the total revenue, average order value, or max transaction ID changed beyond an acceptable tolerance?"_ | <pre lang="yaml">task_key: validate_finance<br>...<br>agg_validations:<br>  - column: "total_revenue"<br>    validations: [{agg: SUM, tolerance: 0.005}]</pre>   |
 | **Null Count Validation**| _"Has a recent upstream change caused a spike in NULL values in our critical identifier or attribute columns?"_ | <pre lang="yaml">task_key: validate_customers<br>...<br> null_validation_tolerance: 0.02<br> null_validation_columns: [email, country]</pre>       |
 | **Uniqueness Validation**| _"Are key columns unique (e.g., no duplicate emails or IDs) within each side?"_ | <pre lang="yaml">task_key: validate_users<br>...<br> uniqueness_columns: [email]<br> uniqueness_tolerance: 0.0</pre> |
+| **Custom SQL Validation**| _"Can I codify bespoke reconciliation logic without wiring a new harness?"_ | <pre lang="yaml">task_key: validate_finance<br>...<br>custom_sql_tests:<br>  - name: "Revenue by Channel"<br>    sql: \|<br>      SELECT channel, SUM(net_revenue) AS total_revenue<br>      FROM {{ table_fqn }}<br>      GROUP BY channel</pre> |
 
 ---
+
+#### Custom SQL Validations
+
+Use `custom_sql_tests` when you need to codify domain-specific logic that goes beyond the built-in count, hash, null, uniqueness, and aggregate checks. Each test runs your SQL twice—once against the source object and once against the target—and then flags any rows that exist in only one result set. Within the SQL string you can reference:
+
+- `{{ table_fqn }}` (preferred) for the fully qualified table/view being validated.
+- `{{ source_fqn }}` / `{{ target_fqn }}` if you need to reference both sides explicitly.
+- Any metadata from the task (e.g., `{{ source_schema }}`) for templating.
+
+When a custom SQL check fails, the dashboard now tells you more than just row counts. You’ll see how many rows exist exclusively on each side plus representative sample rows from the source-only and target-only sets, making it easier to spot what drifted without leaving the UI.
+
+The results payload records source/target row counts, counts of rows missing on either side, and the rendered SQL strings for auditability. These signals flow into the Lakeview dashboard and aggregate datasets automatically.
 
 
 ### How It Works: Architecture
@@ -489,4 +511,4 @@ Happy validating! 🎯
 ### Current Limitations
 
 * The primary hard limitation/requirement of DataPact is that, since all computations are fully run and executed on Databricks, both the source and target data need to be accessible via Unity Catalog. This means that, for data sources outside of Databricks, they need to be available to and configured with [Lakehouse Federation](https://docs.databricks.com/aws/en/query-federation/) (or, at least, synced to a Databricks UC table)
-* DataPact is currently limited to the preconfigured testing scenarios (counts, hash checks for equality, aggregations, nulls, etc.). A future release will open it up to creating your own custom test cases (such as custom SQL)
+* Need bespoke checks? Author `custom_sql_tests` in your YAML to run arbitrary SQL against source and target tables, then automatically compare the results for exact equality.

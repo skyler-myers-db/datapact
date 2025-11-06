@@ -316,14 +316,9 @@ class TestMetadataAndPerformanceImprovements:
         )
         query = " ".join(business_impact["queryLines"])
 
-        # Should use direct column
-        assert "SELECT source_schema" in query
-        assert "GROUP BY source_schema" in query
-
-        # Should not extract from payload
-        assert (
-            "get_json_object(to_json(result_payload), '$.source_schema')" not in query
-        )
+        assert "WITH latest_run_ts AS" in query
+        assert "AND run_id IN (SELECT run_id FROM latest_runs)" in query
+        assert "business_domain" in query
 
 
 if __name__ == "__main__":

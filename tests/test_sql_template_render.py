@@ -38,6 +38,7 @@ def _base_payload() -> dict:
         "agg_validations": [],
         "results_table": "`datapact`.`results`.`run_history`",
         "job_name": "job_name_here",
+        "custom_sql_tests": [],
     }
 
 
@@ -260,3 +261,80 @@ def test_uniqueness_multi_columns_alias():
     )
     sql = _render(p)
     assert "AS uniqueness_validation_email_domain" in sql
+
+
+def test_custom_sql_validation_block_contains_metrics_and_payload():
+    p = _base_payload()
+    p.update(
+        {
+            "custom_sql_tests": [
+                {
+                    "name": "Status Distribution",
+                    "description": "Ensure status counts align",
+                    "cte_base_name": "status_distribution",
+                    "source_sql": "SELECT status, COUNT(*) AS cnt FROM `c`.`s`.`a` GROUP BY status",
+                    "target_sql": "SELECT status, COUNT(*) AS cnt FROM `c`.`s`.`b` GROUP BY status",
+                    "base_sql": "SELECT status, COUNT(*) AS cnt FROM {{ table_fqn }} GROUP BY status",
+                }
+            ]
+        }
+    )
+    sql = _render(p)
+    assert "custom_sql_metrics_status_distribution AS (" in sql
+    assert "rows_missing_in_target_status_distribution" in sql
+    assert "rows_missing_in_source_status_distribution" in sql
+    assert "AS custom_sql_validation_status_distribution" in sql
+    assert "rendered_source_sql" in sql
+    assert (
+        "COALESCE(rows_missing_in_target_status_distribution, 0) = 0"
+        in sql
+    )
+    assert "COALESCE(rows_missing_in_source_status_distribution, 0) = 0" in sql
+
+
+def test_full_combo_with_custom_includes_all_sections_and_cross_joins():
+    p = _base_payload()
+    p.update(
+        {
+            "count_tolerance": 0.01,
+            "primary_keys": ["id"],
+            "pk_row_hash_check": True,
+            "pk_hash_tolerance": 0.0,
+            "hash_columns": ["id", "v"],
+            "null_validation_tolerance": 0.02,
+            "null_validation_columns": ["v"],
+            "agg_validations": [
+                {"column": "v", "validations": [{"agg": "sum", "tolerance": 0.05}]}
+            ],
+            "uniqueness_columns": ["email"],
+            "uniqueness_tolerance": 0.0,
+            "custom_sql_tests": [
+                {
+                    "name": "Segment Distribution",
+                    "description": "Ensure per-segment counts remain aligned",
+                    "cte_base_name": "segment_distribution",
+                    "source_sql": "SELECT segment, COUNT(*) AS cnt FROM `c`.`s`.`a` GROUP BY segment",
+                    "target_sql": "SELECT segment, COUNT(*) AS cnt FROM `c`.`s`.`b` GROUP BY segment",
+                    "base_sql": "SELECT segment, COUNT(*) AS cnt FROM {{ table_fqn }} GROUP BY segment",
+                }
+            ],
+        }
+    )
+    sql = _render(p)
+    cj_idx = sql.index("FROM\n")
+    cj_block = sql[cj_idx : cj_idx + 800]
+    assert (
+        "count_metrics CROSS JOIN row_hash_metrics CROSS JOIN null_metrics_v CROSS JOIN agg_metrics_v_SUM CROSS JOIN uniqueness_metrics CROSS JOIN custom_sql_metrics_segment_distribution"
+        in cj_block
+    )
+    assert "AS custom_sql_validation_segment_distribution" in sql
+    assert (
+        "COALESCE(rows_missing_in_target_segment_distribution, 0) = 0"
+        in sql
+    )
+    assert (
+        "COALESCE(rows_missing_in_source_segment_distribution, 0) = 0"
+        in sql
+    )
+    assert "rendered_target_sql" in sql
+    assert "SELECT segment, COUNT(*) AS cnt FROM `c`.`s`.`b` GROUP BY segment" in sql
