@@ -4,11 +4,11 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [2.7.0]
 
 - **Custom SQL Validations:** Authors can supply `custom_sql_tests` in YAML configurations to run bespoke SQL against source and target tables, with automatic equality comparison and dashboard surfacing.
 - **Documentation Refresh:** README and sample configuration now highlight custom SQL capabilities and usage patterns.
-- **Enterprise Demo Expansion:** Demo datasets now include AI guardrail telemetry and carbon ledgers, complete with avant-garde custom SQL checks that showcase DataPact’s full validation matrix at hyper-scale.
+- **Enterprise Demo Expansion:** Demo datasets now include AI guardrail telemetry and carbon ledgers, complete with custom SQL checks that showcase DataPact’s full validation matrix at hyper-scale.
 - **Dashboard Clarity:** Business impact visuals now scope to the most recent run via job timestamps, and custom SQL results surface sample discrepant rows instead of opaque hashes.
 
 ## [2.6.0]

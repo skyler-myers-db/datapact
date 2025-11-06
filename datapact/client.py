@@ -2416,7 +2416,10 @@ Once created, users can ask questions in natural language to analyze data qualit
                 # Build column encodings with conditional formatting
                 column_encodings = []
                 for col, display in zip(columns, display_names):
-                    col_encoding = {"fieldName": col, "displayName": display}
+                    col_encoding: dict[str, Any] = {
+                        "fieldName": col,
+                        "displayName": display,
+                    }
 
                     # Add conditional formatting for status columns
                     if col in ["overall_status", "status", "health_status"]:
@@ -3422,8 +3425,35 @@ Once created, users can ask questions in natural language to analyze data qualit
             )
             if warehouse.id is None:
                 raise ValueError(f"Warehouse '{name}' has no ID and cannot be started.")
-            self.w.warehouses.start(warehouse.id).result(timeout=timedelta(minutes=10))
-            logger.success(f"Warehouse '{name}' started successfully.")
+            # Trigger start and poll the warehouse state until RUNNING or timeout
+            self.w.warehouses.start(warehouse.id)
+            logger.info(f"Waiting for warehouse '{name}' to reach RUNNING state...")
+            deadline = datetime.now() + timedelta(minutes=10)
+            while datetime.now() < deadline:
+                try:
+                    wh = self.w.warehouses.get(warehouse.id)
+                except Exception:
+                    wh = None
+                if wh and wh.state == sql_service.State.RUNNING:
+                    logger.success(f"Warehouse '{name}' started successfully.")
+                    break
+                if wh and getattr(wh, "state", None) not in (
+                    None,
+                    sql_service.State.STARTING,
+                ):
+                    # If it moved to an unexpected terminal state, raise
+                    if wh.state not in (
+                        sql_service.State.STARTING,
+                        sql_service.State.RUNNING,
+                    ):
+                        raise RuntimeError(
+                            f"Warehouse '{name}' failed to start. State: {wh.state}"
+                        )
+                time.sleep(5)
+            else:
+                raise TimeoutError(
+                    f"Timed out waiting for warehouse '{name}' to start."
+                )
 
         if warehouse.id is None:
             raise ValueError(f"Warehouse '{name}' has no ID and cannot be retrieved.")
