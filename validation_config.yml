@@ -18,6 +18,13 @@ validations:
       - column: "lifetime_value"
         validations:
           - { agg: "sum", tolerance: 0.005 } # Tolerate a 0.5% difference in total lifetime value.
+    custom_sql_tests:
+      - name: "Status Distribution"
+        description: "Ensure the source and target have identical status counts"
+        sql: |
+          SELECT status, COUNT(*) AS record_count
+          FROM {{ table_fqn }}
+          GROUP BY status
 
   # This task validates a large fact table where only critical columns are hashed.
   - task_key: "validate_fact_orders"

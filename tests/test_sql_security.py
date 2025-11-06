@@ -6,6 +6,7 @@ from datapact.sql_utils import (
     escape_sql_string,
     validate_job_name,
     build_safe_filter,
+    make_sql_identifier,
 )
 
 
@@ -144,7 +145,14 @@ class TestSQLSecurity:
 
             # Check that the job name is properly quoted
             assert "WHERE job_name = 'Valid Job Name'" in sql
-            assert "DROP TABLE" not in sql  # No injection
+        assert "DROP TABLE" not in sql  # No injection
+
+    def test_make_sql_identifier_generates_lower_snake_case(self):
+        """Custom SQL helper should produce consistent SQL-safe identifiers."""
+        assert make_sql_identifier("Orders By Region") == "orders_by_region"
+        assert make_sql_identifier("123 Leading digits") == "cte_123_leading_digits"
+        assert make_sql_identifier("special*&^%chars") == "special_chars"
+        assert make_sql_identifier("   ") == "cte"
 
 
 if __name__ == "__main__":

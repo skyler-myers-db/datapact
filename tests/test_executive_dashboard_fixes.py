@@ -254,6 +254,7 @@ class TestExecutiveDashboardFixes:
                         "null_check",
                         "unique_check",
                         "agg_check",
+                        "custom_sql_check",
                     ]
                     for check in check_columns:
                         if check in column_names:
@@ -399,7 +400,9 @@ class TestExecutiveDashboardFixes:
             )
             impact_query = " ".join(impact_dataset["queryLines"])
 
-            # Should have health status indicators
+            # Should have health status indicators and latest run scoping
+            assert "WITH latest_run_ts AS" in impact_query
+            assert "AND run_id IN (SELECT run_id FROM latest_runs)" in impact_query
             assert "🟢 Excellent" in impact_query
             assert "🟡 Good" in impact_query
             assert "🟠 Fair" in impact_query
@@ -412,6 +415,7 @@ class TestExecutiveDashboardFixes:
                 if d["name"] == "ds_owner_accountability"
             )
             owner_query = " ".join(owner_dataset["queryLines"])
+            assert "WITH latest_run_ts AS" in owner_query
             assert "business_owner" in owner_query
             assert "potential_impact_usd" in owner_query
 

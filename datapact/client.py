@@ -703,21 +703,30 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Executive KPI Dashboard",
                 "queryLines": [
                     q(
-                        "SELECT "
-                        "  total_tasks, "
-                        "  success_count AS passed_tasks, "
-                        "  failure_count AS failed_tasks, "
-                        "  success_rate_percent, "
-                        "  data_quality_score, "
-                        "  critical_failures, "
-                        "  potential_impact_usd, "
-                        "  realized_impact_usd, "
-                        "  avg_expected_sla_hours, "
-                        "  total_tasks AS tables_validated "
-                        "FROM {run_summary} "
-                        "WHERE job_name = {job} "
-                        "ORDER BY run_id DESC "
-                        "LIMIT 1"
+                        """SELECT
+                          total_tasks,
+                          success_count AS passed_tasks,
+                          failure_count AS failed_tasks,
+                          success_rate_percent,
+                          data_quality_score,
+                          critical_failures,
+                          potential_impact_usd,
+                          realized_impact_usd,
+                          avg_expected_sla_hours,
+                          total_tasks AS tables_validated
+                        FROM
+                          {run_summary}
+                        WHERE
+                          job_name = {job}
+                          AND generated_at = (
+                            SELECT
+                              MAX(generated_at)
+                            FROM
+                              {run_summary}
+                          )
+                        ORDER BY
+                          run_id DESC
+                        LIMIT 1;"""
                     )
                 ],
             },
@@ -809,6 +818,10 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "  SELECT task_key, 'Business Rule Violation' AS validation_type\n"
                         "  FROM failure_details\n"
                         "  WHERE to_json(result_payload) LIKE '%agg_validation_%status%FAIL%'\n"
+                        "  UNION ALL\n"
+                        "  SELECT task_key, 'Custom SQL Mismatch' AS validation_type\n"
+                        "  FROM failure_details\n"
+                        "  WHERE to_json(result_payload) LIKE '%custom_sql_validation_%status%FAIL%'\n"
                         ") t\n"
                         "GROUP BY validation_type\n"
                         "ORDER BY failure_count DESC;"
@@ -891,31 +904,60 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Business Impact Assessment",
                 "queryLines": [
                     q(
-                        "SELECT "
-                        "  business_domain, "
-                        "  total_validations, "
-                        "  failed_validations, "
-                        "  success_rate_percent::DOUBLE || '%' AS quality_score, "
-                        "  '$' || FORMAT_NUMBER(potential_impact_usd, 2) AS potential_impact_usd, "
-                        "  '$' || FORMAT_NUMBER(realized_impact_usd, 2) AS realized_impact_usd, "
-                        "  avg_expected_sla_hours, "
-                        "  CASE "
-                        "    WHEN failed_validations = 0 THEN '🟢 Excellent' "
-                        "    WHEN success_rate_percent >= 95 THEN '🟡 Good' "
-                        "    WHEN success_rate_percent >= 90 THEN '🟠 Fair' "
-                        "    ELSE '🔴 Needs Attention' "
-                        "  END as health_status, "
-                        "  CASE "
-                        "    WHEN avg_expected_sla_hours IS NULL THEN 'Unknown SLA' "
-                        "    WHEN avg_expected_sla_hours <= 4 THEN 'Lightning Response (<=4h)' "
-                        "    WHEN avg_expected_sla_hours <= 12 THEN 'Business Hours (<=12h)' "
-                        "    WHEN avg_expected_sla_hours <= 24 THEN 'Standard (<=24h)' "
-                        "    ELSE 'Backlog Risk (>24h)' "
-                        "  END AS sla_profile, "
-                        "  COALESCE(DATE_FORMAT(last_failure_ts, 'yyyy-MM-dd HH:mm'), 'No failures') as last_issue "
-                        "FROM {domain_breakdown} "
-                        "WHERE job_name = {job} "
-                        "ORDER BY failed_validations DESC, potential_impact_usd DESC"
+                        """WITH bus_impact AS (
+                              SELECT
+                                business_domain,
+                                SUM(total_validations) AS total_validations,
+                                SUM(failed_validations) AS failed_validations,
+                                FIRST(success_rate_percent) AS success_rate_percent,
+                                FIRST(success_rate_percent::DOUBLE) || '%' AS quality_score,
+                                '$' || FORMAT_NUMBER(SUM(potential_impact_usd), 2) AS potential_impact_usd,
+                                '$' || FORMAT_NUMBER(SUM(realized_impact_usd), 2) AS realized_impact_usd,
+                                AVG(avg_expected_sla_hours) AS avg_expected_sla_hours,
+                                COALESCE(DATE_FORMAT(MAX(last_failure_ts), 'yyyy-MM-dd HH:mm'), 'No failures') as last_issue
+                              FROM
+                                {domain_breakdown}
+                              WHERE
+                                job_name = {job}
+                                AND generated_at = (
+                                  SELECT
+                                    MAX(generated_at)
+                                  FROM
+                                    {domain_breakdown}
+                                )
+                              GROUP BY
+                                business_domain
+                            )
+                            SELECT
+                              business_domain,
+                              total_validations,
+                              failed_validations,
+                              CASE
+                                WHEN failed_validations = 0 THEN '100.00%'
+                                ELSE ROUND((1 - failed_validations / total_validations) * 100, 2) || '%'
+                              END AS quality_score,
+                              potential_impact_usd,
+                              realized_impact_usd,
+                              avg_expected_sla_hours,
+                              CASE
+                                WHEN failed_validations = 0 THEN '🟢 Excellent'
+                                WHEN success_rate_percent >= 95 THEN '🟡 Good'
+                                WHEN success_rate_percent >= 90 THEN '🟠 Fair'
+                                ELSE '🔴 Needs Attention'
+                              END as health_status,
+                              CASE
+                                WHEN avg_expected_sla_hours IS NULL THEN 'Unknown SLA'
+                                WHEN avg_expected_sla_hours <= 4 THEN 'Lightning Response (<=4h)'
+                                WHEN avg_expected_sla_hours <= 12 THEN 'Business Hours (<=12h)'
+                                WHEN avg_expected_sla_hours <= 24 THEN 'Standard (<=24h)'
+                                ELSE 'Backlog Risk (>24h)'
+                              END AS sla_profile,
+                              last_issue
+                            FROM
+                              bus_impact
+                            ORDER BY
+                              failed_validations DESC,
+                              total_validations DESC;"""
                     )
                 ],
             },
@@ -924,18 +966,45 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Owner Accountability Overview",
                 "queryLines": [
                     q(
-                        "SELECT "
-                        "  business_owner, "
-                        "  total_validations, "
-                        "  failed_validations, "
-                        "  success_rate_percent || '%' AS success_rate_percent, "
-                        "  '$' || FORMAT_NUMBER(potential_impact_usd, 2) AS potential_impact_usd, "
-                        "  '$' || FORMAT_NUMBER(realized_impact_usd, 2) AS realized_impact_usd, "
-                        "  avg_expected_sla_hours, "
-                        "  COALESCE(DATE_FORMAT(last_failure_ts, 'yyyy-MM-dd HH:mm'), 'No failures') as last_issue "
-                        "FROM {owner_breakdown} "
-                        "WHERE job_name = {job} "
-                        "ORDER BY failed_validations DESC, potential_impact_usd DESC"
+                        """WITH owner_stats AS (
+                              SELECT
+                                business_owner,
+                                SUM(total_validations) AS total_validations,
+                                SUM(failed_validations) AS failed_validations,
+                                '$' || FORMAT_NUMBER(SUM(potential_impact_usd), 2) AS potential_impact_usd,
+                                '$' || FORMAT_NUMBER(SUM(realized_impact_usd), 2) AS realized_impact_usd,
+                                AVG(avg_expected_sla_hours) As avg_expected_sla_hours,
+                                COALESCE(DATE_FORMAT(MAX(last_failure_ts), 'yyyy-MM-dd HH:mm'), 'No failures') AS last_issue
+                              FROM
+                                {owner_breakdown}
+                              WHERE
+                                job_name = {job}
+                                AND generated_at = (
+                                  SELECT
+                                    MAX(generated_at)
+                                  FROM
+                                    {owner_breakdown}
+                                )
+                              GROUP BY
+                                business_owner
+                            )
+                            SELECT
+                              business_owner,
+                              total_validations,
+                              failed_validations,
+                              CASE
+                                WHEN failed_validations = 0 THEN '100.00%'
+                                ELSE ROUND((1 - failed_validations / total_validations) * 100, 2) || '%'
+                              END AS success_rate_percent,
+                              potential_impact_usd,
+                              realized_impact_usd,
+                              avg_expected_sla_hours,
+                              last_issue
+                            FROM
+                              owner_stats
+                            ORDER BY
+                              failed_validations DESC,
+                              total_validations DESC;"""
                     )
                 ],
             },
@@ -944,17 +1013,27 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Priority Risk Profile",
                 "queryLines": [
                     q(
-                        "SELECT "
-                        "  business_priority, "
-                        "  total_validations, "
-                        "  failed_validations, "
-                        "  success_rate_percent, "
-                        "  potential_impact_usd, "
-                        "  realized_impact_usd, "
-                        "  COALESCE(DATE_FORMAT(last_failure_ts, 'yyyy-MM-dd HH:mm'), 'No failures') as last_issue "
-                        "FROM {priority_breakdown} "
-                        "WHERE job_name = {job} "
-                        "ORDER BY failed_validations DESC, potential_impact_usd DESC"
+                        """SELECT
+                              business_priority,
+                              total_validations,
+                              failed_validations,
+                              success_rate_percent,
+                              potential_impact_usd,
+                              realized_impact_usd,
+                              COALESCE(DATE_FORMAT(last_failure_ts, 'yyyy-MM-dd HH:mm'), 'No failures') as last_issue
+                            FROM
+                              {priority_breakdown}
+                            WHERE
+                              job_name = {job}
+                              AND generated_at = (
+                                SELECT
+                                  MAX(generated_at)
+                                FROM
+                                  {priority_breakdown}
+                              )
+                            ORDER BY
+                              failed_validations DESC,
+                              potential_impact_usd DESC;"""
                     )
                 ],
             },
@@ -963,7 +1042,12 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Detailed View of All Checks",
                 "queryLines": [
                     q(
-                        "WITH base_data AS ( "
+                        "WITH latest_run AS ( "
+                        "  SELECT MAX(job_start_ts) AS job_start_ts "
+                        "  FROM {table} "
+                        "  WHERE job_name = {job} "
+                        "), "
+                        "base_data AS ( "
                         "  SELECT "
                         "    task_key, "
                         "    status, "
@@ -979,15 +1063,14 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "        run_id, "
                         "        job_name, "
                         "        row_number() over ( "
-                        "          partition by run_id, "
-                        "          task_key "
-                        "          order by "
-                        "            job_start_ts desc "
+                        "          partition by task_key "
+                        "          order by job_start_ts desc, run_id desc "
                         "        ) AS rn "
                         "      FROM "
                         "        {table} "
                         "      WHERE "
                         "        job_name = {job} "
+                        "        AND job_start_ts = (SELECT job_start_ts FROM latest_run) "
                         "    ) "
                         "  WHERE "
                         "    rn = 1 "
@@ -1160,6 +1243,50 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "    ) agg_data "
                         "  WHERE "
                         "    agg_field IS NOT NULL "
+                        "  UNION ALL "
+                        "  SELECT "
+                        "    task_key, "
+                        "    CONCAT('Custom SQL: ', custom_field) as check_type, "
+                        "    get_json_object(custom_json, '$.status') as check_status, "
+                        "    CONCAT( "
+                        "      'Source rows: ', "
+                        "      COALESCE(get_json_object(custom_json, '$.source_row_count'), '0'), "
+                        "      ' | Target rows: ', "
+                        "      COALESCE(get_json_object(custom_json, '$.target_row_count'), '0'), "
+                        "      ' | Rows missing in target: ', "
+                        "      COALESCE(get_json_object(custom_json, '$.rows_missing_in_target'), '0'), "
+                        "      ' | Rows missing in source: ', "
+                        "      COALESCE(get_json_object(custom_json, '$.rows_missing_in_source'), '0'), "
+                        "      CASE "
+                        "        WHEN get_json_object(custom_json, '$.sample_missing_in_target') IS NOT NULL "
+                        "             AND get_json_object(custom_json, '$.sample_missing_in_target') <> 'null' "
+                        "        THEN CONCAT(' | Example present only in source: ', get_json_object(custom_json, '$.sample_missing_in_target')) "
+                        "        ELSE '' "
+                        "      END, "
+                        "      CASE "
+                        "        WHEN get_json_object(custom_json, '$.sample_missing_in_source') IS NOT NULL "
+                        "             AND get_json_object(custom_json, '$.sample_missing_in_source') <> 'null' "
+                        "        THEN CONCAT(' | Example present only in target: ', get_json_object(custom_json, '$.sample_missing_in_source')) "
+                        "        ELSE '' "
+                        "      END "
+                        "    ) as details "
+                        "  FROM "
+                        "    ( "
+                        "      SELECT "
+                        "        task_key, "
+                        "        result_payload, "
+                        "        regexp_extract(key, 'custom_sql_validation_(.*)', 1) as custom_field, "
+                        "        value as custom_json "
+                        "      FROM "
+                        "        base_data LATERAL VIEW explode( "
+                        "          from_json(to_json(result_payload), 'map<string,string>') "
+                        "        ) t AS key, "
+                        "        value "
+                        "      WHERE "
+                        "        key LIKE 'custom_sql_validation_%' "
+                        "    ) custom_data "
+                        "  WHERE "
+                        "    custom_field IS NOT NULL "
                         "), "
                         "duped AS ( "
                         "  SELECT "
@@ -1190,44 +1317,91 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Validation Results with Check Status",
                 "queryLines": [
                     q(
-                        "SELECT task_key as validation_name, "
-                        "CASE status "
-                        "  WHEN 'SUCCESS' THEN '✅' "
-                        "  WHEN 'FAILURE' THEN '❌' "
-                        "  ELSE '❓' END as overall_status, "
-                        "CASE WHEN get_json_object(to_json(result_payload), '$.count_validation.status') = 'PASS' THEN '✅ Count' "
-                        "     WHEN get_json_object(to_json(result_payload), '$.count_validation.status') = 'FAIL' THEN '❌ Count' "
-                        "     ELSE '➖' END as count_check, "
-                        "CASE WHEN get_json_object(to_json(result_payload), '$.row_hash_validation.status') = 'PASS' THEN '✅ Hash' "
-                        "     WHEN get_json_object(to_json(result_payload), '$.row_hash_validation.status') = 'FAIL' THEN '❌ Hash' "
-                        "     ELSE '➖' END as hash_check, "
-                        "CASE WHEN to_json(result_payload) LIKE '%null_validation%' AND to_json(result_payload) NOT LIKE '%null_validation%FAIL%' THEN '✅ Nulls' "
-                        "     WHEN to_json(result_payload) LIKE '%null_validation%FAIL%' THEN '❌ Nulls' "
-                        "     ELSE '➖' END as null_check, "
-                        "CASE WHEN to_json(result_payload) LIKE '%uniqueness_validation%' AND to_json(result_payload) NOT LIKE '%uniqueness_validation%FAIL%' THEN '✅ Unique' "
-                        "     WHEN to_json(result_payload) LIKE '%uniqueness_validation%FAIL%' THEN '❌ Unique' "
-                        "     ELSE '➖' END as unique_check, "
-                        "CASE WHEN to_json(result_payload) LIKE '%agg_validation%' AND to_json(result_payload) NOT LIKE '%agg_validation%FAIL%' THEN '✅ Aggs' "
-                        "     WHEN to_json(result_payload) LIKE '%agg_validation%FAIL%' THEN '❌ Aggs' "
-                        "     ELSE '➖' END as agg_check, "
-                        "COALESCE(business_priority, 'UNSPECIFIED') AS business_priority, "
-                        "COALESCE(business_domain, 'Unspecified') AS business_domain, "
-                        "COALESCE(business_owner, 'Unassigned') AS business_owner, "
-                        "ROUND(expected_sla_hours, 2) AS expected_sla_hours, "
-                        "'$' || FORMAT_NUMBER(ROUND(estimated_impact_usd, 2), 2) AS estimated_impact_usd, "
-                        "CONCAT_WS('.', source_catalog, source_schema, source_table) AS source_table, "
-                        "CONCAT_WS('.', target_catalog, target_schema, target_table) AS target_table "
-                        "FROM ( "
-                        "    SELECT "
-                        "       *, "
-                        "       row_number() over (partition by run_id, task_key order by job_start_ts desc) as rn "
-                        "    FROM "
-                        "       {table} "
-                        "    WHERE "
-                        "       job_name = {job} "
-                        ") "
-                        "WHERE rn = 1 "
-                        "ORDER BY status DESC, task_key"
+                        """SELECT
+                          task_key as validation_name,
+                          CASE status
+                            WHEN 'SUCCESS' THEN '✅'
+                            WHEN 'FAILURE' THEN '❌'
+                            ELSE '❓'
+                          END as overall_status,
+                          CASE
+                            WHEN
+                              get_json_object(to_json(result_payload), '$.count_validation.status') = 'PASS'
+                            THEN
+                              '✅ Count'
+                            WHEN
+                              get_json_object(to_json(result_payload), '$.count_validation.status') = 'FAIL'
+                            THEN
+                              '❌ Count'
+                            ELSE '➖'
+                          END as count_check,
+                          CASE
+                            WHEN
+                              get_json_object(to_json(result_payload), '$.row_hash_validation.status') = 'PASS'
+                            THEN
+                              '✅ Hash'
+                            WHEN
+                              get_json_object(to_json(result_payload), '$.row_hash_validation.status') = 'FAIL'
+                            THEN
+                              '❌ Hash'
+                            ELSE '➖'
+                          END as hash_check,
+                          CASE
+                            WHEN
+                              to_json(result_payload) LIKE '%null_validation%'
+                              AND to_json(result_payload) NOT LIKE '%null_validation%"status":"FAIL"%'
+                            THEN
+                              '✅ Nulls'
+                            WHEN to_json(result_payload) LIKE '%null_validation%FAIL%' THEN '❌ Nulls'
+                            ELSE '➖'
+                          END as null_check,
+                          CASE
+                            WHEN
+                              to_json(result_payload) LIKE '%uniqueness_validation%'
+                              AND to_json(result_payload) NOT LIKE '%uniqueness_validation%"status":"FAIL"%'
+                            THEN
+                              '✅ Unique'
+                            WHEN to_json(result_payload) LIKE '%uniqueness_validation%FAIL%' THEN '❌ Unique'
+                            ELSE '➖'
+                          END as unique_check,
+                          CASE
+                            WHEN
+                              to_json(result_payload) LIKE '%agg_validation%'
+                              AND to_json(result_payload) NOT LIKE '%agg_validation%"status":"FAIL"%'
+                            THEN
+                              '✅ Aggs'
+                            WHEN to_json(result_payload) LIKE '%agg_validation%FAIL%' THEN '❌ Aggs'
+                            ELSE '➖'
+                          END as agg_check,
+                          CASE
+                            WHEN
+                              to_json(result_payload) LIKE '%custom_sql_validation%'
+                              AND to_json(result_payload) NOT LIKE '%custom_sql_validation%"status":"FAIL"%'
+                            THEN
+                              '✅ Custom SQL'
+                            WHEN to_json(result_payload) LIKE '%custom_sql_validation%FAIL%' THEN '❌ Custom SQL'
+                            ELSE '➖'
+                          END as custom_sql_check,
+                          COALESCE(business_priority, 'UNSPECIFIED') AS business_priority,
+                          COALESCE(business_domain, 'Unspecified') AS business_domain,
+                          COALESCE(business_owner, 'Unassigned') AS business_owner,
+                          ROUND(expected_sla_hours, 2) AS expected_sla_hours,
+                          '$' || FORMAT_NUMBER(ROUND(estimated_impact_usd, 2), 2) AS estimated_impact_usd,
+                          CONCAT_WS('.', source_catalog, source_schema, source_table) AS source_table,
+                          CONCAT_WS('.', target_catalog, target_schema, target_table) AS target_table
+                        FROM
+                          {table}
+                        WHERE
+                          job_name = {job}
+                          AND job_start_ts = (
+                            SELECT
+                              MAX(job_start_ts)
+                            FROM
+                              {table}
+                          )
+                        ORDER BY
+                          status DESC,
+                          validation_name;"""
                     )
                 ],
             },
@@ -2130,7 +2304,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "Avg SLA (hrs)",
                         "Health Status",
                         "SLA Profile",
-                        "Last Issue",
+                        "Last Issue Timestamp",
                     ]
                 elif w_def["ds_name"] == "ds_validation_details":
                     columns = [
@@ -2141,6 +2315,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "null_check",
                         "unique_check",
                         "agg_check",
+                        "custom_sql_check",
                         "business_priority",
                         "business_domain",
                         "business_owner",
@@ -2157,6 +2332,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "Nulls",
                         "Unique",
                         "Aggs",
+                        "Custom SQL",
                         "Priority",
                         "Domain",
                         "Owner",
