@@ -887,6 +887,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "      MAX(job_start_ts) "
                         "    FROM "
                         "      {table} "
+                        "    WHERE "
+                        "      job_name = {job} "
                         "  ) "
                         "ORDER BY "
                         "  CASE status "
@@ -931,6 +933,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                                     MAX(generated_at)
                                   FROM
                                     {domain_breakdown}
+                                  WHERE
+                                    job_name = {job}
                                 )
                               GROUP BY
                                 business_domain
