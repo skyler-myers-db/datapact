@@ -2,7 +2,12 @@
 
 import importlib
 
-from datapact.config import ValidationTask
+from datapact.config import (
+    ValidationTask,
+    AggValidation,
+    AggValidationDetail,
+    CustomSqlTest,
+)
 from datapact.sql_generator import render_validation_sql
 
 
@@ -36,32 +41,34 @@ def _task_with_all_features() -> ValidationTask:
         uniqueness_columns=["email", "country"],
         uniqueness_tolerance=0.0,
         agg_validations=[
-            {
-                "column": "lifetime_value",
-                "validations": [{"agg": "sum", "tolerance": 0.03}],
-            }
+            AggValidation(
+                column="lifetime_value",
+                validations=[AggValidationDetail(agg="sum", tolerance=0.03)],
+            )
         ],
         custom_sql_tests=[
-            {
-                "name": "Status Rollup",
-                "description": "Compare daily status distribution by country.",
-                "sql": """
+            CustomSqlTest(
+                name="Status Rollup",
+                description="Compare daily status distribution by country.",
+                sql="""
                     SELECT country,
                            status,
                            COUNT(*) AS record_count
                     FROM {{ table_fqn }}
                     GROUP BY country, status
                 """,
-            },
-            {
-                "name": "Role Aware Template",
-                "description": "Embeds the rendering role for auditing.",
-                "sql": """
-                    SELECT '{{ table_fqn }}' AS table_name,
+            ),
+            CustomSqlTest(
+                name="Role Aware Template",
+                description="Embeds the rendering role for auditing.",
+                sql="""
+                    SELECT '{{ rendered_role }}' AS rendered_role,
+                           '{{ declared_source_catalog }}' AS declared_source_catalog,
+                           '{{ table_fqn }}' AS table_name,
                            COUNT(*) AS total_rows
                     FROM {{ table_fqn }}
                 """,
-            },
+            ),
         ],
     )
 
