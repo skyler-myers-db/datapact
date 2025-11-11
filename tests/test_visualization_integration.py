@@ -447,7 +447,10 @@ class TestVisualizationIntegration:
             assert "WITH latest_run_ts AS" in query
             assert "AND run_id IN (SELECT run_id FROM latest_runs)" in query
             assert "business_domain" in query
-            assert "CASE\n                            WHEN failed_validations = 0 THEN '🟢 Excellent'" in query
+            assert (
+                "CASE\n                            WHEN failed_validations = 0 THEN '🟢 Excellent'"
+                in query
+            )
 
 
 if __name__ == "__main__":

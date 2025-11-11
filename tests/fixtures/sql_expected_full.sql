@@ -1,6 +1,7 @@
 DECLARE VARIABLE validation_begin_ts TIMESTAMP DEFAULT current_timestamp();
 
 CREATE OR REPLACE TEMP VIEW final_metrics_view AS
+
 WITH
 count_metrics AS (
   SELECT
@@ -40,6 +41,7 @@ agg_metrics_v_SUM AS (
 )
 SELECT
   validation_begin_ts AS validation_begin_ts,
+  current_timestamp() AS validation_complete_ts,
   'c' AS source_catalog,
   's' AS source_schema,
   'a' AS source_table,
@@ -53,9 +55,9 @@ SELECT
   NULL AS estimated_impact_usd,
   parse_json(to_json(struct(
     NULL AS applied_filter
-, 
+    ,
     'id' AS configured_primary_keys
-, 
+,
     struct(
       FORMAT_NUMBER(source_count, '#,##0') AS source_count,
       FORMAT_NUMBER(target_count, '#,##0') AS target_count,
@@ -124,7 +126,7 @@ count_metrics CROSS JOIN row_hash_metrics CROSS JOIN null_metrics_v CROSS JOIN a
 
 INSERT INTO `datapact`.`results`.`run_history` (task_key, status, run_id, job_id, job_name, job_start_ts, validation_begin_ts, validation_complete_ts, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, business_domain, business_owner, business_priority, expected_sla_hours, estimated_impact_usd, result_payload)
 SELECT 't1', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
-:run_id, :job_id, 'job_name_here', :job_start_ts, validation_begin_ts, current_timestamp(), source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, business_domain, business_owner, business_priority, expected_sla_hours, estimated_impact_usd, result_payload FROM final_metrics_view;
+:run_id, :job_id, 'job_name_here', :job_start_ts, validation_begin_ts, validation_complete_ts, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, business_domain, business_owner, business_priority, expected_sla_hours, estimated_impact_usd, result_payload FROM final_metrics_view;
 
 SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: t1. Payload: \n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false;
 

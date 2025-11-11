@@ -13,6 +13,8 @@ These models are intended to be used for parsing and validating DataPact YAML co
 import re
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .sql_utils import make_sql_identifier
+
 
 class CustomSqlTest(BaseModel):
     """
@@ -216,6 +218,7 @@ class ValidationTask(BaseModel):
 
         tests = self.custom_sql_tests or []
         seen: set[str] = set()
+        cte_names: dict[str, str] = {}
         for test in tests:
             lowered = test.name.lower()
             if lowered in seen:
@@ -223,6 +226,16 @@ class ValidationTask(BaseModel):
                     f"Duplicate custom SQL test name detected: '{test.name}'. Names must be unique per task."
                 )
             seen.add(lowered)
+
+            normalized = make_sql_identifier(test.name, prefix="custom_sql")
+            collision = cte_names.get(normalized)
+            if collision:
+                raise ValueError(
+                    "Custom SQL test names must remain unique even after sanitization. "
+                    f"'{test.name}' conflicts with '{collision}' because both map "
+                    f"to 'custom_sql_validation_{normalized}'."
+                )
+            cte_names[normalized] = test.name
         return self
 
 

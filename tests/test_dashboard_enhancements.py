@@ -13,6 +13,7 @@ This test module validates all dashboard-related fixes including:
 import json
 import pytest
 from unittest.mock import MagicMock, patch
+from databricks.sdk.errors import NotFound
 
 
 class TestDashboardVisualizationFixes:
@@ -81,7 +82,7 @@ class TestDashboardVisualizationFixes:
         """Helper to setup mocks and get dashboard JSON."""
         mock_client.w.workspace.mkdirs = MagicMock()
         mock_client.w.workspace.get_status = MagicMock(
-            side_effect=Exception("Not found")
+            side_effect=NotFound("Not found")
         )
         mock_client.w.lakeview.create = MagicMock(
             return_value=MagicMock(dashboard_id="test_id")
@@ -191,10 +192,15 @@ class TestDashboardVisualizationFixes:
         assert "CAST(result_payload:configured_primary_keys AS STRING)" in query
         assert "trim(CAST(result_payload:applied_filter AS STRING))" in query
 
-        details_page = next(p for p in dashboard_json["pages"] if p["name"] == "details_page")
-        details_widget = next(w for w in details_page["layout"] if w["widget"]["name"] == "details_table")
+        details_page = next(
+            p for p in dashboard_json["pages"] if p["name"] == "details_page"
+        )
+        details_widget = next(
+            w for w in details_page["layout"] if w["widget"]["name"] == "details_table"
+        )
         column_fields = [
-            col["fieldName"] for col in details_widget["widget"]["spec"]["encodings"]["columns"]
+            col["fieldName"]
+            for col in details_widget["widget"]["spec"]["encodings"]["columns"]
         ]
         assert "configured_primary_keys" in column_fields
 
@@ -299,7 +305,7 @@ class TestExecutiveDashboardPerspective:
         """Helper to setup mocks and get dashboard JSON."""
         mock_client.w.workspace.mkdirs = MagicMock()
         mock_client.w.workspace.get_status = MagicMock(
-            side_effect=Exception("Not found")
+            side_effect=NotFound("Not found")
         )
         mock_client.w.lakeview.create = MagicMock(
             return_value=MagicMock(dashboard_id="test_id")

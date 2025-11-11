@@ -627,12 +627,18 @@ class TestEnsureSqlWarehouse:
         mock_warehouse.state = sql_service.State.STOPPED
 
         client.w.warehouses.list.return_value = [mock_warehouse]
-        client.w.warehouses.get.return_value = mock_warehouse
+        running_warehouse = Mock()
+        running_warehouse.state = sql_service.State.RUNNING
+        client.w.warehouses.get.side_effect = [
+            mock_warehouse,
+            running_warehouse,
+            running_warehouse,
+        ]
         client.w.warehouses.start.return_value.result.return_value = None
 
         result = client._ensure_sql_warehouse("test_warehouse")
 
-        assert result == mock_warehouse
+        assert result == running_warehouse
         client.w.warehouses.start.assert_called_once_with("warehouse-123")
 
     def test_ensure_sql_warehouse_not_found(self):

@@ -82,16 +82,15 @@ class TestDashboardQueryFixes:
                 or "to_json(result_payload) LIKE '%null_validation%FAIL%'" in query
             )
             assert "to_json(result_payload) LIKE '%agg_validation%FAIL%'" in query
-            assert "to_json(result_payload) LIKE '%custom_sql_validation%FAIL%'" in query
+            assert (
+                "to_json(result_payload) LIKE '%custom_sql_validation%FAIL%'" in query
+            )
             assert "WITH latest_run AS" in query
             assert (
                 "row_number() over (partition by task_key order by job_start_ts desc, run_id desc)"
                 in query
             )
-            assert (
-                "AND job_start_ts = (SELECT job_start_ts FROM latest_run)"
-                in query
-            )
+            assert "AND job_start_ts = (SELECT job_start_ts FROM latest_run)" in query
 
             # Test 2: Source and target columns should handle nulls
             assert (

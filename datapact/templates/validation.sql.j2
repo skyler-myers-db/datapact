@@ -69,6 +69,7 @@ DECLARE VARIABLE validation_begin_ts TIMESTAMP DEFAULT current_timestamp();
 {% if not has_any %}
 CREATE OR REPLACE TEMP VIEW final_metrics_view AS SELECT
   validation_begin_ts AS validation_begin_ts,
+  current_timestamp() AS validation_complete_ts,
   '{{ source_catalog }}' AS source_catalog,
   '{{ source_schema }}' AS source_schema,
   '{{ source_table }}' AS source_table,
@@ -290,6 +291,7 @@ custom_sql_metrics_{{ custom.cte_base_name }} AS (
 {# SELECT with payload struct and overall status #}
 SELECT
   validation_begin_ts AS validation_begin_ts,
+  current_timestamp() AS validation_complete_ts,
   '{{ source_catalog }}' AS source_catalog,
   '{{ source_schema }}' AS source_schema,
   '{{ source_table }}' AS source_table,
@@ -468,7 +470,7 @@ FROM
 
 INSERT INTO {{ results_table }} (task_key, status, run_id, job_id, job_name, job_start_ts, validation_begin_ts, validation_complete_ts, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, business_domain, business_owner, business_priority, expected_sla_hours, estimated_impact_usd, result_payload)
 SELECT '{{ task_key_ }}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
-:run_id, :job_id, '{{ job_name }}', :job_start_ts, validation_begin_ts, current_timestamp(), source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, business_domain, business_owner, business_priority, expected_sla_hours, estimated_impact_usd, result_payload FROM final_metrics_view;
+:run_id, :job_id, '{{ job_name }}', :job_start_ts, validation_begin_ts, validation_complete_ts, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, business_domain, business_owner, business_priority, expected_sla_hours, estimated_impact_usd, result_payload FROM final_metrics_view;
 
 SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: {{ task_key_ }}. Payload: \n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false;
 

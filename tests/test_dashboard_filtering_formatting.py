@@ -125,8 +125,8 @@ class TestDashboardFilteringAndFormatting:
             for f in formats
             if f["condition"]["type"] == "equals" and f["condition"]["value"] == 0
         )
-        assert zero_format["textColor"] == "#00A972"  # Green
-        assert zero_format["backgroundColor"] == "#E8F5E9"
+        assert zero_format["textColor"] == "#FAD6FF"
+        assert zero_format["backgroundColor"] == "#2B1030"
 
         # Check for red when > 0
         gt_zero_format = next(
@@ -134,8 +134,8 @@ class TestDashboardFilteringAndFormatting:
             for f in formats
             if f["condition"]["type"] == "greaterThan" and f["condition"]["value"] == 0
         )
-        assert gt_zero_format["textColor"] == "#FF3621"  # Red
-        assert gt_zero_format["backgroundColor"] == "#FFEBEE"
+        assert gt_zero_format["textColor"] == "#FF6EC7"
+        assert gt_zero_format["backgroundColor"] == "#360B3C"
 
     def test_data_quality_score_has_tiered_formatting(self, mock_client):
         """Test that Data Quality Score has tiered color formatting."""
@@ -166,17 +166,17 @@ class TestDashboardFilteringAndFormatting:
             if f["condition"]["type"] == "greaterThanOrEquals"
             and f["condition"]["value"] == 0.99
         )
-        assert high_tier["textColor"] == "#00A972"  # Green
+        assert high_tier["textColor"] == "#FF85E1"
 
         mid_tier = next(f for f in formats if f["condition"]["type"] == "between")
-        assert mid_tier["textColor"] == "#FF9800"  # Orange
+        assert mid_tier["textColor"] == "#FF6EC7"
 
         low_tier = next(
             f
             for f in formats
             if f["condition"]["type"] == "lessThan" and f["condition"]["value"] == 0.95
         )
-        assert low_tier["textColor"] == "#FF3621"  # Red
+        assert low_tier["textColor"] == "#F749C2"
 
     def test_parallelism_counters_have_conditional_formatting(self, mock_client):
         """Peak parallelism and throughput counters should use vibrant formats."""
@@ -266,8 +266,11 @@ class TestDashboardFilteringAndFormatting:
             assert "color" in encodings
 
             color_encoding = encodings["color"]
-            assert color_encoding["scale"]["colorScheme"] == "redyellowgreen"
-            assert color_encoding["scale"]["reverse"] is True  # High = red
+            scale = color_encoding["scale"]
+            assert scale.get("colorRamp", {}).get("scheme") == "magma", (
+                "Top failing chart should use magma palette"
+            )
+            assert scale.get("reverse") is True  # High = red
 
     def test_line_chart_has_reference_lines(self, mock_client):
         """Test that quality trend line chart has target reference lines."""

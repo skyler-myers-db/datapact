@@ -519,10 +519,28 @@ All metadata flows into dashboards, ROI tables, and Genie datasets.
 
 ---
 
-## Development
-- Activate the virtual environment and install dev extras: `pip install -e .[dev]`
-- Run tests (requires Python 3.13.5+): `pytest`
-- `pre-commit` hooks optional for lint/format
+## Development & Tooling
+
+1. **Environment setup**
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate
+   pip install -e .[dev]
+   ```
+
+2. **Linting & formatting**
+   - Run `ruff check .` for lint feedback (same settings as CI/pre-commit).
+   - Run `ruff format .` for formatting.
+   - Optional but recommended: `pre-commit install` to ensure both steps run on every commit.
+
+3. **Testing**
+   - Fast unit suite: `python -m pytest tests/test_*unit.py tests/test_sql_*`
+   - Dashboard / Lakeview mocks:
+     `DATAPACT_SKIP_EXEC_SUMMARY_BOOTSTRAP=1 python -m pytest tests/test_dashboard_* tests/test_visualization_integration.py`
+   - Full regression (what CI executes):
+     `DATAPACT_SKIP_EXEC_SUMMARY_BOOTSTRAP=1 python -m pytest`
+
+   The `DATAPACT_SKIP_EXEC_SUMMARY_BOOTSTRAP` flag disables the costly bootstrap statements that are unnecessary for mocked dashboard tests, keeping iteration speeds high.
 
 ---
 

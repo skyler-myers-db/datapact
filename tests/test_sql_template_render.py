@@ -319,10 +319,7 @@ def test_custom_sql_validation_block_contains_metrics_and_payload():
     assert "rows_missing_in_source_status_distribution" in sql
     assert "AS custom_sql_validation_status_distribution" in sql
     assert "rendered_source_sql" in sql
-    assert (
-        "COALESCE(rows_missing_in_target_status_distribution, 0) = 0"
-        in sql
-    )
+    assert "COALESCE(rows_missing_in_target_status_distribution, 0) = 0" in sql
     assert "COALESCE(rows_missing_in_source_status_distribution, 0) = 0" in sql
 
 
@@ -362,13 +359,7 @@ def test_full_combo_with_custom_includes_all_sections_and_cross_joins():
         in cj_block
     )
     assert "AS custom_sql_validation_segment_distribution" in sql
-    assert (
-        "COALESCE(rows_missing_in_target_segment_distribution, 0) = 0"
-        in sql
-    )
-    assert (
-        "COALESCE(rows_missing_in_source_segment_distribution, 0) = 0"
-        in sql
-    )
+    assert "COALESCE(rows_missing_in_target_segment_distribution, 0) = 0" in sql
+    assert "COALESCE(rows_missing_in_source_segment_distribution, 0) = 0" in sql
     assert "rendered_target_sql" in sql
     assert "SELECT segment, COUNT(*) AS cnt FROM `c`.`s`.`b` GROUP BY segment" in sql
