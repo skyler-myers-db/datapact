@@ -723,6 +723,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                               MAX(generated_at)
                             FROM
                               {run_summary}
+                            WHERE
+                              job_name = {job}
                           )
                         ORDER BY
                           run_id DESC
@@ -751,6 +753,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "      MAX(job_start_ts) "
                         "    FROM "
                         "      {table} "
+                        "    WHERE "
+                        "      job_name = {job} "
                         "  ) "
                         "GROUP BY "
                         "  status; "
