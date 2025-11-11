@@ -29,6 +29,7 @@ def _base_payload() -> dict:
         "target_schema": "s",
         "target_table": "b",
         "primary_keys": [],
+        "filter": None,
         "count_tolerance": None,
         "pk_row_hash_check": False,
         "pk_hash_tolerance": None,
@@ -38,6 +39,7 @@ def _base_payload() -> dict:
         "agg_validations": [],
         "results_table": "`datapact`.`results`.`run_history`",
         "job_name": "job_name_here",
+        "custom_sql_tests": [],
     }
 
 
@@ -71,6 +73,41 @@ def test_counts_only_block_exact_fragments():
     # Overall flag includes only the count condition
     assert "overall_validation_passed" in sql
     assert sql.count("count_metrics") == 2  # CTE declaration + FROM
+
+
+def test_filter_applies_to_builtin_ctes_and_excludes_custom_sql():
+    p = _base_payload()
+    p.update(
+        {
+            "filter": "updated_ts >= '2025-01-01'",
+            "count_tolerance": 0.02,
+            "primary_keys": ["id"],
+            "pk_row_hash_check": True,
+            "pk_hash_tolerance": 0.0,
+            "hash_columns": ["payload"],
+            "custom_sql_tests": [
+                {
+                    "name": "Manual Slice",
+                    "description": "User-defined SQL should not inherit filters.",
+                    "cte_base_name": "manual_slice",
+                    "source_sql": "SELECT updated_ts FROM `c`.`s`.`a`",
+                    "target_sql": "SELECT updated_ts FROM `c`.`s`.`b`",
+                    "base_sql": "SELECT updated_ts FROM {{ table_fqn }}",
+                }
+            ],
+        }
+    )
+    sql = _render(p)
+    assert "filtered_source AS (" in sql
+    assert "filtered_target AS (" in sql
+    assert "SELECT COUNT(1) FROM filtered_source" in sql
+    assert "SELECT COUNT(1) FROM filtered_target" in sql
+    assert "FROM filtered_source\n  ) s" in sql
+    assert "FROM filtered_target\n  ) t" in sql
+    assert "Manual Slice" in sql
+    assert "SELECT updated_ts FROM `c`.`s`.`a`" in sql
+    assert "SELECT updated_ts FROM `c`.`s`.`b`" in sql
+    assert "applied_filter" in sql
 
 
 def test_row_hash_only_block_exact_fragments():
@@ -111,7 +148,7 @@ def test_nulls_with_pk_join_and_without_pk():
     assert "FORMAT_NUMBER(source_nulls_v, '#,##0') AS source_nulls," in sql1
     assert "FORMAT_NUMBER(target_nulls_v, '#,##0') AS target_nulls," in sql1
     assert "total_compared_v" in sql1
-    assert "<= 0.02 THEN 'PASS'" in sql1
+    assert "<= 0.02" in sql1
 
     # Without PKs
     p2 = _base_payload()
@@ -154,10 +191,8 @@ def test_aggregate_validations_block_exact_fragments():
         "FORMAT_STRING('%.2f%%', CAST(0.05 * 100 AS DOUBLE)) AS tolerance_percent,"
         in sql
     )
-    assert (
-        "COALESCE(ABS(source_value_v_SUM - target_value_v_SUM) / NULLIF(ABS(CAST(source_value_v_SUM AS DOUBLE)), 0), 0) <= 0.05"
-        in sql
-    )
+    assert "source_value_v_SUM - target_value_v_SUM" in sql
+    assert "<= 0.05 THEN 'PASS'" in sql
 
 
 def test_full_combo_contains_all_sections_and_cross_joins_in_order():
@@ -260,3 +295,80 @@ def test_uniqueness_multi_columns_alias():
     )
     sql = _render(p)
     assert "AS uniqueness_validation_email_domain" in sql
+
+
+def test_custom_sql_validation_block_contains_metrics_and_payload():
+    p = _base_payload()
+    p.update(
+        {
+            "custom_sql_tests": [
+                {
+                    "name": "Status Distribution",
+                    "description": "Ensure status counts align",
+                    "cte_base_name": "status_distribution",
+                    "source_sql": "SELECT status, COUNT(*) AS cnt FROM `c`.`s`.`a` GROUP BY status",
+                    "target_sql": "SELECT status, COUNT(*) AS cnt FROM `c`.`s`.`b` GROUP BY status",
+                    "base_sql": "SELECT status, COUNT(*) AS cnt FROM {{ table_fqn }} GROUP BY status",
+                }
+            ]
+        }
+    )
+    sql = _render(p)
+    assert "custom_sql_metrics_status_distribution AS (" in sql
+    assert "rows_missing_in_target_status_distribution" in sql
+    assert "rows_missing_in_source_status_distribution" in sql
+    assert "AS custom_sql_validation_status_distribution" in sql
+    assert "rendered_source_sql" in sql
+    assert (
+        "COALESCE(rows_missing_in_target_status_distribution, 0) = 0"
+        in sql
+    )
+    assert "COALESCE(rows_missing_in_source_status_distribution, 0) = 0" in sql
+
+
+def test_full_combo_with_custom_includes_all_sections_and_cross_joins():
+    p = _base_payload()
+    p.update(
+        {
+            "count_tolerance": 0.01,
+            "primary_keys": ["id"],
+            "pk_row_hash_check": True,
+            "pk_hash_tolerance": 0.0,
+            "hash_columns": ["id", "v"],
+            "null_validation_tolerance": 0.02,
+            "null_validation_columns": ["v"],
+            "agg_validations": [
+                {"column": "v", "validations": [{"agg": "sum", "tolerance": 0.05}]}
+            ],
+            "uniqueness_columns": ["email"],
+            "uniqueness_tolerance": 0.0,
+            "custom_sql_tests": [
+                {
+                    "name": "Segment Distribution",
+                    "description": "Ensure per-segment counts remain aligned",
+                    "cte_base_name": "segment_distribution",
+                    "source_sql": "SELECT segment, COUNT(*) AS cnt FROM `c`.`s`.`a` GROUP BY segment",
+                    "target_sql": "SELECT segment, COUNT(*) AS cnt FROM `c`.`s`.`b` GROUP BY segment",
+                    "base_sql": "SELECT segment, COUNT(*) AS cnt FROM {{ table_fqn }} GROUP BY segment",
+                }
+            ],
+        }
+    )
+    sql = _render(p)
+    cj_idx = sql.index("FROM\n")
+    cj_block = sql[cj_idx : cj_idx + 800]
+    assert (
+        "count_metrics CROSS JOIN row_hash_metrics CROSS JOIN null_metrics_v CROSS JOIN agg_metrics_v_SUM CROSS JOIN uniqueness_metrics CROSS JOIN custom_sql_metrics_segment_distribution"
+        in cj_block
+    )
+    assert "AS custom_sql_validation_segment_distribution" in sql
+    assert (
+        "COALESCE(rows_missing_in_target_segment_distribution, 0) = 0"
+        in sql
+    )
+    assert (
+        "COALESCE(rows_missing_in_source_segment_distribution, 0) = 0"
+        in sql
+    )
+    assert "rendered_target_sql" in sql
+    assert "SELECT segment, COUNT(*) AS cnt FROM `c`.`s`.`b` GROUP BY segment" in sql

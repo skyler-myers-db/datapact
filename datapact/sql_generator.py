@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from jinja2 import Environment
 
+from .sql_utils import make_sql_identifier
+
 from .config import ValidationTask
 
 
@@ -22,6 +24,47 @@ def render_validation_sql(
     payload = config.model_dump()
     payload["results_table"] = results_table
     payload["job_name"] = job_name
+    if config.custom_sql_tests:
+        common_context = {
+            "source_catalog": config.source_catalog,
+            "source_schema": config.source_schema,
+            "source_table": config.source_table,
+            "source_fqn": f"`{config.source_catalog}`.`{config.source_schema}`.`{config.source_table}`",
+            "target_catalog": config.target_catalog,
+            "target_schema": config.target_schema,
+            "target_table": config.target_table,
+            "target_fqn": f"`{config.target_catalog}`.`{config.target_schema}`.`{config.target_table}`",
+        }
+        rendered_tests: list[dict[str, str | None]] = []
+        for test in config.custom_sql_tests:
+            cte_base_name = make_sql_identifier(test.name, prefix="custom_sql")
+            sql_template = env.from_string(test.sql)
+            source_context = {
+                **common_context,
+                "table_catalog": config.source_catalog,
+                "table_schema": config.source_schema,
+                "table_name": config.source_table,
+                "table_fqn": common_context["source_fqn"],
+            }
+            target_context = {
+                **common_context,
+                "table_catalog": config.target_catalog,
+                "table_schema": config.target_schema,
+                "table_name": config.target_table,
+                "table_fqn": common_context["target_fqn"],
+            }
+
+            rendered_tests.append(
+                {
+                    "name": test.name,
+                    "description": test.description,
+                    "cte_base_name": cte_base_name,
+                    "source_sql": sql_template.render(**source_context).strip(),
+                    "target_sql": sql_template.render(**target_context).strip(),
+                    "base_sql": test.sql,
+                }
+            )
+        payload["custom_sql_tests"] = rendered_tests
     return template.render(**payload).strip()
 
 

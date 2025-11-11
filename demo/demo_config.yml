@@ -12,9 +12,9 @@
 # - Regulatory Compliance
 
 defaults: &defaults
-  source_catalog: "datapact_demo_catalog"
+  source_catalog: "datapact"
   source_schema: "source_data"
-  target_catalog: "datapact_demo_catalog"
+  target_catalog: "datapact"
   target_schema: "target_data"
 
 validations:
@@ -42,6 +42,46 @@ validations:
         validations: [{ agg: "SUM", tolerance: 0.05 }] # FAILS: Canadian metrics doubled
       - column: "lifetime_value"
         validations: [{ agg: "AVG", tolerance: 0.01 }] # Monitor customer value drift
+    custom_sql_tests:
+      - name: "Daily Status Pulse"
+        description: "Validate per-country lifecycle stage distribution for CRM leadership."
+        sql: |
+          SELECT country,
+                 status,
+                 COUNT(*) AS customer_count
+          FROM {{ table_fqn }}
+          GROUP BY country, status
+      - name: "Segment Satisfaction Bands"
+        description: "Watch for satisfaction drift by customer segment during migrations."
+        sql: |
+          SELECT segment,
+                 ROUND(AVG(COALESCE(satisfaction_score, 0)), 4) AS avg_satisfaction,
+                 COUNT(*) AS population
+          FROM {{ table_fqn }}
+          GROUP BY segment
+
+  # 1A. PERFORMANCE: Monitor only the most recent signups to cut runtime by 90%
+  - task_key: "validate_customer_master_recent_signups_SLICE"
+    <<: *defaults
+    source_table: "users"
+    target_table: "users"
+    business_domain: "Sales"
+    business_owner: "Director Growth Ops"
+    business_priority: "High"
+    expected_sla_hours: 0.5
+    estimated_impact_usd: 125000
+    primary_keys: ["user_id"]
+    # Only scan the most recent 30 days of activity for daily smoke tests
+    filter: |
+      signup_date >= date_sub(current_date(), 30)
+    count_tolerance: 0.02
+    pk_row_hash_check: true
+    pk_hash_tolerance: 0.02
+    null_validation_tolerance: 0.05
+    null_validation_columns: ["status", "segment"]
+    agg_validations:
+      - column: "lifetime_value"
+        validations: [{ agg: "AVG", tolerance: 0.03 }]
 
   # 2. SUCCESS: Financial Transactions - Perfect replication (5M+ records)
   - task_key: "validate_financial_transactions_PASS"
@@ -64,6 +104,51 @@ validations:
           - { agg: "AVG", tolerance: 0.0 } # Average transaction size
       - column: "tax_amount"
         validations: [{ agg: "SUM", tolerance: 0.0 }] # Tax reporting critical
+    custom_sql_tests:
+      - name: "Payment Method Mix Daily"
+        description: "Ensure payment mix is identical by settlement date and tender type."
+        sql: |
+          SELECT DATE(transaction_ts) AS txn_day,
+                 payment_method,
+                 ROUND(SUM(amount), 2) AS gross_amount,
+                 SUM(CASE WHEN transaction_status = 'FAILED' THEN 1 ELSE 0 END) AS failed_count,
+                 COUNT(*) AS txn_count
+          FROM {{ table_fqn }}
+          GROUP BY txn_day, payment_method
+      - name: "High Value Monitoring"
+        description: "Reconcile counts of high-value transactions per status for SOX audits."
+        sql: |
+          SELECT transaction_status,
+                 SUM(CASE WHEN amount > 10000 THEN 1 ELSE 0 END) AS high_value_count,
+                 SUM(amount) AS total_amount
+          FROM {{ table_fqn }}
+          GROUP BY transaction_status
+
+  # 2A. COST OPTIMIZED: High-value, quarter-to-date financial slice
+  - task_key: "validate_financial_transactions_high_value_QTD"
+    <<: *defaults
+    source_table: "transactions"
+    target_table: "transactions"
+    business_domain: "Finance"
+    business_owner: "Controller - Strategic Programs"
+    business_priority: "High"
+    expected_sla_hours: 0.25
+    estimated_impact_usd: 750000
+    primary_keys: ["transaction_id"]
+    # Limit checks to the active quarter + high-value payments
+    filter: |
+      transaction_ts >= date_trunc('quarter', current_date())
+      AND amount >= 10000
+    count_tolerance: 0.0
+    pk_row_hash_check: true
+    pk_hash_tolerance: 0.0
+    agg_validations:
+      - column: "amount"
+        validations: [{ agg: "SUM", tolerance: 0.0 }]
+      - column: "tax_amount"
+        validations: [{ agg: "SUM", tolerance: 0.0 }]
+    null_validation_tolerance: 0.0
+    null_validation_columns: ["payment_method"]
 
   # 3. APPROVED: Product Catalog - Price updates within business rules
   - task_key: "validate_product_catalog_SCD_PASS"
@@ -83,6 +168,14 @@ validations:
         validations: [{ agg: "AVG", tolerance: 0.10 }] # 10% average price drift acceptable
       - column: "inventory_count"
         validations: [{ agg: "SUM", tolerance: 0.05 }] # 5% inventory variance allowed
+    custom_sql_tests:
+      - name: "Lifecycle Pricing Bands"
+        description: "Validate lifecycle mix remains stable despite approved updates."
+        sql: |
+          SELECT status,
+                 COUNT(*) AS sku_count
+          FROM {{ table_fqn }}
+          GROUP BY status
 
   # ============================ MARKETING DOMAIN ============================
   # 4. WARNING: Marketing Campaigns - Status synchronization issues
@@ -103,6 +196,21 @@ validations:
         validations: [{ agg: "SUM", tolerance: 0.0 }] # Total budget must match
       - column: "conversions"
         validations: [{ agg: "SUM", tolerance: 0.01 }] # Conversion tracking
+    custom_sql_tests:
+      - name: "Campaign Health Matrix"
+        description: "Compare campaign status rollout by channel to catch sync regressions."
+        sql: |
+          SELECT status,
+                 CASE
+                   WHEN campaign_name LIKE 'Q1_2024_%' THEN 'Q1'
+                   WHEN campaign_name LIKE 'Q2_2024_%' THEN 'Q2'
+                   WHEN campaign_name LIKE 'Q3_2024_%' THEN 'Q3'
+                   ELSE 'Q4'
+                 END AS fiscal_quarter,
+                 SUM(budget) AS total_budget,
+                 SUM(conversions) AS total_conversions
+          FROM {{ table_fqn }}
+          GROUP BY status, fiscal_quarter
 
   # 5. CRITICAL: Digital Ad Spend - Currency conversion causing drift
   - task_key: "validate_digital_ad_spend_FAIL"
@@ -122,6 +230,17 @@ validations:
         validations: [{ agg: "SUM", tolerance: 0.0 }] # Impressions must match exactly
       - column: "clicks"
         validations: [{ agg: "SUM", tolerance: 0.0 }] # Click tracking critical
+    custom_sql_tests:
+      - name: "Platform Spend Calibration"
+        description: "Validate FX adjustments by platform and month to catch subtle drift."
+        sql: |
+          SELECT platform,
+                 date_trunc('month', spend_date) AS spend_month,
+                 ROUND(SUM(daily_spend), 2) AS total_spend,
+                 SUM(impressions) AS total_impressions,
+                 SUM(clicks) AS total_clicks
+          FROM {{ table_fqn }}
+          GROUP BY platform, spend_month
 
   # ============================ HR DOMAIN ============================
   # 6. HR ALERT: Employee Master - Month-end synchronization gap
@@ -141,6 +260,16 @@ validations:
         validations: [{ agg: "SUM", tolerance: 0.001 }] # Payroll total critical
       - column: "performance_rating"
         validations: [{ agg: "AVG", tolerance: 0.05 }] # Performance metrics
+    custom_sql_tests:
+      - name: "Org Headcount Rollup"
+        description: "Ensure headcount by department and level matches Workday exports."
+        sql: |
+          SELECT department,
+                 level,
+                 COUNT(*) AS employee_count,
+                 SUM(CASE WHEN termination_date IS NULL THEN 1 ELSE 0 END) AS active_employees
+          FROM {{ table_fqn }}
+          GROUP BY department, level
 
   # 7. COMPLIANT: Compensation Bands - Master data integrity maintained
   - task_key: "validate_compensation_bands_PASS"
@@ -157,6 +286,16 @@ validations:
     pk_hash_tolerance: 0.0 # Zero tolerance for compensation data
     uniqueness_columns: ["band_id", "level"]
     uniqueness_tolerance: 0.0 # No duplicate bands allowed
+    custom_sql_tests:
+      - name: "Band Spread Sanity"
+        description: "Verify midpoint and geographic modifiers align for each band."
+        sql: |
+          SELECT level,
+                 ROUND(AVG(midpoint), 2) AS avg_midpoint,
+                 ROUND(AVG(geographic_modifier), 2) AS avg_modifier,
+                 COUNT(*) AS band_count
+          FROM {{ table_fqn }}
+          GROUP BY level
 
   # ============================ FINANCE DOMAIN ============================
   # 8. SOX CRITICAL: General Ledger - Missing financial records
@@ -177,6 +316,17 @@ validations:
           - { agg: "SUM", tolerance: 0.0 } # Total must balance
     null_validation_tolerance: 0.0
     null_validation_columns: ["account_code", "fiscal_period"] # Required for reporting
+    custom_sql_tests:
+      - name: "Fiscal Balance Check"
+        description: "Balance debits and credits by account and fiscal period."
+        sql: |
+          SELECT account_code,
+                 fiscal_period,
+                 ROUND(SUM(amount), 2) AS net_amount,
+                 SUM(CASE WHEN entry_type = 'DEBIT' THEN amount ELSE 0 END) AS total_debits,
+                 SUM(CASE WHEN entry_type = 'CREDIT' THEN amount ELSE 0 END) AS total_credits
+          FROM {{ table_fqn }}
+          GROUP BY account_code, fiscal_period
 
   # ============================ INDUSTRIAL IoT DOMAIN ============================
   # 9. ALERT: Manufacturing telemetry gaps and sensor drift
@@ -190,6 +340,9 @@ validations:
     expected_sla_hours: 1
     estimated_impact_usd: 4200000
     primary_keys: ["event_id"]
+    # Focus on the last 7 days of sensor traffic to reduce scan cost
+    filter: |
+      event_ts >= current_timestamp() - INTERVAL 7 DAYS
     count_tolerance: 0.05 # Missing packets in EMEA facility
     pk_row_hash_check: true
     pk_hash_tolerance: 0.01
@@ -201,6 +354,16 @@ validations:
           [{ agg: "AVG", tolerance: 0.02 }, { agg: "MAX", tolerance: 0.03 }]
       - column: "pressure_kpa"
         validations: [{ agg: "AVG", tolerance: 0.015 }]
+    custom_sql_tests:
+      - name: "Maintenance Hotspots"
+        description: "Compare maintenance-triggered events by region to detect blind spots."
+        sql: |
+          SELECT fleet_region,
+                 event_status,
+                 SUM(CASE WHEN requires_maintenance THEN 1 ELSE 0 END) AS maintenance_events,
+                 COUNT(*) AS total_events
+          FROM {{ table_fqn }}
+          GROUP BY fleet_region, event_status
 
   # ============================ SUPPLY CHAIN DOMAIN ============================
   # 10. CRITICAL: Hazmat shipment integrity across global hubs
@@ -214,6 +377,10 @@ validations:
     expected_sla_hours: 3
     estimated_impact_usd: 3100000
     primary_keys: ["shipment_id"]
+    # Restrict checks to hazmat loads shipped in the last 60 days
+    filter: |
+      ship_date >= date_sub(current_date(), 60)
+      AND hazmat_flag
     count_tolerance: 0.04
     pk_row_hash_check: true
     pk_hash_tolerance: 0.01
@@ -243,6 +410,15 @@ validations:
         validations: [{ agg: "AVG", tolerance: 0.25 }]
       - column: "conversion_score"
         validations: [{ agg: "AVG", tolerance: 0.15 }]
+    custom_sql_tests:
+      - name: "Channel Conversion Drift"
+        description: "Track conversion score shifts by acquisition channel and device footprint."
+        sql: |
+          SELECT acquisition_channel,
+                 device_type,
+                 COUNT(*) AS sessions
+          FROM {{ table_fqn }}
+          GROUP BY acquisition_channel, device_type
 
   # ============================ REAL-TIME OPERATIONS DOMAIN ============================
   # 12. CRITICAL: Streaming telemetry latency and packet loss
@@ -267,6 +443,16 @@ validations:
         validations:
           - { agg: "AVG", tolerance: 0.05 }
           - { agg: "MAX", tolerance: 0.15 }
+    custom_sql_tests:
+      - name: "High Latency Pulse"
+        description: "Compare high latency counts per region and event type."
+        sql: |
+          SELECT region,
+                 event_type,
+                 SUM(CASE WHEN latency_ms > 250 THEN 1 ELSE 0 END) AS elevated_latency_events,
+                 SUM(CASE WHEN anomaly_score > 1.5 THEN 1 ELSE 0 END) AS anomaly_spikes
+          FROM {{ table_fqn }}
+          GROUP BY region, event_type
 
   # ============================ AI & ML PLATFORM DOMAIN ============================
   # 13. HIGH VALUE: Feature store drift for personalization vectors
@@ -291,6 +477,17 @@ validations:
         validations: [{ agg: "AVG", tolerance: 0.05 }]
       - column: "shap_contribution"
         validations: [{ agg: "AVG", tolerance: 0.1 }]
+    custom_sql_tests:
+      - name: "Model Version Integrity"
+        description: "Ensure model version outputs remain aligned by feature version."
+        sql: |
+          SELECT feature_version,
+                 model_version,
+                 ROUND(AVG(propensity_score), 6) AS avg_propensity,
+                 ROUND(AVG(feature_vector_norm), 6) AS avg_vector_norm,
+                 COUNT(*) AS record_count
+          FROM {{ table_fqn }}
+          GROUP BY feature_version, model_version
 
   # ============================ FINOPS & SUSTAINABILITY DOMAIN ============================
   # 14. CRITICAL: Cloud cost anomalies vs glidepath budget
@@ -316,6 +513,18 @@ validations:
         validations: [{ agg: "SUM", tolerance: 0.05 }]
       - column: "carbon_intensity_kg_per_kwh"
         validations: [{ agg: "AVG", tolerance: 0.1 }]
+    custom_sql_tests:
+      - name: "Cloud Budget Variance"
+        description: "Compare cost vs glidepath by provider, region, and service."
+        sql: |
+          SELECT cloud_provider,
+                 region,
+                 service_name,
+                 ROUND(SUM(cost_usd), 2) AS total_cost,
+                 ROUND(SUM(glidepath_budget_usd), 2) AS total_budget,
+                 ROUND(SUM(reserved_savings_usd), 2) AS reserved_savings
+          FROM {{ table_fqn }}
+          GROUP BY cloud_provider, region, service_name
 
   # ============================ LOGGING & OPS DOMAIN ============================
   # 15. ACCEPTABLE: Web Analytics - Timestamp drift within tolerance
@@ -335,6 +544,16 @@ validations:
     agg_validations:
       - column: "time_on_page_seconds"
         validations: [{ agg: "AVG", tolerance: 0.05 }] # Engagement metrics
+    custom_sql_tests:
+      - name: "Traffic Source Engagement"
+        description: "Ensure traffic-source engagement metrics remain balanced after time drift."
+        sql: |
+          SELECT traffic_source,
+                 device_type,
+                 ROUND(AVG(time_on_page_seconds), 3) AS avg_time_on_page,
+                 COUNT(*) AS view_count
+          FROM {{ table_fqn }}
+          GROUP BY traffic_source, device_type
 
   # 16. MONITORING: Application Logs - Volume mismatch detected
   - task_key: "validate_application_logs_FAIL"
@@ -348,6 +567,16 @@ validations:
     estimated_impact_usd: 60000
     count_tolerance: 0.0 # FAILS: Additional logs in target
     # Note: No PK available for row-level validation
+    custom_sql_tests:
+      - name: "Service Log Volume"
+        description: "Reconcile log volume by service and severity without primary keys."
+        sql: |
+          SELECT service,
+                 level,
+                 COUNT(*) AS log_count,
+                 ROUND(AVG(latency_ms), 2) AS avg_latency_ms
+          FROM {{ table_fqn }}
+          GROUP BY service, level
 
   # 17. COMPLIANT: Audit Trail - Clean period (no violations)
   - task_key: "validate_audit_trail_PASS"
@@ -376,6 +605,15 @@ validations:
     null_validation_columns: ["category", "severity"]
     pk_row_hash_check: true
     pk_hash_tolerance: 0.0
+    custom_sql_tests:
+      - name: "Status Code Categorization"
+        description: "Ensure status code grouping remains intact for incident routing."
+        sql: |
+          SELECT category,
+                 severity,
+                 COUNT(*) AS code_count
+          FROM {{ table_fqn }}
+          GROUP BY category, severity
 
   # ============================ CROSS-DOMAIN VALIDATIONS ============================
 
@@ -409,3 +647,95 @@ validations:
     agg_validations:
       - column: "processing_days"
         validations: [{ agg: "AVG", tolerance: 0.0 }] # Compliance SLA tracking
+    custom_sql_tests:
+      - name: "Regulatory Status Rollup"
+        description: "Track pending and completed requests by regulation for compliance ops."
+        sql: |
+          SELECT regulation,
+                 status,
+                 COUNT(*) AS request_count,
+                 ROUND(AVG(COALESCE(processing_days, 0)), 2) AS avg_processing_days
+          FROM {{ table_fqn }}
+          GROUP BY regulation, status
+
+  # ============================ AI SAFETY & GENAI GOVERNANCE ============================
+  - task_key: "validate_prompt_guardrails_FAIL"
+    <<: *defaults
+    source_table: "prompt_guardrails"
+    target_table: "prompt_guardrails"
+    business_domain: "AI Safety"
+    business_owner: "Chief Responsible AI Officer"
+    business_priority: "Critical"
+    expected_sla_hours: 1
+    estimated_impact_usd: 6800000
+    primary_keys: ["interaction_id"]
+    count_tolerance: 0.02
+    pk_row_hash_check: true
+    pk_hash_tolerance: 0.0
+    null_validation_tolerance: 0.0
+    null_validation_columns: ["safety_severity", "prompt_category"]
+    agg_validations:
+      - column: "response_toxicity_score"
+        validations: [{ agg: "AVG", tolerance: 0.05 }]
+      - column: "latency_ms"
+        validations: [{ agg: "AVG", tolerance: 0.1 }]
+    custom_sql_tests:
+      - name: "Guardrail Violations"
+        description: "Compare trigger counts and toxicity by region and prompt family."
+        sql: |
+          SELECT region,
+                 prompt_category,
+                 SUM(guardrail_trigger_count) AS total_triggers,
+                 SUM(CASE WHEN safety_severity = 'BLOCK' THEN 1 ELSE 0 END) AS hard_blocks,
+                 ROUND(AVG(response_toxicity_score), 4) AS avg_toxicity
+          FROM {{ table_fqn }}
+          GROUP BY region, prompt_category
+      - name: "PII Incident Watch"
+        description: "Reconcile PII detections by model family and severity band."
+        sql: |
+          SELECT model_family,
+                 safety_severity,
+                 SUM(CASE WHEN contains_pii THEN 1 ELSE 0 END) AS pii_events,
+                 COUNT(*) AS total_interactions
+          FROM {{ table_fqn }}
+          GROUP BY model_family, safety_severity
+
+  # ============================ ESG & CLIMATE REPORTING ============================
+  - task_key: "validate_carbon_ledger_FAIL"
+    <<: *defaults
+    source_table: "carbon_ledger"
+    target_table: "carbon_ledger"
+    business_domain: "Sustainability"
+    business_owner: "Chief Sustainability Officer"
+    business_priority: "High"
+    expected_sla_hours: 6
+    estimated_impact_usd: 2100000
+    primary_keys: ["ledger_id"]
+    count_tolerance: 0.01
+    pk_row_hash_check: true
+    pk_hash_tolerance: 0.0
+    agg_validations:
+      - column: "emissions_tco2e"
+        validations: [{ agg: "SUM", tolerance: 0.04 }]
+      - column: "offsets_tco2e"
+        validations: [{ agg: "SUM", tolerance: 0.05 }]
+      - column: "data_quality_score"
+        validations: [{ agg: "AVG", tolerance: 0.05 }]
+    custom_sql_tests:
+      - name: "Scope Emissions Rollup"
+        description: "Validate emissions footprints by scope and region for ESG filings."
+        sql: |
+          SELECT emission_scope,
+                 region,
+                 ROUND(SUM(emissions_tco2e), 2) AS total_emissions,
+                 ROUND(SUM(offsets_tco2e), 2) AS total_offsets
+          FROM {{ table_fqn }}
+          GROUP BY emission_scope, region
+      - name: "Data Quality Regression"
+        description: "Ensure vendor sourced data maintains expected data quality floor."
+        sql: |
+          SELECT data_source,
+                 region,
+                 ROUND(AVG(data_quality_score), 3) AS avg_quality
+          FROM {{ table_fqn }}
+          GROUP BY data_source, region

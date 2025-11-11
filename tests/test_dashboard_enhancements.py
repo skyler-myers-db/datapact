@@ -152,11 +152,19 @@ class TestDashboardVisualizationFixes:
 
         # Verify simplified agg validation check logic
         assert (
-            "CASE WHEN to_json(result_payload) LIKE '%agg_validation%' AND to_json(result_payload) NOT LIKE '%agg_validation%FAIL%' THEN '✅ Aggs'"
+            """CASE WHEN to_json(result_payload) LIKE '%agg_validation%' AND to_json(result_payload) NOT LIKE '%agg_validation%"status":"FAIL"%' THEN '✅ Aggs'"""
             in query
         )
         assert (
-            "WHEN to_json(result_payload) LIKE '%agg_validation%FAIL%' THEN '❌ Aggs'"
+            """WHEN to_json(result_payload) LIKE '%agg_validation%"status":"FAIL"%' THEN '❌ Aggs'"""
+            in query
+        )
+        assert (
+            """CASE WHEN to_json(result_payload) LIKE '%custom_sql_validation%' AND to_json(result_payload) NOT LIKE '%custom_sql_validation%"status":"FAIL"%' THEN '✅ Custom SQL'"""
+            in query
+        )
+        assert (
+            """WHEN to_json(result_payload) LIKE '%custom_sql_validation%"status":"FAIL"%' THEN '❌ Custom SQL'"""
             in query
         )
 
@@ -169,9 +177,10 @@ class TestDashboardVisualizationFixes:
 
         query = " ".join(business_impact["queryLines"])
 
-        # Verify schema handling - no more fallback needed
-        assert "SELECT source_schema" in query
-        assert "GROUP BY source_schema" in query
+        # Verify the dataset targets the latest run snapshot via timestamp filtering
+        assert "WITH latest_run_ts AS" in query
+        assert "AND run_id IN (SELECT run_id FROM latest_runs)" in query
+        assert "business_domain" in query
 
     def test_history_dataset_surfaces_primary_keys(self, mock_client):
         """Historical dataset should expose configured primary keys for quick lookup."""
@@ -205,6 +214,8 @@ class TestDashboardVisualizationFixes:
             assert "from_json(to_json(result_payload), 'map<string,string>')" in query
             assert "WHERE key LIKE 'agg_validation_%'" in query
             assert "regexp_extract(key, 'agg_validation_(.*)', 1)" in query
+            assert "WHERE key LIKE 'custom_sql_validation_%'" in query
+            assert "regexp_extract(key, 'custom_sql_validation_(.*)', 1)" in query
 
     def test_run_details_naming_reflects_all_runs(self, mock_client):
         """Test that 'Latest Run Details' is renamed to reflect it shows all runs."""

@@ -64,6 +64,7 @@ DECLARE VARIABLE validation_begin_ts TIMESTAMP DEFAULT current_timestamp();
   or (null_validation_columns and null_validation_tolerance is not none)
   or (agg_validations)
   or (uniqueness_columns and uniqueness_tolerance is not none)
+  or (custom_sql_tests)
 %}
 {% if not has_any %}
 CREATE OR REPLACE TEMP VIEW final_metrics_view AS SELECT
@@ -222,6 +223,70 @@ uniqueness_metrics AS (
 {%- do cte_names.append('uniqueness_metrics') -%}
 {%- endif -%}
 
+{# Custom SQL validation CTEs #}
+{% if custom_sql_tests %}
+{% for custom in custom_sql_tests %}
+{% if ns.first %}WITH
+{% set ns.first = False %}
+{% else %},
+{% endif %}
+custom_sql_metrics_{{ custom.cte_base_name }} AS (
+  WITH source_dataset AS (
+    {{ custom.source_sql }}
+  ),
+  target_dataset AS (
+    {{ custom.target_sql }}
+  ),
+  src_minus_tgt AS (
+    SELECT * FROM source_dataset
+    EXCEPT
+    SELECT * FROM target_dataset
+  ),
+  tgt_minus_src AS (
+    SELECT * FROM target_dataset
+    EXCEPT
+    SELECT * FROM source_dataset
+  ),
+  source_hash AS (
+    SELECT COALESCE(
+      sha2(
+        array_join(
+          sort_array(collect_list(md5(to_json(struct(*))))),
+          '||'
+        ),
+        256
+      ),
+      'EMPTY'
+    ) AS source_hash_value
+    FROM source_dataset
+  ),
+  target_hash AS (
+    SELECT COALESCE(
+      sha2(
+        array_join(
+          sort_array(collect_list(md5(to_json(struct(*))))),
+          '||'
+        ),
+        256
+      ),
+      'EMPTY'
+    ) AS target_hash_value
+    FROM target_dataset
+  )
+  SELECT
+    (SELECT COUNT(1) FROM source_dataset) AS source_row_count_{{ custom.cte_base_name }},
+    (SELECT COUNT(1) FROM target_dataset) AS target_row_count_{{ custom.cte_base_name }},
+    (SELECT COUNT(1) FROM src_minus_tgt) AS rows_missing_in_target_{{ custom.cte_base_name }},
+    (SELECT COUNT(1) FROM tgt_minus_src) AS rows_missing_in_source_{{ custom.cte_base_name }},
+    COALESCE((SELECT to_json(struct(*)) FROM src_minus_tgt LIMIT 1), 'null') AS sample_missing_in_target_{{ custom.cte_base_name }},
+    COALESCE((SELECT to_json(struct(*)) FROM tgt_minus_src LIMIT 1), 'null') AS sample_missing_in_source_{{ custom.cte_base_name }},
+    (SELECT source_hash_value FROM source_hash) AS source_hash_{{ custom.cte_base_name }},
+    (SELECT target_hash_value FROM target_hash) AS target_hash_{{ custom.cte_base_name }}
+)
+{%- do cte_names.append('custom_sql_metrics_' ~ custom.cte_base_name) -%}
+{%- endfor -%}
+{%- endif -%}
+
 {# SELECT with payload struct and overall status #}
 SELECT
   validation_begin_ts AS validation_begin_ts,
@@ -326,6 +391,30 @@ SELECT
             AND COALESCE(target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0), 0) <= {{ uniqueness_tolerance }} THEN 'PASS' ELSE 'FAIL' END AS status
   ) AS uniqueness_validation_{{ uniqueness_columns|join('_') }}
   {%- endif -%}
+
+  {# Custom SQL payloads #}
+  {%- if custom_sql_tests -%}
+  {%- for custom in custom_sql_tests -%}
+    {{ comma() }}
+    struct(
+      {{ sql_string(custom.name) }} AS name,
+      {{ sql_string(custom.description) }} AS description,
+      {{ sql_string(custom.base_sql) }} AS input_sql_template,
+      {{ sql_string(custom.source_sql) }} AS rendered_source_sql,
+      {{ sql_string(custom.target_sql) }} AS rendered_target_sql,
+      FORMAT_NUMBER(source_row_count_{{ custom.cte_base_name }}, '#,##0') AS source_row_count,
+      FORMAT_NUMBER(target_row_count_{{ custom.cte_base_name }}, '#,##0') AS target_row_count,
+      FORMAT_NUMBER(rows_missing_in_target_{{ custom.cte_base_name }}, '#,##0') AS rows_missing_in_target,
+      FORMAT_NUMBER(rows_missing_in_source_{{ custom.cte_base_name }}, '#,##0') AS rows_missing_in_source,
+      CASE WHEN sample_missing_in_target_{{ custom.cte_base_name }} = 'null' THEN NULL ELSE sample_missing_in_target_{{ custom.cte_base_name }} END AS sample_missing_in_target,
+      CASE WHEN sample_missing_in_source_{{ custom.cte_base_name }} = 'null' THEN NULL ELSE sample_missing_in_source_{{ custom.cte_base_name }} END AS sample_missing_in_source,
+      CASE WHEN COALESCE(rows_missing_in_target_{{ custom.cte_base_name }}, 0) = 0
+                AND COALESCE(rows_missing_in_source_{{ custom.cte_base_name }}, 0) = 0
+                AND COALESCE(source_hash_{{ custom.cte_base_name }}, 'EMPTY') = COALESCE(target_hash_{{ custom.cte_base_name }}, 'EMPTY')
+           THEN 'PASS' ELSE 'FAIL' END AS status
+    ) AS custom_sql_validation_{{ custom.cte_base_name }}
+  {%- endfor -%}
+  {%- endif -%}
   ))) as result_payload,
   (
     {%- set andsep = joiner(' AND ') -%}
@@ -358,6 +447,13 @@ SELECT
   {%- if uniqueness_columns and uniqueness_tolerance is not none -%}
   {{ andsep() }} COALESCE(source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0), 0) <= {{ uniqueness_tolerance }}
   {{ andsep() }} COALESCE(target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0), 0) <= {{ uniqueness_tolerance }}
+  {%- endif -%}
+  {%- if custom_sql_tests -%}
+  {%- for custom in custom_sql_tests -%}
+  {{ andsep() }} COALESCE(rows_missing_in_target_{{ custom.cte_base_name }}, 0) = 0
+  {{ andsep() }} COALESCE(rows_missing_in_source_{{ custom.cte_base_name }}, 0) = 0
+  {{ andsep() }} COALESCE(source_hash_{{ custom.cte_base_name }}, 'EMPTY') = COALESCE(target_hash_{{ custom.cte_base_name }}, 'EMPTY')
+  {%- endfor -%}
   {%- endif -%}
   ) AS overall_validation_passed
 FROM

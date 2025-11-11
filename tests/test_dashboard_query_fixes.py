@@ -82,6 +82,16 @@ class TestDashboardQueryFixes:
                 or "to_json(result_payload) LIKE '%null_validation%FAIL%'" in query
             )
             assert "to_json(result_payload) LIKE '%agg_validation%FAIL%'" in query
+            assert "to_json(result_payload) LIKE '%custom_sql_validation%FAIL%'" in query
+            assert "WITH latest_run AS" in query
+            assert (
+                "row_number() over (partition by task_key order by job_start_ts desc, run_id desc)"
+                in query
+            )
+            assert (
+                "AND job_start_ts = (SELECT job_start_ts FROM latest_run)"
+                in query
+            )
 
             # Test 2: Source and target columns should handle nulls
             assert (
@@ -100,8 +110,22 @@ class TestDashboardQueryFixes:
                 "CASE WHEN to_json(result_payload) LIKE '%agg_validation%' AND to_json(result_payload) NOT LIKE '%agg_validation%FAIL%'"
                 in query
             )
+            assert (
+                "CASE WHEN to_json(result_payload) LIKE '%custom_sql_validation%' AND to_json(result_payload) NOT LIKE '%custom_sql_validation%FAIL%'"
+                in query
+            )
             assert "business_priority" in query
             assert "estimated_impact_usd" in query
+
+            failures_by_type = next(
+                d for d in datasets if d["name"] == "ds_failures_by_type"
+            )
+            failure_query = (
+                " ".join(failures_by_type["queryLines"])
+                if "queryLines" in failures_by_type
+                else failures_by_type.get("query", "")
+            )
+            assert "'Custom SQL Mismatch' AS validation_type" in failure_query
 
             # Test 4: Business impact should handle null schemas gracefully
             business_impact = next(
@@ -123,6 +147,7 @@ class TestDashboardQueryFixes:
                 if "queryLines" in owner_dataset
                 else owner_dataset.get("query", "")
             )
+            assert "WITH latest_run_ts AS" in owner_query
             assert "business_owner" in owner_query
             assert "potential_impact_usd" in owner_query
 
@@ -134,6 +159,7 @@ class TestDashboardQueryFixes:
                 if "queryLines" in priority_dataset
                 else priority_dataset.get("query", "")
             )
+            assert "WITH latest_run_ts AS" in priority_query
             assert "business_priority" in priority_query
 
             # Test 5: Exploded checks should not have UDTF alias mismatch

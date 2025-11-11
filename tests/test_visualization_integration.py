@@ -444,16 +444,10 @@ class TestVisualizationIntegration:
         if business_impact:
             query = " ".join(business_impact["queryLines"])
 
-            # Should use direct source_schema column
-            assert "SELECT source_schema" in query
-            assert "GROUP BY source_schema" in query
-            # Should calculate quality score
-            assert (
-                "100.0 * SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) / COUNT(*)"
-                in query
-            )
-            # Should determine health status with color coding
-            assert "CASE WHEN failures = 0 THEN '🟢 Excellent'" in query
+            assert "WITH latest_run_ts AS" in query
+            assert "AND run_id IN (SELECT run_id FROM latest_runs)" in query
+            assert "business_domain" in query
+            assert "CASE\n                            WHEN failed_validations = 0 THEN '🟢 Excellent'" in query
 
 
 if __name__ == "__main__":
