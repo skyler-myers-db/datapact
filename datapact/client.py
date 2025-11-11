@@ -995,6 +995,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                                     MAX(generated_at)
                                   FROM
                                     {owner_breakdown}
+                                  WHERE
+                                    job_name = {job}
                                 )
                               GROUP BY
                                 business_owner
@@ -1041,6 +1043,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                                   MAX(generated_at)
                                 FROM
                                   {priority_breakdown}
+                                WHERE
+                                  job_name = {job}
                               )
                             ORDER BY
                               failed_validations DESC,
