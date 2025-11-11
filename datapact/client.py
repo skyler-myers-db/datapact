@@ -824,6 +824,19 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "  task_key, "
                         "  status, "
                         "  job_start_ts, "
+<<<<<<< Updated upstream
+||||||| Stash base
+                        "  result_payload:applied_filter,"
+                        "  result_payload:applied_filter IS NOT NULL AS is_filtered, "
+=======
+                        "  CAST(result_payload:applied_filter AS STRING) AS applied_filter, "
+                        "  CASE "
+                        "    WHEN CAST(result_payload:applied_filter AS STRING) IS NULL THEN false "
+                        "    WHEN trim(CAST(result_payload:applied_filter AS STRING)) = '' THEN false "
+                        "    ELSE true "
+                        "  END AS is_filtered, "
+                        "  CAST(result_payload:configured_primary_keys AS STRING) AS configured_primary_keys, "
+>>>>>>> Stashed changes
                         "  to_json(result_payload) as payload_json, "
                         "  run_id, "
                         "  job_name, "
@@ -2409,6 +2422,18 @@ Once created, users can ask questions in natural language to analyze data qualit
                                                     "expression": "`job_name`",
                                                 },
                                                 {
+                                                    "name": "is_filtered",
+                                                    "expression": "`is_filtered`",
+                                                },
+                                                {
+                                                    "name": "applied_filter",
+                                                    "expression": "`applied_filter`",
+                                                },
+                                                {
+                                                    "name": "configured_primary_keys",
+                                                    "expression": "`configured_primary_keys`",
+                                                },
+                                                {
                                                     "name": "business_priority",
                                                     "expression": "`business_priority`",
                                                 },
@@ -2443,6 +2468,30 @@ Once created, users can ask questions in natural language to analyze data qualit
                                                 "displayName": "Job Start Timestamp",
                                             },
                                             {
+<<<<<<< Updated upstream
+||||||| Stash base
+                                                "fieldName": "is_filtered",
+                                                "displayName": "Filter Applied?",
+                                            },
+                                            {
+                                                "fieldName": "applied_filter",
+                                                "displayName": "Applied Filter",
+                                            },
+                                            {
+=======
+                                                "fieldName": "is_filtered",
+                                                "displayName": "Filter Applied?",
+                                            },
+                                            {
+                                                "fieldName": "applied_filter",
+                                                "displayName": "Applied Filter",
+                                            },
+                                            {
+                                                "fieldName": "configured_primary_keys",
+                                                "displayName": "Primary Keys",
+                                            },
+                                            {
+>>>>>>> Stashed changes
                                                 "fieldName": "payload_json",
                                                 "displayName": "Result Payload",
                                             },

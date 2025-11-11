@@ -173,6 +173,22 @@ class TestDashboardVisualizationFixes:
         assert "SELECT source_schema" in query
         assert "GROUP BY source_schema" in query
 
+    def test_history_dataset_surfaces_primary_keys(self, mock_client):
+        """Historical dataset should expose configured primary keys for quick lookup."""
+        dashboard_json = self._get_dashboard_json(mock_client)
+        datasets = dashboard_json["datasets"]
+        history_ds = next(d for d in datasets if d["name"] == "ds_history")
+        query = " ".join(history_ds["queryLines"])
+        assert "CAST(result_payload:configured_primary_keys AS STRING)" in query
+        assert "trim(CAST(result_payload:applied_filter AS STRING))" in query
+
+        details_page = next(p for p in dashboard_json["pages"] if p["name"] == "details_page")
+        details_widget = next(w for w in details_page["layout"] if w["widget"]["name"] == "details_table")
+        column_fields = [
+            col["fieldName"] for col in details_widget["widget"]["spec"]["encodings"]["columns"]
+        ]
+        assert "configured_primary_keys" in column_fields
+
     def test_udtf_alias_fix_in_exploded_checks(self, mock_client):
         """Test UDTF alias mismatch error is fixed in exploded checks."""
         dashboard_json = self._get_dashboard_json(mock_client)

@@ -3,6 +3,27 @@
 {% set source_fqn = '`' ~ source_catalog ~ '`.`' ~ source_schema ~ '`.`' ~ source_table ~ '`' -%}
 {% set target_fqn = '`' ~ target_catalog ~ '`.`' ~ target_schema ~ '`.`' ~ target_table ~ '`' -%}
 {% set cte_names = [] -%}
+{% set raw_filter = filter | default(None) -%}
+{% if raw_filter is string -%}
+  {% set filter_condition = raw_filter | trim -%}
+  {% if filter_condition == '' -%}
+    {% set filter_condition = none -%}
+  {% endif -%}
+{% else -%}
+  {% set filter_condition = none -%}
+{% endif -%}
+{% if filter_condition -%}
+  {% set builtin_source = 'filtered_source' -%}
+  {% set builtin_target = 'filtered_target' -%}
+{% else -%}
+  {% set builtin_source = source_fqn -%}
+  {% set builtin_target = target_fqn -%}
+{% endif -%}
+{% if primary_keys %}
+  {% set primary_keys_display = primary_keys | join(', ') %}
+{% else %}
+  {% set primary_keys_display = None %}
+{% endif %}
 
 {# Helper macros #}
 {% macro agg_rel_diff(column, agg) -%}
@@ -32,6 +53,9 @@ NULL
 {%- endif -%}
 {%- endmacro %}
 
+{% set primary_keys_literal = sql_string(primary_keys_display) -%}
+{% set applied_filter_literal = sql_string(filter_condition) -%}
+
 DECLARE VARIABLE validation_begin_ts TIMESTAMP DEFAULT current_timestamp();
 
 {# Begin view creation #}
@@ -55,11 +79,33 @@ CREATE OR REPLACE TEMP VIEW final_metrics_view AS SELECT
   {{ sql_string(business_priority) }} AS business_priority,
   {{ sql_number(expected_sla_hours) }} AS expected_sla_hours,
   {{ sql_number(estimated_impact_usd) }} AS estimated_impact_usd,
-  parse_json(to_json(struct('No validations configured for task {{ task_key_ }}' as message))) as result_payload,
+  parse_json(to_json(struct(
+    {{ applied_filter_literal }} AS applied_filter,
+    {{ primary_keys_literal }} AS configured_primary_keys,
+    'No validations configured for task {{ task_key_ }}' as message
+  ))) as result_payload,
   true as overall_validation_passed;
 {% else %}
 CREATE OR REPLACE TEMP VIEW final_metrics_view AS
 {% set ns = namespace(first=True) %}
+{# Filter CTEs for reusable slices #}
+{% if filter_condition %}
+{% if ns.first %}WITH
+{% set ns.first = False %}
+{% else %},
+{% endif %}
+filtered_source AS (
+  SELECT *
+  FROM {{ source_fqn }}
+  WHERE {{ filter_condition }}
+),
+filtered_target AS (
+  SELECT *
+  FROM {{ target_fqn }}
+  WHERE {{ filter_condition }}
+)
+{% endif %}
+
 {# Count metrics CTE #}
 {% if count_tolerance is not none %}
 {% if ns.first %}WITH
@@ -68,8 +114,8 @@ CREATE OR REPLACE TEMP VIEW final_metrics_view AS
 {% endif %}
 count_metrics AS (
   SELECT
-    (SELECT COUNT(1) FROM {{ source_fqn }}) AS source_count,
-    (SELECT COUNT(1) FROM {{ target_fqn }}) AS target_count
+    (SELECT COUNT(1) FROM {{ builtin_source }}) AS source_count,
+    (SELECT COUNT(1) FROM {{ builtin_target }}) AS target_count
 )
 {%- do cte_names.append('count_metrics') -%}
 {%- endif %}
@@ -91,7 +137,7 @@ row_hash_metrics AS (
       {% else %}
       md5(to_json(struct(*))) AS row_hash
       {% endif %}
-    FROM {{ source_fqn }}
+    FROM {{ builtin_source }}
   ) s
   INNER JOIN (
     SELECT
@@ -101,7 +147,7 @@ row_hash_metrics AS (
       {% else %}
       md5(to_json(struct(*))) AS row_hash
       {% endif %}
-    FROM {{ target_fqn }}
+    FROM {{ builtin_target }}
   ) t
   ON {% for pk in primary_keys %}s.`{{ pk }}` = t.`{{ pk }}`{% if not loop.last %} AND {% endif %}{% endfor %}
 )
@@ -121,12 +167,12 @@ null_metrics_{{ col }} AS (
     SUM(CASE WHEN s.`{{ col }}` IS NULL THEN 1 ELSE 0 END) as source_nulls_{{ col }},
     SUM(CASE WHEN t.`{{ col }}` IS NULL THEN 1 ELSE 0 END) as target_nulls_{{ col }},
     COUNT(1) as total_compared_{{ col }}
-  FROM {{ source_fqn }} s JOIN {{ target_fqn }} t
+  FROM {{ builtin_source }} s JOIN {{ builtin_target }} t
     ON {% for pk in primary_keys %}s.`{{ pk }}` = t.`{{ pk }}`{% if not loop.last %} AND {% endif %}{% endfor %}
   {% else %}
   SELECT
-    (SELECT COUNT(1) FROM {{ source_fqn }} WHERE `{{ col }}` IS NULL) as source_nulls_{{ col }},
-    (SELECT COUNT(1) FROM {{ target_fqn }} WHERE `{{ col }}` IS NULL) as target_nulls_{{ col }}
+    (SELECT COUNT(1) FROM {{ builtin_source }} WHERE `{{ col }}` IS NULL) as source_nulls_{{ col }},
+    (SELECT COUNT(1) FROM {{ builtin_target }} WHERE `{{ col }}` IS NULL) as target_nulls_{{ col }}
   {% endif %}
 )
 {%- do cte_names.append('null_metrics_' ~ col) -%}
@@ -145,8 +191,8 @@ null_metrics_{{ col }} AS (
 {% endif %}
 agg_metrics_{{ col }}_{{ agg }} AS (
   SELECT
-    TRY_CAST((SELECT {{ agg }}(`{{ col }}`) FROM {{ source_fqn }}) AS DECIMAL(38, 6)) AS source_value_{{ col }}_{{ agg }},
-    TRY_CAST((SELECT {{ agg }}(`{{ col }}`) FROM {{ target_fqn }}) AS DECIMAL(38, 6)) AS target_value_{{ col }}_{{ agg }}
+    TRY_CAST((SELECT {{ agg }}(`{{ col }}`) FROM {{ builtin_source }}) AS DECIMAL(38, 6)) AS source_value_{{ col }}_{{ agg }},
+    TRY_CAST((SELECT {{ agg }}(`{{ col }}`) FROM {{ builtin_target }}) AS DECIMAL(38, 6)) AS target_value_{{ col }}_{{ agg }}
 )
 {%- do cte_names.append('agg_metrics_' ~ col ~ '_' ~ agg) -%}
 {%- endfor -%}
@@ -163,13 +209,13 @@ uniqueness_metrics AS (
   SELECT
     COALESCE(SUM(cnt - 1), 0) AS source_duplicates,
     (SELECT COALESCE(SUM(cnt - 1), 0) FROM (
-      SELECT COUNT(1) AS cnt FROM {{ target_fqn }}
+      SELECT COUNT(1) AS cnt FROM {{ builtin_target }}
       GROUP BY {% for c in uniqueness_columns %}`{{ c }}`{% if not loop.last %}, {% endif %}{% endfor %}
     ) t WHERE cnt > 1) AS target_duplicates,
-    (SELECT COUNT(1) FROM {{ source_fqn }}) AS source_total,
-    (SELECT COUNT(1) FROM {{ target_fqn }}) AS target_total
+    (SELECT COUNT(1) FROM {{ builtin_source }}) AS source_total,
+    (SELECT COUNT(1) FROM {{ builtin_target }}) AS target_total
   FROM (
-    SELECT COUNT(1) AS cnt FROM {{ source_fqn }}
+    SELECT COUNT(1) AS cnt FROM {{ builtin_source }}
     GROUP BY {% for c in uniqueness_columns %}`{{ c }}`{% if not loop.last %}, {% endif %}{% endfor %}
   ) s WHERE cnt > 1
 )
@@ -192,6 +238,10 @@ SELECT
   {{ sql_number(estimated_impact_usd) }} AS estimated_impact_usd,
   parse_json(to_json(struct(
   {%- set comma = joiner(',') -%}
+    {{ comma() }}
+    {{ applied_filter_literal }} AS applied_filter
+    {{ comma() }}
+    {{ primary_keys_literal }} AS configured_primary_keys
     {# Count payload #}
     {%- if count_tolerance is not none -%}
     {{ comma() }}
