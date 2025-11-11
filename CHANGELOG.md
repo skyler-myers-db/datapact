@@ -4,6 +4,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+- **Row-Level Filters:** Validation tasks now accept an optional `filter` predicate that scopes row count, PK hash, null, aggregate, and uniqueness tests to a narrow slice without rewriting SQL. The active predicate is captured in `result_payload.applied_filter`.
+- **Demo Enhancements:** The enterprise demo configuration highlights multiple filtered tasks (recent signups, high-value financial transactions, hazmat shipments, and rolling IoT telemetry) so new users have turnkey examples.
+- **Documentation & Samples:** README, sample configs, and changelog document the new filter behavior, and dedicated unit tests cover SQL generation plus validator edge cases.
+
 ## [2.7.0]
 
 - **Custom SQL Validations:** Authors can supply `custom_sql_tests` in YAML configurations to run bespoke SQL against source and target tables, with automatic equality comparison and dashboard surfacing.

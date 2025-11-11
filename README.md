@@ -250,6 +250,7 @@ Below are all available parameters for each task in your `validation_config.yml`
 | `target_schema`           | string       | Yes      | The target schema name.                                                              |
 | `target_table`            | string       | Yes      | The target table name.                                                               |
 | `primary_keys`            | list[string] | No       | List of primary key columns, required for hash checks.                               |
+| `filter`                  | string       | No       | Optional SQL predicate applied to all built-in validations (count/hash/null/agg/uniqueness). Custom SQL tests are unaffected. |
 | `count_tolerance`         | float        | No       | Allowed relative difference for row counts (e.g., `0.01` for 1%). Defaults to `0.0`. |
 | `pk_row_hash_check`       | boolean      | No       | If `true`, performs a per-row hash comparison. Requires `primary_keys`.              |
 | `pk_hash_tolerance`       | float        | No       | Allowed ratio of mismatched hashes. Requires `pk_row_hash_check`. Defaults to `0.0`. |
@@ -260,6 +261,28 @@ Below are all available parameters for each task in your `validation_config.yml`
 | `uniqueness_columns`      | list[string] | No       | Columns that must be unique within source and within target.                         |
 | `uniqueness_tolerance`    | float        | No       | Allowed duplicate ratio (e.g., 0.0 = strict no duplicates).                          |
 | `results-table` | string | No | FQN of the results table. If omitted, `datapact_main.results.run_history` is used. |
+
+---
+
+#### Row-level filters (optional)
+
+Large fact tables can be expensive to rescan for every run. Set `filter` on a validation task to push a SQL predicate into every built-in test (row count, PK hash, nulls, aggregates, uniqueness). Custom SQL tests continue to run exactly as written so you stay in full control of bespoke logic.
+
+```yaml
+validations:
+  - task_key: "validate_recent_high_value_transactions"
+    source_table: "transactions"
+    target_table: "transactions_curated"
+    primary_keys: ["transaction_id"]
+    filter: |
+      transaction_ts >= date_trunc('quarter', current_date())
+      AND amount >= 10000
+    count_tolerance: 0.0
+    pk_row_hash_check: true
+    pk_hash_tolerance: 0.0
+```
+
+The active predicate is captured in `result_payload.applied_filter` so dashboards and auditors can see exactly which slice was validated.
 
 ---
 
@@ -302,6 +325,7 @@ Each validation task writes a JSON payload under `result_payload` with named sec
 
 ```json
 {
+  "applied_filter": "signup_date >= date_sub(current_date(), 30)",
   "count_validation": {
     "source_count": "10,000",
     "target_count": "9,830",
@@ -335,6 +359,7 @@ Each validation task writes a JSON payload under `result_payload` with named sec
 ```
 
 Notes:
+- `applied_filter` is `null` when no predicate is provided, or contains the raw SQL snippet when a filter is active.
 - Aggregate aliases include the column + aggregate name, e.g., `agg_validation_total_logins_SUM`.
 - Null validation aliases include the column validated, e.g., `null_validation_status`.
 - Uniqueness aliases include the concatenated columns, e.g., `uniqueness_validation_email_country`.

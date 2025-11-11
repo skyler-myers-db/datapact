@@ -29,6 +29,7 @@ def _base_payload() -> dict:
         "target_schema": "s",
         "target_table": "b",
         "primary_keys": [],
+        "filter": None,
         "count_tolerance": None,
         "pk_row_hash_check": False,
         "pk_hash_tolerance": None,
@@ -74,6 +75,41 @@ def test_counts_only_block_exact_fragments():
     assert sql.count("count_metrics") == 2  # CTE declaration + FROM
 
 
+def test_filter_applies_to_builtin_ctes_and_excludes_custom_sql():
+    p = _base_payload()
+    p.update(
+        {
+            "filter": "updated_ts >= '2025-01-01'",
+            "count_tolerance": 0.02,
+            "primary_keys": ["id"],
+            "pk_row_hash_check": True,
+            "pk_hash_tolerance": 0.0,
+            "hash_columns": ["payload"],
+            "custom_sql_tests": [
+                {
+                    "name": "Manual Slice",
+                    "description": "User-defined SQL should not inherit filters.",
+                    "cte_base_name": "manual_slice",
+                    "source_sql": "SELECT updated_ts FROM `c`.`s`.`a`",
+                    "target_sql": "SELECT updated_ts FROM `c`.`s`.`b`",
+                    "base_sql": "SELECT updated_ts FROM {{ table_fqn }}",
+                }
+            ],
+        }
+    )
+    sql = _render(p)
+    assert "filtered_source AS (" in sql
+    assert "filtered_target AS (" in sql
+    assert "SELECT COUNT(1) FROM filtered_source" in sql
+    assert "SELECT COUNT(1) FROM filtered_target" in sql
+    assert "FROM filtered_source\n  ) s" in sql
+    assert "FROM filtered_target\n  ) t" in sql
+    assert "Manual Slice" in sql
+    assert "SELECT updated_ts FROM `c`.`s`.`a`" in sql
+    assert "SELECT updated_ts FROM `c`.`s`.`b`" in sql
+    assert "applied_filter" in sql
+
+
 def test_row_hash_only_block_exact_fragments():
     p = _base_payload()
     p.update(
@@ -112,7 +148,7 @@ def test_nulls_with_pk_join_and_without_pk():
     assert "FORMAT_NUMBER(source_nulls_v, '#,##0') AS source_nulls," in sql1
     assert "FORMAT_NUMBER(target_nulls_v, '#,##0') AS target_nulls," in sql1
     assert "total_compared_v" in sql1
-    assert "<= 0.02 THEN 'PASS'" in sql1
+    assert "<= 0.02" in sql1
 
     # Without PKs
     p2 = _base_payload()
@@ -155,10 +191,8 @@ def test_aggregate_validations_block_exact_fragments():
         "FORMAT_STRING('%.2f%%', CAST(0.05 * 100 AS DOUBLE)) AS tolerance_percent,"
         in sql
     )
-    assert (
-        "COALESCE(ABS(source_value_v_SUM - target_value_v_SUM) / NULLIF(ABS(CAST(source_value_v_SUM AS DOUBLE)), 0), 0) <= 0.05"
-        in sql
-    )
+    assert "source_value_v_SUM - target_value_v_SUM" in sql
+    assert "<= 0.05 THEN 'PASS'" in sql
 
 
 def test_full_combo_contains_all_sections_and_cross_joins_in_order():

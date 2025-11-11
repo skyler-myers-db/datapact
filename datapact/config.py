@@ -102,6 +102,7 @@ class ValidationTask(BaseModel):
         target_schema (str): Schema name of the target table.
         target_table (str): Name of the target table.
         primary_keys (list[str] | None): List of primary key columns used for row matching. Optional.
+        filter (str | None): Optional SQL predicate applied to built-in validations to limit scanned rows.
         count_tolerance (float | None): Allowed tolerance for row count differences between source and target. Optional.
         pk_row_hash_check (bool | None): Whether to perform row hash validation on primary keys. Defaults to False.
         pk_hash_tolerance (float | None): Tolerance for acceptable row hash differences. Optional.
@@ -125,6 +126,7 @@ class ValidationTask(BaseModel):
     target_schema: str
     target_table: str
     primary_keys: list[str] | None = None
+    filter: str | None = None
     count_tolerance: float | None = None
     pk_row_hash_check: bool | None = Field(default=False)
     pk_hash_tolerance: float | None = None
@@ -142,6 +144,20 @@ class ValidationTask(BaseModel):
     expected_sla_hours: float | None = None
     estimated_impact_usd: float | None = None
     custom_sql_tests: list[CustomSqlTest] | None = None
+
+    @field_validator("filter")
+    @classmethod
+    def validate_filter(cls, value: str | None) -> str | None:
+        """Normalize optional row-level filter statements."""
+
+        if value is None:
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Filter cannot be empty or whitespace.")
+        if normalized.endswith(";"):
+            raise ValueError("Filter should not include a trailing semicolon.")
+        return normalized
 
     @field_validator(
         "count_tolerance",
@@ -190,7 +206,8 @@ class ValidationTask(BaseModel):
         if value is None:
             return value
         if value < 0:
-            raise ValueError(f"{field.name} must be greater than or equal to 0")
+            field_name = getattr(field, "field_name", getattr(field, "name", "value"))
+            raise ValueError(f"{field_name} must be greater than or equal to 0")
         return value
 
     @model_validator(mode="after")

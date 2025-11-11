@@ -35,6 +35,9 @@ validations:
     target_schema: "gold_layer"
     target_table: "fact_orders"
     primary_keys: ["order_id"]
+    # Only validate the latest 30 days during daily runs to cut costs
+    filter: |
+      order_date >= date_sub(current_date(), 30)
     count_tolerance: 0.001 # Tolerate a 0.1% difference in row count.
     pk_row_hash_check: true
     pk_hash_tolerance: 0.0

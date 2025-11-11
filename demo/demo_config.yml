@@ -60,6 +60,29 @@ validations:
           FROM {{ table_fqn }}
           GROUP BY segment
 
+  # 1A. PERFORMANCE: Monitor only the most recent signups to cut runtime by 90%
+  - task_key: "validate_customer_master_recent_signups_SLICE"
+    <<: *defaults
+    source_table: "users"
+    target_table: "users"
+    business_domain: "Sales"
+    business_owner: "Director Growth Ops"
+    business_priority: "High"
+    expected_sla_hours: 0.5
+    estimated_impact_usd: 125000
+    primary_keys: ["user_id"]
+    # Only scan the most recent 30 days of activity for daily smoke tests
+    filter: |
+      signup_date >= date_sub(current_date(), 30)
+    count_tolerance: 0.02
+    pk_row_hash_check: true
+    pk_hash_tolerance: 0.02
+    null_validation_tolerance: 0.05
+    null_validation_columns: ["status", "segment"]
+    agg_validations:
+      - column: "lifetime_value"
+        validations: [{ agg: "AVG", tolerance: 0.03 }]
+
   # 2. SUCCESS: Financial Transactions - Perfect replication (5M+ records)
   - task_key: "validate_financial_transactions_PASS"
     <<: *defaults
@@ -100,6 +123,32 @@ validations:
                  SUM(amount) AS total_amount
           FROM {{ table_fqn }}
           GROUP BY transaction_status
+
+  # 2A. COST OPTIMIZED: High-value, quarter-to-date financial slice
+  - task_key: "validate_financial_transactions_high_value_QTD"
+    <<: *defaults
+    source_table: "transactions"
+    target_table: "transactions"
+    business_domain: "Finance"
+    business_owner: "Controller - Strategic Programs"
+    business_priority: "High"
+    expected_sla_hours: 0.25
+    estimated_impact_usd: 750000
+    primary_keys: ["transaction_id"]
+    # Limit checks to the active quarter + high-value payments
+    filter: |
+      transaction_ts >= date_trunc('quarter', current_date())
+      AND amount >= 10000
+    count_tolerance: 0.0
+    pk_row_hash_check: true
+    pk_hash_tolerance: 0.0
+    agg_validations:
+      - column: "amount"
+        validations: [{ agg: "SUM", tolerance: 0.0 }]
+      - column: "tax_amount"
+        validations: [{ agg: "SUM", tolerance: 0.0 }]
+    null_validation_tolerance: 0.0
+    null_validation_columns: ["payment_method"]
 
   # 3. APPROVED: Product Catalog - Price updates within business rules
   - task_key: "validate_product_catalog_SCD_PASS"
@@ -291,6 +340,9 @@ validations:
     expected_sla_hours: 1
     estimated_impact_usd: 4200000
     primary_keys: ["event_id"]
+    # Focus on the last 7 days of sensor traffic to reduce scan cost
+    filter: |
+      event_ts >= current_timestamp() - INTERVAL 7 DAYS
     count_tolerance: 0.05 # Missing packets in EMEA facility
     pk_row_hash_check: true
     pk_hash_tolerance: 0.01
@@ -325,6 +377,10 @@ validations:
     expected_sla_hours: 3
     estimated_impact_usd: 3100000
     primary_keys: ["shipment_id"]
+    # Restrict checks to hazmat loads shipped in the last 60 days
+    filter: |
+      ship_date >= date_sub(current_date(), 60)
+      AND hazmat_flag
     count_tolerance: 0.04
     pk_row_hash_check: true
     pk_hash_tolerance: 0.01

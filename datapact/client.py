@@ -837,6 +837,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "  task_key, "
                         "  status, "
                         "  job_start_ts, "
+                        "  result_payload:applied_filter,"
+                        "  result_payload:applied_filter IS NOT NULL AS is_filtered, "
                         "  to_json(result_payload) as payload_json, "
                         "  run_id, "
                         "  job_name, "
@@ -2620,6 +2622,14 @@ Once created, users can ask questions in natural language to analyze data qualit
                                             {
                                                 "fieldName": "job_start_ts",
                                                 "displayName": "Job Start Timestamp",
+                                            },
+                                            {
+                                                "fieldName": "is_filtered",
+                                                "displayName": "Filter Applied?",
+                                            },
+                                            {
+                                                "fieldName": "applied_filter",
+                                                "displayName": "Applied Filter",
                                             },
                                             {
                                                 "fieldName": "payload_json",
