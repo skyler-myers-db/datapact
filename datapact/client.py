@@ -837,8 +837,9 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "  task_key, "
                         "  status, "
                         "  job_start_ts, "
-                        "  result_payload:applied_filter,"
-                        "  result_payload:applied_filter IS NOT NULL AS is_filtered, "
+                        "  result_payload:applied_filter, "
+                        "  result_payload:applied_filter IS NOT NULL is_filtered, "
+                        "  result_payload:configured_primary_keys, "
                         "  to_json(result_payload) as payload_json, "
                         "  run_id, "
                         "  job_name, "
@@ -2590,6 +2591,18 @@ Once created, users can ask questions in natural language to analyze data qualit
                                                     "expression": "`job_name`",
                                                 },
                                                 {
+                                                    "name": "is_filtered",
+                                                    "expression": "`is_filtered`",
+                                                },
+                                                {
+                                                    "name": "applied_filter",
+                                                    "expression": "`applied_filter`",
+                                                },
+                                                {
+                                                    "name": "configured_primary_keys",
+                                                    "expression": "`configured_primary_keys`",
+                                                },
+                                                {
                                                     "name": "business_priority",
                                                     "expression": "`business_priority`",
                                                 },
@@ -2630,6 +2643,10 @@ Once created, users can ask questions in natural language to analyze data qualit
                                             {
                                                 "fieldName": "applied_filter",
                                                 "displayName": "Applied Filter",
+                                            },
+                                            {
+                                                "fieldName": "configured_primary_keys",
+                                                "displayName": "Primary Keys",
                                             },
                                             {
                                                 "fieldName": "payload_json",

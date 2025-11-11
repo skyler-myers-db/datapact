@@ -4,11 +4,12 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [2.8.0]
 
 - **Row-Level Filters:** Validation tasks now accept an optional `filter` predicate that scopes row count, PK hash, null, aggregate, and uniqueness tests to a narrow slice without rewriting SQL. The active predicate is captured in `result_payload.applied_filter`.
 - **Demo Enhancements:** The enterprise demo configuration highlights multiple filtered tasks (recent signups, high-value financial transactions, hazmat shipments, and rolling IoT telemetry) so new users have turnkey examples.
 - **Documentation & Samples:** README, sample configs, and changelog document the new filter behavior, and dedicated unit tests cover SQL generation plus validator edge cases.
+- **Primary-Key Visibility:** Result payloads now store the configured primary key list and the Historical Validation Runs widget displays it, so you can match PKs to tables without revisiting the YAML config.
 
 ## [2.7.0]
 

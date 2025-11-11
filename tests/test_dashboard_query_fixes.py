@@ -102,6 +102,8 @@ class TestDashboardQueryFixes:
                 "CONCAT_WS('.', target_catalog, target_schema, target_table) AS target_table"
                 in query
             )
+            assert "CAST(result_payload:configured_primary_keys AS STRING)" in query
+            assert "trim(CAST(result_payload:applied_filter AS STRING))" in query
 
             # Test 3: Agg validation check should use simplified logic
             assert (

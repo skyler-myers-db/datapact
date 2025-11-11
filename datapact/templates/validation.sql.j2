@@ -19,6 +19,11 @@
   {% set builtin_source = source_fqn -%}
   {% set builtin_target = target_fqn -%}
 {% endif -%}
+{% if primary_keys %}
+  {% set primary_keys_display = primary_keys | join(', ') %}
+{% else %}
+  {% set primary_keys_display = None %}
+{% endif %}
 
 {# Helper macros #}
 {% macro agg_rel_diff(column, agg) -%}
@@ -48,6 +53,9 @@ NULL
 {%- endif -%}
 {%- endmacro %}
 
+{% set primary_keys_literal = sql_string(primary_keys_display) -%}
+{% set applied_filter_literal = sql_string(filter_condition) -%}
+
 DECLARE VARIABLE validation_begin_ts TIMESTAMP DEFAULT current_timestamp();
 
 {# Begin view creation #}
@@ -72,7 +80,11 @@ CREATE OR REPLACE TEMP VIEW final_metrics_view AS SELECT
   {{ sql_string(business_priority) }} AS business_priority,
   {{ sql_number(expected_sla_hours) }} AS expected_sla_hours,
   {{ sql_number(estimated_impact_usd) }} AS estimated_impact_usd,
-  parse_json(to_json(struct('No validations configured for task {{ task_key_ }}' as message))) as result_payload,
+  parse_json(to_json(struct(
+    {{ applied_filter_literal }} AS applied_filter,
+    {{ primary_keys_literal }} AS configured_primary_keys,
+    'No validations configured for task {{ task_key_ }}' as message
+  ))) as result_payload,
   true as overall_validation_passed;
 {% else %}
 CREATE OR REPLACE TEMP VIEW final_metrics_view AS
@@ -94,6 +106,7 @@ filtered_target AS (
   WHERE {{ filter_condition }}
 )
 {% endif %}
+
 {# Count metrics CTE #}
 {% if count_tolerance is not none %}
 {% if ns.first %}WITH
@@ -291,7 +304,9 @@ SELECT
   parse_json(to_json(struct(
   {%- set comma = joiner(',') -%}
     {{ comma() }}
-    {{ sql_string(filter_condition) }} AS applied_filter
+    {{ applied_filter_literal }} AS applied_filter
+    {{ comma() }}
+    {{ primary_keys_literal }} AS configured_primary_keys
     {# Count payload #}
     {%- if count_tolerance is not none -%}
     {{ comma() }}
