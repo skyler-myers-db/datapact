@@ -1413,6 +1413,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                               MAX(job_start_ts)
                             FROM
                               {table}
+                            WHERE
+                              job_name = {job}
                           )
                         ORDER BY
                           status DESC,
