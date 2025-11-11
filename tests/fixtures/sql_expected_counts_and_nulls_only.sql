@@ -34,16 +34,10 @@ SELECT
   NULL AS expected_sla_hours,
   NULL AS estimated_impact_usd,
   parse_json(to_json(struct(
-<<<<<<< Updated upstream
-||||||| Stash base
-    NULL AS applied_filter
-,
-=======
     NULL AS applied_filter
 , 
     NULL AS configured_primary_keys
 , 
->>>>>>> Stashed changes
     struct(
       FORMAT_NUMBER(source_count, '#,##0') AS source_count,
       FORMAT_NUMBER(target_count, '#,##0') AS target_count,
