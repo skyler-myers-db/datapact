@@ -4,10 +4,10 @@ from datapact.client import DataPactClient
 
 # pylint: disable=protected-access
 from datapact.config import (
-    DataPactConfig,
-    ValidationTask,
     AggValidation,
     AggValidationDetail,
+    DataPactConfig,
+    ValidationTask,
 )
 
 

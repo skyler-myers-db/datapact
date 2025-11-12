@@ -4,9 +4,10 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml  # type: ignore[import]
 from databricks.sdk.errors import NotFound
-from databricks.sdk.service.jobs import RunLifeCycleState, RunResultState
 from databricks.sdk.service import sql as sql_service
+from databricks.sdk.service.jobs import RunLifeCycleState, RunResultState
 
 from datapact.client import DataPactClient
 from datapact.config import DataPactConfig
@@ -15,10 +16,7 @@ from datapact.config import DataPactConfig
 def test_full_datapact_run_with_demo_config():
     """Test complete datapact run with demo configuration."""
 
-    # Load the demo configuration
-    import yaml
-
-    with open("demo/demo_config.yml", "r") as f:
+    with open("demo/demo_config.yml") as f:
         config_dict = yaml.safe_load(f)
     config = DataPactConfig(**config_dict)
 
@@ -28,16 +26,12 @@ def test_full_datapact_run_with_demo_config():
         mock_ws.return_value = mock_ws_instance
 
         # Mock user
-        mock_ws_instance.current_user.me.return_value = MagicMock(
-            user_name="test_user@example.com"
-        )
+        mock_ws_instance.current_user.me.return_value = MagicMock(user_name="test_user@example.com")
 
         # Mock workspace operations
         mock_ws_instance.workspace.mkdirs = MagicMock()
         mock_ws_instance.workspace.upload = MagicMock()
-        mock_ws_instance.workspace.get_status = MagicMock(
-            side_effect=NotFound("Not found")
-        )
+        mock_ws_instance.workspace.get_status = MagicMock(side_effect=NotFound("Not found"))
 
         # Mock warehouse
         mock_warehouse = MagicMock()
@@ -97,9 +91,7 @@ def test_full_datapact_run_with_demo_config():
         assert mock_ws_instance.warehouses.list.called
 
         # 2. Infrastructure was set up (catalog, schema, table)
-        execute_calls = (
-            mock_ws_instance.statement_execution.execute_statement.call_args_list
-        )
+        execute_calls = mock_ws_instance.statement_execution.execute_statement.call_args_list
         assert len(execute_calls) >= 3  # At least catalog, schema, and table creation
 
         # 3. Dashboard was created
@@ -144,12 +136,8 @@ def test_full_datapact_run_with_demo_config():
         assert len(agg_task.depends_on) == len(config.validations)
 
         # Verify Genie datasets and dashboard refresh run in parallel (both depend only on aggregate)
-        genie_task = next(
-            t for t in created_tasks if t.task_key == "setup_genie_datasets"
-        )
-        dashboard_task = next(
-            t for t in created_tasks if t.task_key == "refresh_dashboard"
-        )
+        genie_task = next(t for t in created_tasks if t.task_key == "setup_genie_datasets")
+        dashboard_task = next(t for t in created_tasks if t.task_key == "refresh_dashboard")
         assert len(genie_task.depends_on) == 1
         assert genie_task.depends_on[0].task_key == "aggregate_results"
         assert len(dashboard_task.depends_on) == 1
@@ -182,9 +170,7 @@ def test_datapact_handles_missing_warehouse():
 
         config = DataPactConfig(validations=[])
 
-        with pytest.raises(
-            ValueError, match="SQL Warehouse 'missing_warehouse' not found"
-        ):
+        with pytest.raises(ValueError, match="SQL Warehouse 'missing_warehouse' not found"):
             client.run_validation(
                 config=config,
                 job_name="Test Job",

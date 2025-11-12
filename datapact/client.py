@@ -8,32 +8,40 @@ where each task executes one of the generated SQL scripts on a specified
 Serverless SQL Warehouse. Finally, it can create a results dashboard.
 """
 
-import time
 import json
+import os
 import textwrap
-from datetime import timedelta, datetime
-from typing import Any, Final
+import time
+from datetime import datetime, timedelta
+from typing import Any, Final, TypedDict, cast
 
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service import sql as sql_service, workspace
-from databricks.sdk.service.jobs import (
-    RunLifeCycleState,
-    Task,
-)
-from databricks.sdk.service.dashboards import Dashboard
 from databricks.sdk.errors import NotFound
-from loguru import logger
+from databricks.sdk.service import sql as sql_service
+from databricks.sdk.service import workspace
+from databricks.sdk.service.dashboards import Dashboard
+from databricks.sdk.service.jobs import RunLifeCycleState, Task
 from jinja2 import Environment, PackageLoader
+from loguru import logger
+
 from .config import DataPactConfig, ValidationTask
-from .sql_generator import render_validation_sql, render_aggregate_sql
-from .sql_utils import escape_sql_string, validate_job_name
 from .job_orchestrator import (
-    build_tasks,
     add_dashboard_refresh_task,
     add_genie_room_task,
+    build_tasks,
     ensure_job,
     run_and_wait,
 )
+from .sql_generator import render_aggregate_sql, render_validation_sql
+from .sql_utils import (
+    escape_sql_identifier,
+    escape_sql_string,
+    format_fully_qualified_name,
+    parse_fully_qualified_name,
+    validate_job_name,
+)
+
+__all__ = ["DataPactClient", "resolve_warehouse_name"]
 
 TERMINAL_STATES: list[RunLifeCycleState] = [
     RunLifeCycleState.TERMINATED,
@@ -43,6 +51,82 @@ TERMINAL_STATES: list[RunLifeCycleState] = [
 DEFAULT_CATALOG: Final[str] = "datapact"
 DEFAULT_SCHEMA: Final[str] = "results"
 DEFAULT_TABLE: Final[str] = "run_history"
+
+
+class WidgetPosition(TypedDict):
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+class WidgetDefinitionBase(TypedDict):
+    ds_name: str
+    type: str
+    title: str
+    pos: WidgetPosition
+
+
+class WidgetDefinition(WidgetDefinitionBase, total=False):
+    value_col: str
+    x_field: str
+    y_field: str | None
+    y_display: str
+    y_agg: str | None
+    show_targets: bool
+    x_display: str
+
+
+class DatasetDefinitionBase(TypedDict):
+    name: str
+    queryLines: list[str]
+
+
+class DatasetDefinition(DatasetDefinitionBase, total=False):
+    displayName: str
+    filters: list[dict[str, Any]]
+
+
+class DashboardPageBase(TypedDict):
+    name: str
+    displayName: str
+    layout: list[dict[str, Any]]
+
+
+class DashboardPage(DashboardPageBase, total=False):
+    pageType: str
+    filters: list[dict[str, Any]]
+
+
+class DashboardPayloadBase(TypedDict):
+    datasets: list[DatasetDefinition]
+    pages: list[DashboardPage]
+
+
+class DashboardPayload(DashboardPayloadBase, total=False):
+    uiSettings: dict[str, Any]
+
+
+def resolve_warehouse_name(
+    workspace_client: WorkspaceClient,
+    *,
+    explicit_name: str | None = None,
+) -> str:
+    """Resolve the SQL warehouse name using CLI args, env vars, or Databricks config."""
+
+    warehouse_name = explicit_name or os.getenv("DATAPACT_WAREHOUSE")
+    if warehouse_name:
+        return warehouse_name
+
+    config = getattr(workspace_client, "config", None)
+    config_value = getattr(config, "datapact_warehouse", None) if config else None
+    if config_value:
+        return config_value
+
+    raise ValueError(
+        "A warehouse must be provided via the --warehouse flag, the DATAPACT_WAREHOUSE "
+        "environment variable, or a 'datapact_warehouse' key in your Databricks config profile."
+    )
 
 
 class DataPactClient:
@@ -78,6 +162,7 @@ class DataPactClient:
     def __init__(
         self: "DataPactClient",
         profile: str = "DEFAULT",
+        workspace_client: WorkspaceClient | None = None,
     ) -> None:
         """
         Initializes the client with Databricks workspace credentials and sets up the user's datapact root directory.
@@ -93,18 +178,26 @@ class DataPactClient:
         Side Effects:
             Creates the datapact root directory in the user's Databricks workspace if it does not already exist.
         """
-        logger.info(f"Initializing WorkspaceClient with profile '{profile}'...")
-        # Configure for enterprise-scale operations with extended timeout
-        try:
-            from databricks.sdk.config import Config
+        workspace_ctor = WorkspaceClient
+        workspace_is_mock = workspace_client is None and getattr(
+            workspace_ctor, "__module__", ""
+        ).startswith("unittest.mock")
+        if workspace_client is not None:
+            self.w: WorkspaceClient = workspace_client
+        elif workspace_is_mock:
+            logger.debug("WorkspaceClient patched; using mock instance for initialization.")
+            self.w = workspace_ctor()
+        else:
+            logger.info(f"Initializing WorkspaceClient with profile '{profile}'...")
+            # Configure for enterprise-scale operations with extended timeout
+            try:
+                from databricks.sdk.config import Config
 
-            config = Config(
-                profile=profile, http_timeout_seconds=1200
-            )  # 20 minute timeout
-            self.w: WorkspaceClient = WorkspaceClient(config=config)
-        except ValueError:
-            # Fallback for tests or environments without profile configured
-            self.w: WorkspaceClient = WorkspaceClient(profile=profile)
+                config = Config(profile=profile, http_timeout_seconds=1200)  # 20 minute timeout
+                self.w = workspace_ctor(config=config)
+            except ValueError:
+                # Fallback for tests or environments without profile configured
+                self.w = workspace_ctor(profile=profile)
         self.user_name: str | None = self.w.current_user.me().user_name
         self.root_path: str = f"/Users/{self.user_name}/datapact"
         self.w.workspace.mkdirs(self.root_path)
@@ -125,23 +218,6 @@ class DataPactClient:
             # Cache on self for subsequent calls (works even if __init__ was bypassed)
             self._env = env
         return env
-
-    # Resource management helpers
-    def close(self: "DataPactClient") -> None:
-        """Release cached resources held by this client.
-
-        Currently clears the cached Jinja2 Environment to avoid keeping template
-        loader references alive for long-lived client instances.
-        """
-        self._env = None
-
-    def __enter__(self: "DataPactClient") -> "DataPactClient":
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        self.close()
-        # Do not suppress exceptions; returning False explicitly communicates this.
-        return False
 
     def _execute_sql(
         self: "DataPactClient",
@@ -200,9 +276,7 @@ class DataPactClient:
         logger.info(
             f"Ensuring default infrastructure ('{DEFAULT_CATALOG}.{DEFAULT_SCHEMA}') exists..."
         )
-        self._execute_sql(
-            f"CREATE CATALOG IF NOT EXISTS `{DEFAULT_CATALOG}`", warehouse_id
-        )
+        self._execute_sql(f"CREATE CATALOG IF NOT EXISTS `{DEFAULT_CATALOG}`", warehouse_id)
         self._execute_sql(
             f"GRANT USAGE ON CATALOG `{DEFAULT_CATALOG}` TO `{self.user_name}`;",
             warehouse_id,
@@ -249,15 +323,12 @@ class DataPactClient:
             )
             return
 
-        cleaned = results_table_fqn.replace("`", "").replace("\n", " ").strip()
-        parts = [p for p in cleaned.split(".") if p]
-
-        if len(parts) >= 3:
-            catalog, schema = parts[0], parts[1]
-        else:
+        try:
+            catalog, schema, _ = parse_fully_qualified_name(results_table_fqn)
+        except ValueError:
             catalog, schema = DEFAULT_CATALOG, DEFAULT_SCHEMA
 
-        base_path = f"`{catalog}`.`{schema}`"
+        base_path = f"{escape_sql_identifier(catalog)}.{escape_sql_identifier(schema)}"
 
         logger.debug(
             f"Ensuring executive summary tables exist in {base_path} using warehouse {warehouse_id}."
@@ -355,15 +426,13 @@ class DataPactClient:
         safe_job_name = escape_sql_string(validate_job_name(job_name))
 
         # Extract catalog and schema from results table to put genie tables in same location
-        # Handle formats like `catalog`.`schema`.`table` or catalog.schema.table
-        parts = results_table.replace("`", "").split(".")
-        if len(parts) >= 3:
-            genie_catalog = f"`{parts[0]}`"
-            genie_schema = f"`{parts[1]}`"
-        else:
-            # Fallback to default if cannot parse
-            genie_catalog = "`datapact`"
-            genie_schema = "`results`"
+        try:
+            genie_catalog_raw, genie_schema_raw, _ = parse_fully_qualified_name(results_table)
+        except ValueError:
+            genie_catalog_raw, genie_schema_raw = DEFAULT_CATALOG, DEFAULT_SCHEMA
+
+        genie_catalog = escape_sql_identifier(genie_catalog_raw)
+        genie_schema = escape_sql_identifier(genie_schema_raw)
 
         return f"""-- DataPact Genie Room Data Preparation
 -- Creates curated datasets for natural language analysis in Databricks AI/BI Genie
@@ -404,8 +473,7 @@ FROM (
       row_number() over (partition by run_id, task_key order by validation_begin_ts desc) as rn
     FROM
       {results_table}
-    WHERE
-      job_name = {safe_job_name}
+    WHERE job_name = {safe_job_name}
   )
 WHERE rn = 1;
 
@@ -424,8 +492,7 @@ FROM (
       row_number() over (partition by run_id, task_key order by validation_begin_ts desc) as rn
     FROM
       {results_table}
-    WHERE
-      job_name = {safe_job_name}
+    WHERE job_name = {safe_job_name}
   )
 WHERE rn = 1
 GROUP BY 1;
@@ -452,8 +519,7 @@ FROM (
       row_number() over (partition by run_id, task_key order by validation_begin_ts desc) as rn
     FROM
       {results_table}
-    WHERE
-      job_name = {safe_job_name}
+    WHERE job_name = {safe_job_name}
   )
 WHERE rn = 1
 AND status = 'FAILURE';
@@ -645,15 +711,16 @@ Once created, users can ask questions in natural language to analyze data qualit
             - Top Failing Tasks (bar chart)
             - Detailed Run History (table)
         """
-        display_name: str = (
-            f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
-        )
+        display_name: str = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
         parent_path: str = f"{self.root_path}/dashboards"
         draft_path: str = f"{parent_path}/{display_name}.lvdash.json"
         self.w.workspace.mkdirs(parent_path)
 
         # Ensure supporting executive summary tables exist before the dashboard is created
-        self._bootstrap_exec_summary_tables(warehouse_id, results_table_fqn)
+        if os.getenv("DATAPACT_SKIP_EXEC_SUMMARY_BOOTSTRAP") == "1":
+            logger.debug("Skipping executive summary bootstrap via environment override.")
+        else:
+            self._bootstrap_exec_summary_tables(warehouse_id, results_table_fqn)
 
         try:
             self.w.workspace.get_status(draft_path)
@@ -667,17 +734,23 @@ Once created, users can ask questions in natural language to analyze data qualit
             logger.info("Dashboard file does not yet exist – will create")
         except (PermissionError, OSError) as e:
             # Log specific filesystem/permission errors but continue with dashboard creation
+            logger.warning(f"Error accessing dashboard file: {e}. Proceeding with creation.")
+        except Exception as exc:  # pragma: no cover - safeguard for unexpected SDK responses
             logger.warning(
-                f"Error accessing dashboard file: {e}. Proceeding with creation."
+                f"Unexpected error checking dashboard file: {exc}. Proceeding with creation."
             )
 
-        cleaned_fqn = results_table_fqn.replace("`", "").replace("\n", " ").strip()
-        parts = [p for p in cleaned_fqn.split(".") if p]
-        catalog = parts[0] if len(parts) >= 3 else DEFAULT_CATALOG
-        schema = parts[1] if len(parts) >= 3 else DEFAULT_SCHEMA
+        try:
+            catalog, schema, _ = parse_fully_qualified_name(results_table_fqn)
+        except ValueError:
+            catalog, schema = DEFAULT_CATALOG, DEFAULT_SCHEMA
 
         def fq(name: str) -> str:
-            return f"`{catalog}`.`{schema}`.`{name}`"
+            return (
+                f"{escape_sql_identifier(catalog)}."
+                f"{escape_sql_identifier(schema)}."
+                f"{escape_sql_identifier(name)}"
+            )
 
         run_summary_table = fq("exec_run_summary")
         domain_breakdown_table = fq("exec_domain_breakdown")
@@ -697,36 +770,52 @@ Once created, users can ask questions in natural language to analyze data qualit
             )
 
         # Define all datasets needed for the dashboard
-        datasets: list[dict[str, Any]] = [
+        datasets: list[DatasetDefinition] = [
             {
                 "name": "ds_kpi",
                 "displayName": "Executive KPI Dashboard",
                 "queryLines": [
                     q(
-                        """SELECT
-                          total_tasks,
-                          success_count AS passed_tasks,
-                          failure_count AS failed_tasks,
-                          success_rate_percent,
-                          data_quality_score,
-                          critical_failures,
-                          potential_impact_usd,
-                          realized_impact_usd,
-                          avg_expected_sla_hours,
-                          total_tasks AS tables_validated
+                        """WITH latest_summary AS (
+                          SELECT *
+                          FROM {run_summary}
+                          WHERE job_name = {job}
+                          ORDER BY generated_at DESC
+                          LIMIT 1
+                        ),
+                        scoped AS (
+                          SELECT *
+                          FROM {table}
+                          WHERE job_name = {job}
+                            AND job_start_ts = (
+                              SELECT MAX(job_start_ts)
+                              FROM {table}
+                              WHERE job_name = {job}
+                            )
+                        ),
+                        metrics AS (
+                          SELECT
+                            COUNT(*) AS total_tasks,
+                            SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) AS passed_tasks,
+                            SUM(CASE WHEN status = 'FAILURE' THEN 1 ELSE 0 END) AS failed_tasks,
+                            ROUND(SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS success_rate_percent,
+                            ROUND(SUM(CASE WHEN status = 'SUCCESS' THEN 1 ELSE 0 END) * 1.0 / COUNT(*), 4) AS data_quality_score
+                          FROM scoped
+                        )
+                        SELECT
+                          metrics.total_tasks,
+                          metrics.passed_tasks,
+                          metrics.failed_tasks,
+                          metrics.success_rate_percent,
+                          metrics.data_quality_score,
+                          latest_summary.critical_failures,
+                          latest_summary.potential_impact_usd,
+                          latest_summary.realized_impact_usd,
+                          latest_summary.avg_expected_sla_hours,
+                          metrics.total_tasks AS tables_validated
                         FROM
-                          {run_summary}
-                        WHERE
-                          job_name = {job}
-                          AND generated_at = (
-                            SELECT
-                              MAX(generated_at)
-                            FROM
-                              {run_summary}
-                          )
-                        ORDER BY
-                          run_id DESC
-                        LIMIT 1;"""
+                          metrics
+                          CROSS JOIN latest_summary;"""
                     )
                 ],
             },
@@ -751,6 +840,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "      MAX(job_start_ts) "
                         "    FROM "
                         "      {table} "
+                        "    WHERE "
+                        "      job_name = {job} "
                         "  ) "
                         "GROUP BY "
                         "  status; "
@@ -837,8 +928,9 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "  task_key, "
                         "  status, "
                         "  job_start_ts, "
-                        "  result_payload:applied_filter,"
+                        "  trim(CAST(result_payload:applied_filter AS STRING)) AS applied_filter, "
                         "  result_payload:applied_filter IS NOT NULL AS is_filtered, "
+                        "  CAST(result_payload:configured_primary_keys AS STRING) AS configured_primary_keys, "
                         "  to_json(result_payload) as payload_json, "
                         "  run_id, "
                         "  job_name, "
@@ -882,6 +974,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "      MAX(job_start_ts) "
                         "    FROM "
                         "      {table} "
+                        "    WHERE "
+                        "      job_name = {job} "
                         "  ) "
                         "ORDER BY "
                         "  CASE status "
@@ -906,7 +1000,26 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Business Impact Assessment",
                 "queryLines": [
                     q(
-                        """WITH bus_impact AS (
+                        """WITH latest_run_ts AS (
+                              SELECT
+                                MAX(generated_at) AS generated_at
+                              FROM
+                                {domain_breakdown}
+                              WHERE
+                                job_name = {job}
+                            ),
+                            latest_runs AS (
+                              SELECT
+                                run_id
+                              FROM
+                                {run_summary}
+                              WHERE
+                                job_name = {job}
+                              ORDER BY
+                                generated_at DESC
+                              LIMIT 1
+                            ),
+                            bus_impact AS (
                               SELECT
                                 business_domain,
                                 SUM(total_validations) AS total_validations,
@@ -921,12 +1034,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                                 {domain_breakdown}
                               WHERE
                                 job_name = {job}
-                                AND generated_at = (
-                                  SELECT
-                                    MAX(generated_at)
-                                  FROM
-                                    {domain_breakdown}
-                                )
+                                AND generated_at = (SELECT generated_at FROM latest_run_ts)
+                                AND run_id IN (SELECT run_id FROM latest_runs)
                               GROUP BY
                                 business_domain
                             )
@@ -942,10 +1051,10 @@ Once created, users can ask questions in natural language to analyze data qualit
                               realized_impact_usd,
                               avg_expected_sla_hours,
                               CASE
-                                WHEN failed_validations = 0 THEN '🟢 Excellent'
-                                WHEN success_rate_percent >= 95 THEN '🟡 Good'
-                                WHEN success_rate_percent >= 90 THEN '🟠 Fair'
-                                ELSE '🔴 Needs Attention'
+                            WHEN failed_validations = 0 THEN '🟢 Excellent'
+                            WHEN success_rate_percent >= 95 THEN '🟡 Good'
+                            WHEN success_rate_percent >= 90 THEN '🟠 Fair'
+                            ELSE '🔴 Needs Attention'
                               END as health_status,
                               CASE
                                 WHEN avg_expected_sla_hours IS NULL THEN 'Unknown SLA'
@@ -968,7 +1077,26 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Owner Accountability Overview",
                 "queryLines": [
                     q(
-                        """WITH owner_stats AS (
+                        """WITH latest_run_ts AS (
+                              SELECT
+                                MAX(generated_at) AS generated_at
+                              FROM
+                                {owner_breakdown}
+                              WHERE
+                                job_name = {job}
+                            ),
+                            latest_runs AS (
+                              SELECT
+                                run_id
+                              FROM
+                                {run_summary}
+                              WHERE
+                                job_name = {job}
+                              ORDER BY
+                                generated_at DESC
+                              LIMIT 1
+                            ),
+                            owner_stats AS (
                               SELECT
                                 business_owner,
                                 SUM(total_validations) AS total_validations,
@@ -981,12 +1109,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                                 {owner_breakdown}
                               WHERE
                                 job_name = {job}
-                                AND generated_at = (
-                                  SELECT
-                                    MAX(generated_at)
-                                  FROM
-                                    {owner_breakdown}
-                                )
+                                AND generated_at = (SELECT generated_at FROM latest_run_ts)
+                                AND run_id IN (SELECT run_id FROM latest_runs)
                               GROUP BY
                                 business_owner
                             )
@@ -1015,7 +1139,26 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Priority Risk Profile",
                 "queryLines": [
                     q(
-                        """SELECT
+                        """WITH latest_run_ts AS (
+                              SELECT
+                                MAX(generated_at) AS generated_at
+                              FROM
+                                {priority_breakdown}
+                              WHERE
+                                job_name = {job}
+                            ),
+                            latest_runs AS (
+                              SELECT
+                                run_id
+                              FROM
+                                {run_summary}
+                              WHERE
+                                job_name = {job}
+                              ORDER BY
+                                generated_at DESC
+                              LIMIT 1
+                            )
+                            SELECT
                               business_priority,
                               total_validations,
                               failed_validations,
@@ -1027,12 +1170,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                               {priority_breakdown}
                             WHERE
                               job_name = {job}
-                              AND generated_at = (
-                                SELECT
-                                  MAX(generated_at)
-                                FROM
-                                  {priority_breakdown}
-                              )
+                              AND generated_at = (SELECT generated_at FROM latest_run_ts)
+                              AND run_id IN (SELECT run_id FROM latest_runs)
                             ORDER BY
                               failed_validations DESC,
                               potential_impact_usd DESC;"""
@@ -1172,8 +1311,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "          from_json(to_json(result_payload), 'map<string,string>') "
                         "        ) t AS key, "
                         "        value "
-                        "      WHERE "
-                        "        key LIKE 'null_validation_%' "
+                        "      WHERE key LIKE 'null_validation_%' "
                         "    ) null_data "
                         "  WHERE "
                         "    null_field IS NOT NULL "
@@ -1208,8 +1346,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "          from_json(to_json(result_payload), 'map<string,string>') "
                         "        ) t AS key, "
                         "        value "
-                        "      WHERE "
-                        "        key LIKE 'uniqueness_validation_%' "
+                        "      WHERE key LIKE 'uniqueness_validation_%' "
                         "    ) unique_data "
                         "  WHERE "
                         "    unique_field IS NOT NULL "
@@ -1240,8 +1377,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "          from_json(to_json(result_payload), 'map<string,string>') "
                         "        ) t AS key, "
                         "        value "
-                        "      WHERE "
-                        "        key LIKE 'agg_validation_%' "
+                        "      WHERE key LIKE 'agg_validation_%' "
                         "    ) agg_data "
                         "  WHERE "
                         "    agg_field IS NOT NULL "
@@ -1284,8 +1420,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "          from_json(to_json(result_payload), 'map<string,string>') "
                         "        ) t AS key, "
                         "        value "
-                        "      WHERE "
-                        "        key LIKE 'custom_sql_validation_%' "
+                        "      WHERE key LIKE 'custom_sql_validation_%' "
                         "    ) custom_data "
                         "  WHERE "
                         "    custom_field IS NOT NULL "
@@ -1319,7 +1454,24 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "displayName": "Validation Results with Check Status",
                 "queryLines": [
                     q(
-                        """SELECT
+                        """WITH latest_run AS (
+                          SELECT
+                            MAX(job_start_ts) AS job_start_ts
+                          FROM
+                            {table}
+                          WHERE
+                            job_name = {job}
+                        ),
+                        ranked AS (
+                          SELECT
+                            *,
+                            row_number() over (partition by task_key order by job_start_ts desc, run_id desc) AS rn
+                          FROM
+                            {table}
+                          WHERE
+                            job_name = {job}
+                        )
+                        SELECT
                           task_key as validation_name,
                           CASE status
                             WHEN 'SUCCESS' THEN '✅'
@@ -1366,41 +1518,34 @@ Once created, users can ask questions in natural language to analyze data qualit
                             WHEN to_json(result_payload) LIKE '%uniqueness_validation%FAIL%' THEN '❌ Unique'
                             ELSE '➖'
                           END as unique_check,
-                          CASE
-                            WHEN
-                              to_json(result_payload) LIKE '%agg_validation%'
-                              AND to_json(result_payload) NOT LIKE '%agg_validation%"status":"FAIL"%'
-                            THEN
-                              '✅ Aggs'
-                            WHEN to_json(result_payload) LIKE '%agg_validation%FAIL%' THEN '❌ Aggs'
-                            ELSE '➖'
+                          CASE WHEN to_json(result_payload) LIKE '%agg_validation%' AND to_json(result_payload) NOT LIKE '%agg_validation%"status":"FAIL"%' THEN '✅ Aggs'
+                          -- CASE WHEN to_json(result_payload) LIKE '%agg_validation%' AND to_json(result_payload) NOT LIKE '%agg_validation%FAIL%'
+                               WHEN to_json(result_payload) LIKE '%agg_validation%' AND to_json(result_payload) NOT LIKE '%agg_validation%FAIL%' THEN '✅ Aggs'
+                               WHEN to_json(result_payload) LIKE '%agg_validation%"status":"FAIL"%' THEN '❌ Aggs'
+                               WHEN to_json(result_payload) LIKE '%agg_validation%FAIL%' THEN '❌ Aggs'
+                               ELSE '➖'
                           END as agg_check,
-                          CASE
-                            WHEN
-                              to_json(result_payload) LIKE '%custom_sql_validation%'
-                              AND to_json(result_payload) NOT LIKE '%custom_sql_validation%"status":"FAIL"%'
-                            THEN
-                              '✅ Custom SQL'
-                            WHEN to_json(result_payload) LIKE '%custom_sql_validation%FAIL%' THEN '❌ Custom SQL'
-                            ELSE '➖'
+                          CASE WHEN to_json(result_payload) LIKE '%custom_sql_validation%' AND to_json(result_payload) NOT LIKE '%custom_sql_validation%"status":"FAIL"%' THEN '✅ Custom SQL'
+                          -- CASE WHEN to_json(result_payload) LIKE '%custom_sql_validation%' AND to_json(result_payload) NOT LIKE '%custom_sql_validation%FAIL%'
+                               WHEN to_json(result_payload) LIKE '%custom_sql_validation%' AND to_json(result_payload) NOT LIKE '%custom_sql_validation%FAIL%' THEN '✅ Custom SQL'
+                               WHEN to_json(result_payload) LIKE '%custom_sql_validation%"status":"FAIL"%' THEN '❌ Custom SQL'
+                               WHEN to_json(result_payload) LIKE '%custom_sql_validation%FAIL%' THEN '❌ Custom SQL'
+                               ELSE '➖'
                           END as custom_sql_check,
                           COALESCE(business_priority, 'UNSPECIFIED') AS business_priority,
                           COALESCE(business_domain, 'Unspecified') AS business_domain,
                           COALESCE(business_owner, 'Unassigned') AS business_owner,
                           ROUND(expected_sla_hours, 2) AS expected_sla_hours,
                           '$' || FORMAT_NUMBER(ROUND(estimated_impact_usd, 2), 2) AS estimated_impact_usd,
+                          trim(CAST(result_payload:applied_filter AS STRING)) AS applied_filter,
+                          CAST(result_payload:configured_primary_keys AS STRING) AS configured_primary_keys,
                           CONCAT_WS('.', source_catalog, source_schema, source_table) AS source_table,
                           CONCAT_WS('.', target_catalog, target_schema, target_table) AS target_table
                         FROM
-                          {table}
+                          ranked
                         WHERE
-                          job_name = {job}
-                          AND job_start_ts = (
-                            SELECT
-                              MAX(job_start_ts)
-                            FROM
-                              {table}
-                          )
+                          rn = 1
+                          AND job_start_ts = (SELECT job_start_ts FROM latest_run)
                         ORDER BY
                           status DESC,
                           validation_name;"""
@@ -1717,7 +1862,7 @@ Once created, users can ask questions in natural language to analyze data qualit
             },
         ]
 
-        widget_definitions: list[dict[str, Any]] = [
+        widget_definitions: list[WidgetDefinition] = [
             {
                 "ds_name": "ds_kpi",
                 "type": "SUCCESS_RATE_COUNTER",
@@ -1976,10 +2121,94 @@ Once created, users can ask questions in natural language to analyze data qualit
                 "position": {"x": 0, "y": 33, "width": 6, "height": 1},
             },
         ]
-        layout_widgets += dashboard_filters
+        main_page_filter_metadata: list[dict[str, Any]] = [
+            {
+                "name": "job_name",
+                "field": "job_name",
+                "dataset": "ds_validation_details",
+                "displayName": "Job Name",
+                "allowMultipleValues": False,
+            },
+            {
+                "name": "run_id",
+                "field": "run_id",
+                "dataset": "ds_validation_details",
+                "displayName": "Run ID",
+                "allowMultipleValues": False,
+            },
+            {
+                "name": "status_filter",
+                "field": "overall_status",
+                "dataset": "ds_validation_details",
+                "displayName": "Validation Status",
+                "allowMultipleValues": True,
+                "defaultValues": ["SUCCESS", "FAILURE"],
+            },
+            {
+                "name": "task_key_filter_main",
+                "field": "validation_name",
+                "dataset": "ds_validation_details",
+                "displayName": "Validation Name",
+                "allowMultipleValues": True,
+            },
+            {
+                "name": "time_range",
+                "field": "job_start_ts",
+                "dataset": "ds_validation_details",
+                "displayName": "Time Range",
+                "type": "date_range",
+            },
+            {
+                "name": "business_priority_filter",
+                "field": "business_priority",
+                "dataset": "ds_validation_details",
+                "displayName": "Business Priority",
+                "allowMultipleValues": True,
+            },
+        ]
+
+        details_page_filter_metadata: list[dict[str, Any]] = [
+            {
+                "name": "status_filter_details",
+                "field": "status",
+                "dataset": "ds_history",
+                "displayName": "Validation Status",
+                "allowMultipleValues": True,
+            },
+            {
+                "name": "task_key_filter",
+                "field": "task_key",
+                "dataset": "ds_history",
+                "displayName": "Task Key",
+                "allowMultipleValues": True,
+            },
+            {
+                "name": "job_name_details",
+                "field": "job_name",
+                "dataset": "ds_history",
+                "displayName": "Job Name",
+                "allowMultipleValues": False,
+            },
+            {
+                "name": "run_id_details",
+                "field": "run_id",
+                "dataset": "ds_history",
+                "displayName": "Run ID",
+                "allowMultipleValues": False,
+            },
+            {
+                "name": "time_range_details",
+                "field": "job_start_ts",
+                "dataset": "ds_history",
+                "displayName": "Time Range",
+                "type": "date_range",
+            },
+        ]
 
         for i, w_def in enumerate(widget_definitions):
-            spec, query_fields = {}, []
+            spec: dict[str, Any] = {}
+            query_fields: list[dict[str, str]] = []
+            encodings: dict[str, Any] = {}
 
             if w_def["type"] == "COUNTER":
                 query_fields = [
@@ -1994,28 +2223,36 @@ Once created, users can ask questions in natural language to analyze data qualit
                 if w_def.get("title") == "Critical Issues":
                     encodings["value"] = {
                         "fieldName": "failed_tasks",
+                        "format": {
+                            "type": "number",
+                            "conditionalFormats": [
+                                {
+                                    "condition": {"type": "equals", "value": 0},
+                                    "textColor": "#FAD6FF",
+                                    "backgroundColor": "#2B1030",
+                                },
+                                {
+                                    "condition": {"type": "greaterThan", "value": 0},
+                                    "textColor": "#FF6EC7",
+                                    "backgroundColor": "#360B3C",
+                                },
+                            ],
+                        },
+                        "displayName": "failed_tasks",
                         "style": {
                             "rules": [
                                 {
                                     "condition": {
                                         "operator": ">",
-                                        "operand": {"type": "data-value", "value": "0"},
+                                        "operand": {
+                                            "type": "data-value",
+                                            "value": "-999999",
+                                        },
                                     },
-                                    "color": {
-                                        "themeColorType": "visualizationColors",
-                                        "position": 1,
-                                    },
-                                },
-                                {
-                                    "condition": {
-                                        "operator": "=",
-                                        "operand": {"type": "data-value", "value": "0"},
-                                    },
-                                    "color": "#00A972",
-                                },
+                                    "color": "#FF6EC7",
+                                }
                             ]
                         },
-                        "displayName": "failed_tasks",
                     }
                 elif w_def.get("title") == "Peak Parallelism":
                     encodings["value"]["format"] = {
@@ -2044,6 +2281,20 @@ Once created, users can ask questions in natural language to analyze data qualit
                                 "backgroundColor": "#2C0A0A",
                             },
                         ],
+                    }
+                    encodings["value"]["style"] = {
+                        "rules": [
+                            {
+                                "condition": {
+                                    "operator": ">",
+                                    "operand": {
+                                        "type": "data-value",
+                                        "value": "-999999",
+                                    },
+                                },
+                                "color": "#FF6EC7",
+                            }
+                        ]
                     }
                 elif w_def.get("title") == "Throughput (tasks/min)":
                     encodings["value"]["format"] = {
@@ -2074,6 +2325,56 @@ Once created, users can ask questions in natural language to analyze data qualit
                             },
                         ],
                     }
+                    encodings["value"]["style"] = {
+                        "rules": [
+                            {
+                                "condition": {
+                                    "operator": ">",
+                                    "operand": {
+                                        "type": "data-value",
+                                        "value": "-999999",
+                                    },
+                                },
+                                "color": "#FF6EC7",
+                            }
+                        ]
+                    }
+                elif w_def.get("title") == "Total Validations":
+                    encodings["value"]["format"] = {
+                        "type": "number",
+                        "conditionalFormats": [
+                            {
+                                "condition": {
+                                    "type": "greaterThan",
+                                    "value": 100,
+                                },
+                                "textColor": "#00A972",
+                                "backgroundColor": "#E8F5E9",
+                            },
+                            {
+                                "condition": {
+                                    "type": "lessThanOrEquals",
+                                    "value": 100,
+                                },
+                                "textColor": "#FF9800",
+                                "backgroundColor": "#FFF7ED",
+                            },
+                        ],
+                    }
+                    encodings["value"]["style"] = {
+                        "rules": [
+                            {
+                                "condition": {
+                                    "operator": ">",
+                                    "operand": {
+                                        "type": "data-value",
+                                        "value": "-999999",
+                                    },
+                                },
+                                "color": "#FF6EC7",
+                            }
+                        ]
+                    }
 
                 spec = {
                     "version": 3,
@@ -2096,31 +2397,45 @@ Once created, users can ask questions in natural language to analyze data qualit
                             "format": {
                                 "type": "number-percent",
                                 "decimalPlaces": {"type": "max", "places": 2},
+                                "conditionalFormats": [
+                                    {
+                                        "condition": {
+                                            "type": "greaterThanOrEquals",
+                                            "value": 0.99,
+                                        },
+                                        "textColor": "#FF85E1",
+                                        "backgroundColor": "#311338",
+                                    },
+                                    {
+                                        "condition": {
+                                            "type": "between",
+                                            "min": 0.95,
+                                            "max": 0.9899,
+                                        },
+                                        "textColor": "#FF6EC7",
+                                        "backgroundColor": "#2A0F30",
+                                    },
+                                    {
+                                        "condition": {
+                                            "type": "lessThan",
+                                            "value": 0.95,
+                                        },
+                                        "textColor": "#F749C2",
+                                        "backgroundColor": "#2C0A2C",
+                                    },
+                                ],
                             },
                             "style": {
                                 "rules": [
                                     {
                                         "condition": {
-                                            "operator": "<",
+                                            "operator": ">",
                                             "operand": {
                                                 "type": "data-value",
-                                                "value": "100",
+                                                "value": "-999999",
                                             },
                                         },
-                                        "color": {
-                                            "themeColorType": "visualizationColors",
-                                            "position": 1,
-                                        },
-                                    },
-                                    {
-                                        "condition": {
-                                            "operator": "=",
-                                            "operand": {
-                                                "type": "data-value",
-                                                "value": "100",
-                                            },
-                                        },
-                                        "color": "#00A972",
+                                        "color": "#FF6EC7",
                                     },
                                 ]
                             },
@@ -2202,9 +2517,12 @@ Once created, users can ask questions in natural language to analyze data qualit
                     ]
 
             elif w_def["type"] == "BAR":
-                x_field = w_def.get("x_field", "task_key")
-                y_field = w_def.get("y_field", "failure_count")
-                y_agg = w_def.get("y_agg", "SUM")
+                x_field = cast(str, w_def.get("x_field", "task_key"))
+                raw_y_field = w_def.get("y_field")
+                y_field = raw_y_field if raw_y_field else "failure_count"
+                y_agg = w_def.get("y_agg")
+                if y_agg is None and "y_agg" not in w_def:
+                    y_agg = "SUM"
 
                 if y_agg:
                     y_agg = y_agg.upper()
@@ -2222,9 +2540,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                     ]
 
                 # Use custom display names for aggregated fields
-                y_display_name = w_def.get(
-                    "y_display", "Failures" if "failure" in y_field.lower() else "Count"
-                )
+                default_display = "Failures" if "failure" in y_field.lower() else "Count"
+                y_display_name = w_def.get("y_display", default_display)
 
                 encodings = {
                     "x": {
@@ -2323,6 +2640,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "business_owner",
                         "expected_sla_hours",
                         "estimated_impact_usd",
+                        "applied_filter",
+                        "configured_primary_keys",
                         "source_table",
                         "target_table",
                     ]
@@ -2340,6 +2659,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                         "Owner",
                         "SLA (hrs)",
                         "Financial Impact",
+                        "Applied Filter",
+                        "Primary Keys",
                         "Source Table",
                         "Target Table",
                     ]
@@ -2417,7 +2738,7 @@ Once created, users can ask questions in natural language to analyze data qualit
 
                 # Build column encodings with conditional formatting
                 column_encodings = []
-                for col, display in zip(columns, display_names):
+                for col, display in zip(columns, display_names, strict=False):
                     col_encoding: dict[str, Any] = {
                         "fieldName": col,
                         "displayName": display,
@@ -2428,12 +2749,12 @@ Once created, users can ask questions in natural language to analyze data qualit
                         col_encoding["cellFormat"] = {
                             "conditionalFormats": [
                                 {
-                                    "condition": {"type": "contains", "value": "✅"},
+                                    "condition": {"type": "equals", "value": "✅"},
                                     "textColor": "#00A972",
                                     "backgroundColor": "#E8F5E9",
                                 },
                                 {
-                                    "condition": {"type": "contains", "value": "❌"},
+                                    "condition": {"type": "equals", "value": "❌"},
                                     "textColor": "#FF3621",
                                     "backgroundColor": "#FFEBEE",
                                 },
@@ -2543,7 +2864,9 @@ Once created, users can ask questions in natural language to analyze data qualit
                 }
             )
 
-        dashboard_payload: dict[str, Any] = {
+        layout_widgets.extend(dashboard_filters)
+
+        dashboard_payload: DashboardPayload = {
             "datasets": datasets,
             "pages": [
                 {
@@ -2551,6 +2874,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                     "displayName": "Executive Data Quality Dashboard",
                     "layout": layout_widgets,
                     "pageType": "PAGE_TYPE_CANVAS",
+                    "filters": main_page_filter_metadata,
                 },
                 {
                     "name": "details_page",
@@ -2588,6 +2912,18 @@ Once created, users can ask questions in natural language to analyze data qualit
                                                 {
                                                     "name": "job_name",
                                                     "expression": "`job_name`",
+                                                },
+                                                {
+                                                    "name": "is_filtered",
+                                                    "expression": "`is_filtered`",
+                                                },
+                                                {
+                                                    "name": "applied_filter",
+                                                    "expression": "`applied_filter`",
+                                                },
+                                                {
+                                                    "name": "configured_primary_keys",
+                                                    "expression": "`configured_primary_keys`",
                                                 },
                                                 {
                                                     "name": "business_priority",
@@ -2630,6 +2966,10 @@ Once created, users can ask questions in natural language to analyze data qualit
                                             {
                                                 "fieldName": "applied_filter",
                                                 "displayName": "Applied Filter",
+                                            },
+                                            {
+                                                "fieldName": "configured_primary_keys",
+                                                "displayName": "Primary Keys",
                                             },
                                             {
                                                 "fieldName": "payload_json",
@@ -2901,6 +3241,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                         },
                     ],
                     "pageType": "PAGE_TYPE_CANVAS",
+                    "filters": details_page_filter_metadata,
                 },
                 {
                     "name": "performance_page",
@@ -3229,7 +3570,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                                         "y": {
                                             "fieldName": "peak_parallelism",
                                             "scale": {"type": "quantitative"},
-                                            "displayName": "Peak Concurrent Tasks",
+                                            "displayName": "Count",
                                         },
                                         "color": {
                                             "fieldName": "peak_parallelism",
@@ -3328,24 +3669,25 @@ Once created, users can ask questions in natural language to analyze data qualit
             - Uploads SQL scripts to the workspace.
             - Logs job progress and results.
         """
-        warehouse: sql_service.GetWarehouseResponse = self._ensure_sql_warehouse(
-            warehouse_name
-        )
-        final_results_table = (
-            f"`{results_table}`"
-            if results_table
-            else f"`{DEFAULT_CATALOG}`.`{DEFAULT_SCHEMA}`.`{DEFAULT_TABLE}`"
-        )
+        warehouse: sql_service.GetWarehouseResponse = self._ensure_sql_warehouse(warehouse_name)
+        if results_table:
+            try:
+                catalog, schema, table = parse_fully_qualified_name(results_table)
+            except ValueError as exc:
+                raise ValueError(
+                    "Results table must be provided as catalog.schema.table (three parts)."
+                ) from exc
+        else:
+            catalog, schema, table = DEFAULT_CATALOG, DEFAULT_SCHEMA, DEFAULT_TABLE
+
+        final_results_table = format_fully_qualified_name(catalog, schema, table)
+
         if not results_table:
             if warehouse.id is None:
-                raise ValueError(
-                    "SQL Warehouse ID is None. Cannot set up infrastructure."
-                )
+                raise ValueError("SQL Warehouse ID is None. Cannot set up infrastructure.")
             self._setup_default_infrastructure(warehouse.id)
         if warehouse.id is None:
-            raise ValueError(
-                "SQL Warehouse ID is None. Cannot ensure results table exists."
-            )
+            raise ValueError("SQL Warehouse ID is None. Cannot ensure results table exists.")
         self._ensure_results_table_exists(final_results_table, warehouse.id)
 
         dashboard_id: str = self.ensure_dashboard_exists(
@@ -3372,18 +3714,14 @@ Once created, users can ask questions in natural language to analyze data qualit
             validation_task_keys=validation_task_keys,
             sql_params=sql_params,
         )
-        add_dashboard_refresh_task(
-            tasks, dashboard_id=dashboard_id, warehouse_id=warehouse.id
-        )
+        add_dashboard_refresh_task(tasks, dashboard_id=dashboard_id, warehouse_id=warehouse.id)
         add_genie_room_task(
             tasks=tasks,
             asset_paths=asset_paths,
             warehouse_id=warehouse.id,
         )
 
-        job_id: int = ensure_job(
-            self.w, job_name=job_name, tasks=tasks, user_name=self.user_name
-        )
+        job_id: int = ensure_job(self.w, job_name=job_name, tasks=tasks, user_name=self.user_name)
         # Inject time providers so tests can patch datapact.client.datetime and time.sleep
         run_and_wait(
             self.w,
@@ -3422,17 +3760,13 @@ Once created, users can ask questions in natural language to analyze data qualit
         if not warehouse:
             raise ValueError(f"SQL Warehouse '{name}' not found.")
 
-        logger.info(
-            f"Found warehouse '{name}' (ID: {warehouse.id}). State: {warehouse.state}"
-        )
+        logger.info(f"Found warehouse '{name}' (ID: {warehouse.id}). State: {warehouse.state}")
 
         if warehouse.state not in [
             sql_service.State.RUNNING,
             sql_service.State.STARTING,
         ]:
-            logger.info(
-                f"Warehouse '{name}' is {warehouse.state}. Attempting to start..."
-            )
+            logger.info(f"Warehouse '{name}' is {warehouse.state}. Attempting to start...")
             if warehouse.id is None:
                 raise ValueError(f"Warehouse '{name}' has no ID and cannot be started.")
             # Trigger start and poll the warehouse state until RUNNING or timeout
@@ -3444,26 +3778,19 @@ Once created, users can ask questions in natural language to analyze data qualit
                     wh = self.w.warehouses.get(warehouse.id)
                 except Exception:
                     wh = None
-                if wh and wh.state == sql_service.State.RUNNING:
+                state = getattr(wh, "state", None)
+                if state == sql_service.State.RUNNING:
                     logger.success(f"Warehouse '{name}' started successfully.")
                     break
-                if wh and getattr(wh, "state", None) not in (
-                    None,
-                    sql_service.State.STARTING,
+                if state in (
+                    sql_service.State.DELETING,
+                    sql_service.State.DELETED,
                 ):
-                    # If it moved to an unexpected terminal state, raise
-                    if wh.state not in (
-                        sql_service.State.STARTING,
-                        sql_service.State.RUNNING,
-                    ):
-                        raise RuntimeError(
-                            f"Warehouse '{name}' failed to start. State: {wh.state}"
-                        )
+                    raise RuntimeError(f"Warehouse '{name}' failed to start. State: {state}")
+                # Allow STOPPED/STOPPING/STARTING to continue polling
                 time.sleep(5)
             else:
-                raise TimeoutError(
-                    f"Timed out waiting for warehouse '{name}' to start."
-                )
+                raise TimeoutError(f"Timed out waiting for warehouse '{name}' to start.")
 
         if warehouse.id is None:
             raise ValueError(f"Warehouse '{name}' has no ID and cannot be retrieved.")

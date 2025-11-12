@@ -17,9 +17,10 @@ Notes:
     the test to fail with a descriptive message.
 """
 
-import yaml
 import pytest
+import yaml  # type: ignore[import]
 from pydantic import ValidationError
+
 from datapact.config import DataPactConfig
 
 
@@ -30,7 +31,7 @@ def test_demo_config_is_valid():
     """
     config_path = "demo/demo_config.yml"
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             raw_config = yaml.safe_load(f)
             # This is the line that performs the test. If it fails,
             # it will raise a ValidationError and the test will fail.

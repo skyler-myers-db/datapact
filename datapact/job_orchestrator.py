@@ -4,8 +4,9 @@ This module encapsulates building tasks, creating/updating jobs, and polling run
 """
 
 from __future__ import annotations
+
+from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Callable
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import jobs
@@ -15,14 +16,13 @@ from databricks.sdk.service.jobs import (
     JobSettings,
     RunIf,
     RunLifeCycleState,
+    Source,
     SqlTask,
     SqlTaskFile,
     Task,
     TaskDependency,
-    Source,
 )
 from loguru import logger
-
 
 TERMINAL_STATES: list[RunLifeCycleState] = [
     RunLifeCycleState.TERMINATED,
@@ -55,9 +55,7 @@ def build_tasks(
             depends_on=[TaskDependency(task_key=tk) for tk in validation_task_keys],
             run_if=RunIf.ALL_DONE,
             sql_task=SqlTask(
-                file=SqlTaskFile(
-                    path=asset_paths["aggregate_results"], source=Source.WORKSPACE
-                ),
+                file=SqlTaskFile(path=asset_paths["aggregate_results"], source=Source.WORKSPACE),
                 warehouse_id=warehouse_id,
                 parameters=sql_params,
             ),
@@ -66,9 +64,7 @@ def build_tasks(
     return tasks
 
 
-def add_dashboard_refresh_task(
-    tasks: list[Task], dashboard_id: str, warehouse_id: str
-) -> None:
+def add_dashboard_refresh_task(tasks: list[Task], dashboard_id: str, warehouse_id: str) -> None:
     tasks.append(
         Task(
             task_key="refresh_dashboard",
@@ -109,9 +105,7 @@ def add_genie_room_task(
             depends_on=[TaskDependency(task_key="aggregate_results")],
             run_if=RunIf.ALL_DONE,
             sql_task=SqlTask(
-                file=SqlTaskFile(
-                    path=asset_paths["setup_genie_datasets"], source=Source.WORKSPACE
-                ),
+                file=SqlTaskFile(path=asset_paths["setup_genie_datasets"], source=Source.WORKSPACE),
                 warehouse_id=warehouse_id,
             ),
         )
@@ -169,6 +163,7 @@ def run_and_wait(
     now_fn: Callable[[], datetime] | None = None,
     sleep_fn: Callable[[float], None] | None = None,
     poll_interval_seconds: float = 30.0,
+    max_poll_interval_seconds: float = 90.0,
 ) -> None:
     """Run a Databricks job and poll until completion.
 
@@ -187,6 +182,8 @@ def run_and_wait(
 
     timeout: timedelta = timedelta(hours=timeout_hours)
     deadline: datetime = now_fn() + timeout
+    current_interval = max(poll_interval_seconds, 1.0)
+    capped_interval = max(current_interval, max_poll_interval_seconds)
     while now_fn() < deadline:
         if run_metadata.run_id is None:
             raise ValueError("Run ID is None. Cannot poll job run status.")
@@ -197,26 +194,28 @@ def run_and_wait(
         finished_tasks = sum(
             1
             for t in (run.tasks or [])
-            if getattr(getattr(t, "state", None), "life_cycle_state", None)
-            in TERMINAL_STATES
+            if getattr(getattr(t, "state", None), "life_cycle_state", None) in TERMINAL_STATES
         )
-        logger.info(
-            f"Job state: {life_cycle_state}. Tasks finished: {finished_tasks}/{len(tasks)}"
-        )
-        sleep_fn(poll_interval_seconds)
+        logger.info(f"Job state: {life_cycle_state}. Tasks finished: {finished_tasks}/{len(tasks)}")
+        sleep_fn(current_interval)
+        current_interval = min(capped_interval, current_interval * 1.5)
     else:
         raise TimeoutError("Job run timed out.")
 
     if run.state is not None:
-        logger.info(f"Run finished with state: {run.state.result_state}")
-        if run.state.result_state == jobs.RunResultState.SUCCESS:
+        result_state = getattr(run.state, "result_state", None)
+        logger.info(f"Run finished with state: {result_state}")
+        if result_state == jobs.RunResultState.SUCCESS:
             logger.success("✅ DataPact job completed successfully.")
         else:
-            error_message = (
-                run.state.state_message or "Job failed without a specific message."
+            error_message = run.state.state_message or "Job failed without a specific message."
+            logger.error(
+                "DataPact job finished unsuccessfully. "
+                f"Final state: {result_state}. Reason: {error_message}. "
+                f"View details at {run.run_page_url}"
             )
-            logger.warning(
-                f"DataPact job finished with failing tasks. Final state: {run.state.result_state}. Reason: {error_message} View details at {run.run_page_url}"
+            raise RuntimeError(
+                f"DataPact job run failed with state {result_state}: {error_message}"
             )
     else:
         logger.error("Run state is None. Unable to determine job result.")

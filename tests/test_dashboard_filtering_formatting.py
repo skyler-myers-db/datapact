@@ -4,8 +4,9 @@ Validates that executives can effectively filter and see properly formatted data
 """
 
 import json
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 class TestDashboardFilteringAndFormatting:
@@ -29,12 +30,8 @@ class TestDashboardFilteringAndFormatting:
     def _get_dashboard_json(self, mock_client):
         """Helper to setup mocks and get dashboard JSON."""
         mock_client.w.workspace.mkdirs = MagicMock()
-        mock_client.w.workspace.get_status = MagicMock(
-            side_effect=Exception("Not found")
-        )
-        mock_client.w.lakeview.create = MagicMock(
-            return_value=MagicMock(dashboard_id="test_id")
-        )
+        mock_client.w.workspace.get_status = MagicMock(side_effect=Exception("Not found"))
+        mock_client.w.lakeview.create = MagicMock(return_value=MagicMock(dashboard_id="test_id"))
         mock_client.w.lakeview.publish = MagicMock()
 
         mock_client.ensure_dashboard_exists(
@@ -78,9 +75,7 @@ class TestDashboardFilteringAndFormatting:
         """Test that details page has all necessary filters."""
         dashboard_json = self._get_dashboard_json(mock_client)
 
-        details_page = next(
-            p for p in dashboard_json["pages"] if p["name"] == "details_page"
-        )
+        details_page = next(p for p in dashboard_json["pages"] if p["name"] == "details_page")
         filters = details_page.get("filters", [])
 
         filter_names = {f["name"] for f in filters}
@@ -125,8 +120,8 @@ class TestDashboardFilteringAndFormatting:
             for f in formats
             if f["condition"]["type"] == "equals" and f["condition"]["value"] == 0
         )
-        assert zero_format["textColor"] == "#00A972"  # Green
-        assert zero_format["backgroundColor"] == "#E8F5E9"
+        assert zero_format["textColor"] == "#FAD6FF"
+        assert zero_format["backgroundColor"] == "#2B1030"
 
         # Check for red when > 0
         gt_zero_format = next(
@@ -134,8 +129,8 @@ class TestDashboardFilteringAndFormatting:
             for f in formats
             if f["condition"]["type"] == "greaterThan" and f["condition"]["value"] == 0
         )
-        assert gt_zero_format["textColor"] == "#FF3621"  # Red
-        assert gt_zero_format["backgroundColor"] == "#FFEBEE"
+        assert gt_zero_format["textColor"] == "#FF6EC7"
+        assert gt_zero_format["backgroundColor"] == "#360B3C"
 
     def test_data_quality_score_has_tiered_formatting(self, mock_client):
         """Test that Data Quality Score has tiered color formatting."""
@@ -163,20 +158,19 @@ class TestDashboardFilteringAndFormatting:
         high_tier = next(
             f
             for f in formats
-            if f["condition"]["type"] == "greaterThanOrEquals"
-            and f["condition"]["value"] == 0.99
+            if f["condition"]["type"] == "greaterThanOrEquals" and f["condition"]["value"] == 0.99
         )
-        assert high_tier["textColor"] == "#00A972"  # Green
+        assert high_tier["textColor"] == "#FF85E1"
 
         mid_tier = next(f for f in formats if f["condition"]["type"] == "between")
-        assert mid_tier["textColor"] == "#FF9800"  # Orange
+        assert mid_tier["textColor"] == "#FF6EC7"
 
         low_tier = next(
             f
             for f in formats
             if f["condition"]["type"] == "lessThan" and f["condition"]["value"] == 0.95
         )
-        assert low_tier["textColor"] == "#FF3621"  # Red
+        assert low_tier["textColor"] == "#F749C2"
 
     def test_parallelism_counters_have_conditional_formatting(self, mock_client):
         """Peak parallelism and throughput counters should use vibrant formats."""
@@ -198,17 +192,13 @@ class TestDashboardFilteringAndFormatting:
         assert peak_widget is not None
         assert throughput_widget is not None
 
-        peak_formats = peak_widget["spec"]["encodings"]["value"]["format"][
-            "conditionalFormats"
-        ]
+        peak_formats = peak_widget["spec"]["encodings"]["value"]["format"]["conditionalFormats"]
         peak_colors = {fmt["textColor"] for fmt in peak_formats}
         assert {"#22D3EE", "#FACC15", "#F87171"}.issubset(peak_colors)
 
         throughput_format = throughput_widget["spec"]["encodings"]["value"]["format"]
         assert throughput_format["decimalPlaces"]["places"] == 2
-        throughput_colors = {
-            fmt["textColor"] for fmt in throughput_format["conditionalFormats"]
-        }
+        throughput_colors = {fmt["textColor"] for fmt in throughput_format["conditionalFormats"]}
         assert {"#34D399", "#FBBF24", "#F87171"}.issubset(throughput_colors)
 
     def test_table_status_columns_have_formatting(self, mock_client):
@@ -266,8 +256,11 @@ class TestDashboardFilteringAndFormatting:
             assert "color" in encodings
 
             color_encoding = encodings["color"]
-            assert color_encoding["scale"]["colorScheme"] == "redyellowgreen"
-            assert color_encoding["scale"]["reverse"] is True  # High = red
+            scale = color_encoding["scale"]
+            assert scale.get("colorRamp", {}).get("scheme") == "magma", (
+                "Top failing chart should use magma palette"
+            )
+            assert scale.get("reverse") is True  # High = red
 
     def test_line_chart_has_reference_lines(self, mock_client):
         """Test that quality trend line chart has target reference lines."""
@@ -298,9 +291,7 @@ class TestDashboardFilteringAndFormatting:
                 assert target_line["style"] == "dashed"
 
             # Check for warning line
-            warning_line = next(
-                (line for line in ref_lines if line["value"] == 10), None
-            )
+            warning_line = next((line for line in ref_lines if line["value"] == 10), None)
             if warning_line:
                 assert warning_line["label"] == "Warning (10%)"
                 assert warning_line["color"] == "#FF9800"
@@ -332,8 +323,7 @@ class TestDashboardFilteringAndFormatting:
         high_volume = next(
             f
             for f in formats
-            if f["condition"]["type"] == "greaterThan"
-            and f["condition"]["value"] == 100
+            if f["condition"]["type"] == "greaterThan" and f["condition"]["value"] == 100
         )
         assert high_volume["textColor"] == "#00A972"  # Green for high volume
 
@@ -341,8 +331,7 @@ class TestDashboardFilteringAndFormatting:
         low_volume = next(
             f
             for f in formats
-            if f["condition"]["type"] == "lessThanOrEquals"
-            and f["condition"]["value"] == 100
+            if f["condition"]["type"] == "lessThanOrEquals" and f["condition"]["value"] == 100
         )
         assert low_volume["textColor"] == "#FF9800"  # Orange for lower volume
 
@@ -362,9 +351,7 @@ class TestDashboardFilteringAndFormatting:
 
         if business_table:
             columns = business_table["spec"]["encodings"]["columns"]
-            quality_col = next(
-                (c for c in columns if c["fieldName"] == "quality_score"), None
-            )
+            quality_col = next((c for c in columns if c["fieldName"] == "quality_score"), None)
 
             if quality_col:
                 assert "format" in quality_col
@@ -382,16 +369,13 @@ class TestDashboardFilteringAndFormatting:
                 )
                 assert high_quality["textColor"] == "#00A972"
 
-                mid_quality = next(
-                    f for f in formats if f["condition"]["type"] == "between"
-                )
+                mid_quality = next(f for f in formats if f["condition"]["type"] == "between")
                 assert mid_quality["textColor"] == "#FF9800"
 
                 low_quality = next(
                     f
                     for f in formats
-                    if f["condition"]["type"] == "lessThan"
-                    and f["condition"]["value"] == 95
+                    if f["condition"]["type"] == "lessThan" and f["condition"]["value"] == 95
                 )
                 assert low_quality["textColor"] == "#FF3621"
 

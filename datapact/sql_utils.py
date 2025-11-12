@@ -1,5 +1,7 @@
 """SQL utility functions for safe query construction."""
 
+from __future__ import annotations
+
 import re
 from typing import Any
 
@@ -23,11 +25,20 @@ def escape_sql_identifier(identifier: str) -> str:
     # Check for SQL injection patterns (but allow them as part of legitimate names)
     # Only block if they appear as standalone words or with suspicious syntax
     upper_id = identifier.upper()
+    forbidden_keywords = [
+        "DROP",
+        "INSERT",
+        "UPDATE",
+        "EXEC",
+        "DELETE",
+        "TRUNCATE",
+        "ALTER",
+    ]
     if any(
         f" {keyword} " in f" {upper_id} "
         or upper_id.startswith(f"{keyword} ")
         or upper_id.endswith(f" {keyword}")
-        for keyword in ["DROP", "INSERT", "UPDATE", "EXEC"]
+        for keyword in forbidden_keywords
     ):
         raise ValueError(f"Invalid SQL identifier: {identifier}")
 
@@ -54,6 +65,30 @@ def escape_sql_string(value: str) -> str:
     return f"'{escaped}'"
 
 
+def parse_fully_qualified_name(fqn: str) -> tuple[str, str, str]:
+    """Normalize catalog.schema.table input into its tokenized components."""
+
+    cleaned = fqn.replace("`", "").replace("\n", " ").strip()
+    parts = [part.strip() for part in cleaned.split(".") if part.strip()]
+    if len(parts) != 3:
+        raise ValueError(
+            "Fully qualified table names must include catalog.schema.table (three parts)."
+        )
+    return parts[0], parts[1], parts[2]
+
+
+def format_fully_qualified_name(catalog: str, schema: str, table: str) -> str:
+    """Quote catalog/schema/table segments safely for use in SQL statements."""
+
+    return ".".join(
+        [
+            escape_sql_identifier(catalog),
+            escape_sql_identifier(schema),
+            escape_sql_identifier(table),
+        ]
+    )
+
+
 def validate_job_name(job_name: str) -> str:
     """Validate and sanitize a job name for safe use.
 
@@ -75,9 +110,7 @@ def validate_job_name(job_name: str) -> str:
 
     # Limit length to prevent abuse
     if len(job_name) > 255:
-        raise ValueError(
-            f"Job name too long: {job_name}. Maximum 255 characters allowed."
-        )
+        raise ValueError(f"Job name too long: {job_name}. Maximum 255 characters allowed.")
 
     return job_name
 
@@ -108,7 +141,7 @@ def build_safe_filter(column: str, value: Any, operator: str = "=") -> str:
         safe_value = "TRUE" if value else "FALSE"
     elif isinstance(value, str):
         safe_value = escape_sql_string(value)
-    elif isinstance(value, (int, float)):
+    elif isinstance(value, int | float):
         safe_value = str(value)
     else:
         raise ValueError(f"Unsupported value type: {type(value)}")

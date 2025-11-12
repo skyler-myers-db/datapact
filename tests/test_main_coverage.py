@@ -2,9 +2,10 @@
 
 import os
 import sys
-from unittest.mock import Mock, patch, mock_open
+from unittest.mock import Mock, mock_open, patch
+
 import pytest
-import yaml
+import yaml  # type: ignore[import]
 
 from datapact.main import main
 
@@ -293,9 +294,7 @@ class TestMainFunction:
 
         with patch.object(sys, "argv", test_args):
             with patch("builtins.open", mock_open(read_data="test")):
-                with patch(
-                    "yaml.safe_load", return_value={"validations": "not_a_list"}
-                ):
+                with patch("yaml.safe_load", return_value={"validations": "not_a_list"}):
                     with pytest.raises(SystemExit) as exc_info:
                         main()
                     assert exc_info.value.code == 1

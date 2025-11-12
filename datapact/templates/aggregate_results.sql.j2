@@ -10,11 +10,16 @@
 {% macro fq(name) -%}
 `{{ catalog }}`.`{{ schema }}`.`{{ name }}`
 {%- endmacro %}
+{% if run_id_literal is not defined %}
+{% set run_id_literal %}
+{% raw %}{{run_id}}{% endraw %}
+{% endset %}
+{% endif %}
 
 CREATE OR REPLACE TEMP VIEW agg_run_results AS
 SELECT *
 FROM {{ results_table }}
-WHERE run_id = {% raw %}{{run_id}}{% endraw %};
+WHERE run_id = {{ run_id_literal }};
 
 CREATE OR REPLACE TEMP VIEW agg_metrics_view AS
 SELECT
@@ -149,7 +154,7 @@ CREATE TABLE IF NOT EXISTS {{ fq('exec_priority_breakdown') }} (
   generated_at TIMESTAMP
 ) USING DELTA;
 
-DELETE FROM {{ fq('exec_run_summary') }} WHERE run_id = {% raw %}{{run_id}}{% endraw %};
+DELETE FROM {{ fq('exec_run_summary') }} WHERE run_id = {{ run_id_literal }};
 INSERT INTO {{ fq('exec_run_summary') }}
 SELECT
   run_id,
@@ -168,7 +173,7 @@ SELECT
   generated_at
 FROM agg_metrics_view;
 
-DELETE FROM {{ fq('exec_domain_breakdown') }} WHERE run_id = {% raw %}{{run_id}}{% endraw %};
+DELETE FROM {{ fq('exec_domain_breakdown') }} WHERE run_id = {{ run_id_literal }};
 INSERT INTO {{ fq('exec_domain_breakdown') }}
 SELECT
   run_id,
@@ -184,7 +189,7 @@ SELECT
   generated_at
 FROM agg_domain_breakdown;
 
-DELETE FROM {{ fq('exec_owner_breakdown') }} WHERE run_id = {% raw %}{{run_id}}{% endraw %};
+DELETE FROM {{ fq('exec_owner_breakdown') }} WHERE run_id = {{ run_id_literal }};
 INSERT INTO {{ fq('exec_owner_breakdown') }}
 SELECT
   run_id,
@@ -200,7 +205,7 @@ SELECT
   generated_at
 FROM agg_owner_breakdown;
 
-DELETE FROM {{ fq('exec_priority_breakdown') }} WHERE run_id = {% raw %}{{run_id}}{% endraw %};
+DELETE FROM {{ fq('exec_priority_breakdown') }} WHERE run_id = {{ run_id_literal }};
 INSERT INTO {{ fq('exec_priority_breakdown') }}
 SELECT
   run_id,

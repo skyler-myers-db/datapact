@@ -50,9 +50,7 @@ def test_generate_validation_sql_matches_template():
     cfg = _minimal_task()
     # Bypass __init__ to avoid real WorkspaceClient setup
     client = object.__new__(DataPactClient)
-    sql = client._generate_validation_sql(
-        cfg, "`datapact`.`results`.`run_history`", "unit_job"
-    )
+    sql = client._generate_validation_sql(cfg, "`datapact`.`results`.`run_history`", "unit_job")
 
     payload = cfg.model_dump()
     payload["results_table"] = "`datapact`.`results`.`run_history`"

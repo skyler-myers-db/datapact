@@ -19,6 +19,21 @@
   {% set builtin_source = source_fqn -%}
   {% set builtin_target = target_fqn -%}
 {% endif -%}
+{% if primary_keys %}
+  {% set primary_keys_display = primary_keys | join(', ') %}
+{% else %}
+  {% set primary_keys_display = None %}
+{% endif %}
+
+{% set has_null_validations = null_validation_columns and null_validation_tolerance is not none -%}
+{% set nulls_use_pk_join = has_null_validations and primary_keys -%}
+{% set nulls_use_table_counts = has_null_validations and (not primary_keys) -%}
+{% set stats_needed = (count_tolerance is not none)
+  or (agg_validations)
+  or (uniqueness_columns and uniqueness_tolerance is not none)
+  or nulls_use_table_counts
+-%}
+{%- set uniqueness_enabled = uniqueness_columns and uniqueness_tolerance is not none -%}
 
 {# Helper macros #}
 {% macro agg_rel_diff(column, agg) -%}
@@ -48,6 +63,9 @@ NULL
 {%- endif -%}
 {%- endmacro %}
 
+{% set primary_keys_literal = sql_string(primary_keys_display) -%}
+{% set applied_filter_literal = sql_string(filter_condition) -%}
+
 DECLARE VARIABLE validation_begin_ts TIMESTAMP DEFAULT current_timestamp();
 
 {# Begin view creation #}
@@ -61,6 +79,7 @@ DECLARE VARIABLE validation_begin_ts TIMESTAMP DEFAULT current_timestamp();
 {% if not has_any %}
 CREATE OR REPLACE TEMP VIEW final_metrics_view AS SELECT
   validation_begin_ts AS validation_begin_ts,
+  current_timestamp() AS validation_complete_ts,
   '{{ source_catalog }}' AS source_catalog,
   '{{ source_schema }}' AS source_schema,
   '{{ source_table }}' AS source_table,
@@ -72,7 +91,11 @@ CREATE OR REPLACE TEMP VIEW final_metrics_view AS SELECT
   {{ sql_string(business_priority) }} AS business_priority,
   {{ sql_number(expected_sla_hours) }} AS expected_sla_hours,
   {{ sql_number(estimated_impact_usd) }} AS estimated_impact_usd,
-  parse_json(to_json(struct('No validations configured for task {{ task_key_ }}' as message))) as result_payload,
+  parse_json(to_json(struct(
+    {{ applied_filter_literal }} AS applied_filter,
+    {{ primary_keys_literal }} AS configured_primary_keys,
+    'No validations configured for task {{ task_key_ }}' as message
+  ))) as result_payload,
   true as overall_validation_passed;
 {% else %}
 CREATE OR REPLACE TEMP VIEW final_metrics_view AS
@@ -94,18 +117,73 @@ filtered_target AS (
   WHERE {{ filter_condition }}
 )
 {% endif %}
-{# Count metrics CTE #}
-{% if count_tolerance is not none %}
+
+{# Source stats CTE (counts, nulls, aggregates) #}
+{% if stats_needed %}
 {% if ns.first %}WITH
 {% set ns.first = False %}
 {% else %},
 {% endif %}
-count_metrics AS (
+source_stats AS (
   SELECT
-    (SELECT COUNT(1) FROM {{ builtin_source }}) AS source_count,
-    (SELECT COUNT(1) FROM {{ builtin_target }}) AS target_count
+    COUNT(1) AS source_count
+    {% if nulls_use_table_counts %}
+    {% for col in null_validation_columns %}
+    ,SUM(CASE WHEN `{{ col }}` IS NULL THEN 1 ELSE 0 END) AS source_nulls_{{ col }}
+    {% endfor %}
+    {% endif %}
+    {% if uniqueness_enabled %}
+    ,COUNT(DISTINCT named_struct(
+      {%- for c in uniqueness_columns -%}
+      '{{ c }}', `{{ c }}`
+      {%- if not loop.last %}, {% endif -%}
+      {%- endfor -%}
+    )) AS source_distinct_uniqs
+    {% endif %}
+    {% if agg_validations %}
+    {% for av in agg_validations %}
+    {% for v in av.validations %}
+    ,TRY_CAST({{ v.agg.upper() }}(`{{ av.column }}`) AS DECIMAL(38, 6)) AS source_value_{{ av.column }}_{{ v.agg.upper() }}
+    {% endfor %}
+    {% endfor %}
+    {% endif %}
+  FROM {{ builtin_source }}
 )
-{%- do cte_names.append('count_metrics') -%}
+{%- do cte_names.append('source_stats') -%}
+{%- endif %}
+
+{# Target stats CTE (counts, nulls, aggregates) #}
+{% if stats_needed %}
+{% if ns.first %}WITH
+{% set ns.first = False %}
+{% else %},
+{% endif %}
+target_stats AS (
+  SELECT
+    COUNT(1) AS target_count
+    {% if nulls_use_table_counts %}
+    {% for col in null_validation_columns %}
+    ,SUM(CASE WHEN `{{ col }}` IS NULL THEN 1 ELSE 0 END) AS target_nulls_{{ col }}
+    {% endfor %}
+    {% endif %}
+    {% if uniqueness_enabled %}
+    ,COUNT(DISTINCT named_struct(
+      {%- for c in uniqueness_columns -%}
+      '{{ c }}', `{{ c }}`
+      {%- if not loop.last %}, {% endif -%}
+      {%- endfor -%}
+    )) AS target_distinct_uniqs
+    {% endif %}
+    {% if agg_validations %}
+    {% for av in agg_validations %}
+    {% for v in av.validations %}
+    ,TRY_CAST({{ v.agg.upper() }}(`{{ av.column }}`) AS DECIMAL(38, 6)) AS target_value_{{ av.column }}_{{ v.agg.upper() }}
+    {% endfor %}
+    {% endfor %}
+    {% endif %}
+  FROM {{ builtin_target }}
+)
+{%- do cte_names.append('target_stats') -%}
 {%- endif %}
 
 {# Row hash CTE #}
@@ -142,73 +220,25 @@ row_hash_metrics AS (
 {%- do cte_names.append('row_hash_metrics') -%}
 {%- endif %}
 
-{# Null validations CTEs #}
-{% if null_validation_columns and null_validation_tolerance is not none %}
-{% for col in null_validation_columns %}
+{# Null validations CTE (joined on primary keys) #}
+{% if nulls_use_pk_join %}
 {% if ns.first %}WITH
 {% set ns.first = False %}
 {% else %},
 {% endif %}
-null_metrics_{{ col }} AS (
-  {% if primary_keys %}
+null_join_metrics AS (
   SELECT
-    SUM(CASE WHEN s.`{{ col }}` IS NULL THEN 1 ELSE 0 END) as source_nulls_{{ col }},
-    SUM(CASE WHEN t.`{{ col }}` IS NULL THEN 1 ELSE 0 END) as target_nulls_{{ col }},
-    COUNT(1) as total_compared_{{ col }}
-  FROM {{ builtin_source }} s JOIN {{ builtin_target }} t
+    {% for col in null_validation_columns %}
+    SUM(CASE WHEN s.`{{ col }}` IS NULL THEN 1 ELSE 0 END) AS source_nulls_{{ col }},
+    SUM(CASE WHEN t.`{{ col }}` IS NULL THEN 1 ELSE 0 END) AS target_nulls_{{ col }}{% if not loop.last %},
+    {% endif %}
+    {% endfor %}
+  FROM {{ builtin_source }} s
+  INNER JOIN {{ builtin_target }} t
     ON {% for pk in primary_keys %}s.`{{ pk }}` = t.`{{ pk }}`{% if not loop.last %} AND {% endif %}{% endfor %}
-  {% else %}
-  SELECT
-    (SELECT COUNT(1) FROM {{ builtin_source }} WHERE `{{ col }}` IS NULL) as source_nulls_{{ col }},
-    (SELECT COUNT(1) FROM {{ builtin_target }} WHERE `{{ col }}` IS NULL) as target_nulls_{{ col }}
-  {% endif %}
 )
-{%- do cte_names.append('null_metrics_' ~ col) -%}
-{%- endfor -%}
+{%- do cte_names.append('null_join_metrics') -%}
 {%- endif %}
-
-{# Aggregate validations CTEs #}
-{% if agg_validations %}
-{% for av in agg_validations %}
-{% set col = av.column %}
-{% for v in av.validations %}
-{% set agg = v.agg.upper() %}
-{% if ns.first %}WITH
-{% set ns.first = False %}
-{% else %},
-{% endif %}
-agg_metrics_{{ col }}_{{ agg }} AS (
-  SELECT
-    TRY_CAST((SELECT {{ agg }}(`{{ col }}`) FROM {{ builtin_source }}) AS DECIMAL(38, 6)) AS source_value_{{ col }}_{{ agg }},
-    TRY_CAST((SELECT {{ agg }}(`{{ col }}`) FROM {{ builtin_target }}) AS DECIMAL(38, 6)) AS target_value_{{ col }}_{{ agg }}
-)
-{%- do cte_names.append('agg_metrics_' ~ col ~ '_' ~ agg) -%}
-{%- endfor -%}
-{%- endfor -%}
-{%- endif %}
-
-{# Uniqueness validation CTE #}
-{% if uniqueness_columns and uniqueness_tolerance is not none -%}
-{% if ns.first %}WITH
-{% set ns.first = False %}
-{% else %},
-{% endif %}
-uniqueness_metrics AS (
-  SELECT
-    COALESCE(SUM(cnt - 1), 0) AS source_duplicates,
-    (SELECT COALESCE(SUM(cnt - 1), 0) FROM (
-      SELECT COUNT(1) AS cnt FROM {{ builtin_target }}
-      GROUP BY {% for c in uniqueness_columns %}`{{ c }}`{% if not loop.last %}, {% endif %}{% endfor %}
-    ) t WHERE cnt > 1) AS target_duplicates,
-    (SELECT COUNT(1) FROM {{ builtin_source }}) AS source_total,
-    (SELECT COUNT(1) FROM {{ builtin_target }}) AS target_total
-  FROM (
-    SELECT COUNT(1) AS cnt FROM {{ builtin_source }}
-    GROUP BY {% for c in uniqueness_columns %}`{{ c }}`{% if not loop.last %}, {% endif %}{% endfor %}
-  ) s WHERE cnt > 1
-)
-{%- do cte_names.append('uniqueness_metrics') -%}
-{%- endif -%}
 
 {# Custom SQL validation CTEs #}
 {% if custom_sql_tests %}
@@ -226,12 +256,12 @@ custom_sql_metrics_{{ custom.cte_base_name }} AS (
   ),
   src_minus_tgt AS (
     SELECT * FROM source_dataset
-    EXCEPT
+    EXCEPT ALL
     SELECT * FROM target_dataset
   ),
   tgt_minus_src AS (
     SELECT * FROM target_dataset
-    EXCEPT
+    EXCEPT ALL
     SELECT * FROM source_dataset
   ),
   source_hash AS (
@@ -277,6 +307,7 @@ custom_sql_metrics_{{ custom.cte_base_name }} AS (
 {# SELECT with payload struct and overall status #}
 SELECT
   validation_begin_ts AS validation_begin_ts,
+  current_timestamp() AS validation_complete_ts,
   '{{ source_catalog }}' AS source_catalog,
   '{{ source_schema }}' AS source_schema,
   '{{ source_table }}' AS source_table,
@@ -291,13 +322,15 @@ SELECT
   parse_json(to_json(struct(
   {%- set comma = joiner(',') -%}
     {{ comma() }}
-    {{ sql_string(filter_condition) }} AS applied_filter
+    {{ applied_filter_literal }} AS applied_filter
+    {{ comma() }}
+    {{ primary_keys_literal }} AS configured_primary_keys
     {# Count payload #}
     {%- if count_tolerance is not none -%}
     {{ comma() }}
     struct(
-      FORMAT_NUMBER(source_count, '#,##0') AS source_count,
-      FORMAT_NUMBER(target_count, '#,##0') AS target_count,
+      FORMAT_NUMBER(source_count, 0) AS source_count,
+      FORMAT_NUMBER(target_count, 0) AS target_count,
       FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
       FORMAT_STRING('%.2f%%', CAST({{ count_tolerance }} * 100 AS DOUBLE)) AS tolerance_percent,
       CASE WHEN COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= {{ count_tolerance }} THEN 'PASS' ELSE 'FAIL' END AS status
@@ -308,8 +341,8 @@ SELECT
     {%- if pk_row_hash_check and primary_keys -%}
     {{ comma() }}
     struct(
-      FORMAT_NUMBER(total_compared_rows, '#,##0') AS compared_rows,
-      FORMAT_NUMBER(mismatch_count, '#,##0') AS mismatch_count,
+      FORMAT_NUMBER(total_compared_rows, 0) AS compared_rows,
+      FORMAT_NUMBER(mismatch_count, 0) AS mismatch_count,
       FORMAT_STRING('%.2f%%', CAST(COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) * 100 AS DOUBLE)) as mismatch_percent,
       FORMAT_STRING('%.2f%%', CAST({{ pk_hash_tolerance if pk_hash_tolerance is not none else 0.0 }} * 100 AS DOUBLE)) AS tolerance_percent,
       CASE WHEN COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= {{ pk_hash_tolerance if pk_hash_tolerance is not none else 0.0 }} THEN 'PASS' ELSE 'FAIL' END AS status
@@ -321,15 +354,13 @@ SELECT
     {%- for col in null_validation_columns -%}
     {{ comma() }}
     struct(
-      FORMAT_NUMBER(source_nulls_{{ col }}, '#,##0') AS source_nulls,
-      FORMAT_NUMBER(target_nulls_{{ col }}, '#,##0') AS target_nulls,
+      FORMAT_NUMBER(source_nulls_{{ col }}, 0) AS source_nulls,
+      FORMAT_NUMBER(target_nulls_{{ col }}, 0) AS target_nulls,
       {%- if primary_keys -%}
       FORMAT_STRING('%.2f%%', CAST(
         CASE
-          WHEN source_nulls_{{ col }} = 0 AND target_nulls_{{ col }} > 0 THEN 100.0
-          WHEN source_nulls_{{ col }} = 0 THEN 0.0
-          WHEN target_nulls_{{ col }} = 0 AND source_nulls_{{ col }} > 0 THEN 100.0
-          ELSE COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) * 100
+          WHEN source_nulls_{{ col }} = 0 THEN CASE WHEN target_nulls_{{ col }} = 0 THEN 0.0 ELSE 100.0 END
+          ELSE ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / CAST(source_nulls_{{ col }} AS DOUBLE) * 100
         END AS DOUBLE
       )) as relative_diff_percent,
       {%- else -%}
@@ -339,7 +370,7 @@ SELECT
   CASE WHEN {% if primary_keys %}
     CASE
       WHEN source_nulls_{{ col }} = 0 THEN target_nulls_{{ col }} = 0
-      ELSE COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_tolerance }}
+      ELSE ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / CAST(source_nulls_{{ col }} AS DOUBLE) <= {{ null_validation_tolerance }}
     END
   {% else %}CASE WHEN source_nulls_{{ col }} = 0 THEN target_nulls_{{ col }} = 0 ELSE COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_tolerance }} END{% endif %} THEN 'PASS' ELSE 'FAIL' END AS status
     ) AS null_validation_{{ col }}
@@ -353,8 +384,8 @@ SELECT
     {% set diff_expr = agg_rel_diff(av.column, v.agg.upper()) %}
     {{ comma() }}
     struct(
-      FORMAT_NUMBER(source_value_{{ av.column }}_{{ v.agg.upper() }}, '#,##0.00') as source_value,
-      FORMAT_NUMBER(target_value_{{ av.column }}_{{ v.agg.upper() }}, '#,##0.00') as target_value,
+      FORMAT_NUMBER(source_value_{{ av.column }}_{{ v.agg.upper() }}, 2) as source_value,
+      FORMAT_NUMBER(target_value_{{ av.column }}_{{ v.agg.upper() }}, 2) as target_value,
       FORMAT_STRING('%.2f%%', CAST(({{ diff_expr }}) * 100 AS DOUBLE)) as relative_diff_percent,
       FORMAT_STRING('%.2f%%', CAST({{ v.tolerance }} * 100 AS DOUBLE)) AS tolerance_percent,
       CASE WHEN COALESCE({{ diff_expr }}, CAST(0 AS DECIMAL(38, 12))) <= {{ v.tolerance }} THEN 'PASS' ELSE 'FAIL' END AS status
@@ -365,15 +396,17 @@ SELECT
 
   {# Uniqueness payload #}
   {% if uniqueness_columns and uniqueness_tolerance is not none -%}
+    {% set source_dupe_ratio = "COALESCE((source_count - source_distinct_uniqs) / NULLIF(CAST(source_count AS DOUBLE), 0), 0)" %}
+    {% set target_dupe_ratio = "COALESCE((target_count - target_distinct_uniqs) / NULLIF(CAST(target_count AS DOUBLE), 0), 0)" %}
     {{ comma() }}
     struct(
-      FORMAT_NUMBER(source_duplicates, '#,##0') AS source_duplicates,
-      FORMAT_NUMBER(target_duplicates, '#,##0') AS target_duplicates,
-      FORMAT_STRING('%.2f%%', CAST(COALESCE(source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as source_dupe_percent,
-      FORMAT_STRING('%.2f%%', CAST(COALESCE(target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as target_dupe_percent,
+      FORMAT_NUMBER(source_count - source_distinct_uniqs, 0) AS source_duplicates,
+      FORMAT_NUMBER(target_count - target_distinct_uniqs, 0) AS target_duplicates,
+      FORMAT_STRING('%.2f%%', CAST(({{ source_dupe_ratio }}) * 100 AS DOUBLE)) as source_dupe_percent,
+      FORMAT_STRING('%.2f%%', CAST(({{ target_dupe_ratio }}) * 100 AS DOUBLE)) as target_dupe_percent,
       FORMAT_STRING('%.2f%%', CAST({{ uniqueness_tolerance }} * 100 AS DOUBLE)) AS tolerance_percent,
-      CASE WHEN COALESCE(source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0), 0) <= {{ uniqueness_tolerance }}
-            AND COALESCE(target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0), 0) <= {{ uniqueness_tolerance }} THEN 'PASS' ELSE 'FAIL' END AS status
+      CASE WHEN {{ source_dupe_ratio }} <= {{ uniqueness_tolerance }}
+            AND {{ target_dupe_ratio }} <= {{ uniqueness_tolerance }} THEN 'PASS' ELSE 'FAIL' END AS status
   ) AS uniqueness_validation_{{ uniqueness_columns|join('_') }}
   {%- endif -%}
 
@@ -387,10 +420,10 @@ SELECT
       {{ sql_string(custom.base_sql) }} AS input_sql_template,
       {{ sql_string(custom.source_sql) }} AS rendered_source_sql,
       {{ sql_string(custom.target_sql) }} AS rendered_target_sql,
-      FORMAT_NUMBER(source_row_count_{{ custom.cte_base_name }}, '#,##0') AS source_row_count,
-      FORMAT_NUMBER(target_row_count_{{ custom.cte_base_name }}, '#,##0') AS target_row_count,
-      FORMAT_NUMBER(rows_missing_in_target_{{ custom.cte_base_name }}, '#,##0') AS rows_missing_in_target,
-      FORMAT_NUMBER(rows_missing_in_source_{{ custom.cte_base_name }}, '#,##0') AS rows_missing_in_source,
+      FORMAT_NUMBER(source_row_count_{{ custom.cte_base_name }}, 0) AS source_row_count,
+      FORMAT_NUMBER(target_row_count_{{ custom.cte_base_name }}, 0) AS target_row_count,
+      FORMAT_NUMBER(rows_missing_in_target_{{ custom.cte_base_name }}, 0) AS rows_missing_in_target,
+      FORMAT_NUMBER(rows_missing_in_source_{{ custom.cte_base_name }}, 0) AS rows_missing_in_source,
       CASE WHEN sample_missing_in_target_{{ custom.cte_base_name }} = 'null' THEN NULL ELSE sample_missing_in_target_{{ custom.cte_base_name }} END AS sample_missing_in_target,
       CASE WHEN sample_missing_in_source_{{ custom.cte_base_name }} = 'null' THEN NULL ELSE sample_missing_in_source_{{ custom.cte_base_name }} END AS sample_missing_in_source,
       CASE WHEN COALESCE(rows_missing_in_target_{{ custom.cte_base_name }}, 0) = 0
@@ -415,7 +448,7 @@ SELECT
       {%- if primary_keys -%}
       CASE
         WHEN source_nulls_{{ col }} = 0 THEN target_nulls_{{ col }} = 0
-        ELSE COALESCE(ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_tolerance }}
+        ELSE ABS(source_nulls_{{ col }} - target_nulls_{{ col }}) / CAST(source_nulls_{{ col }} AS DOUBLE) <= {{ null_validation_tolerance }}
       END
       {%- else -%}
       CASE WHEN source_nulls_{{ col }} = 0 THEN target_nulls_{{ col }} = 0 ELSE COALESCE(ABS(target_nulls_{{ col }} - source_nulls_{{ col }}) / NULLIF(CAST(source_nulls_{{ col }} AS DOUBLE), 0), 0) <= {{ null_validation_tolerance }} END
@@ -430,8 +463,10 @@ SELECT
     {%- endfor -%}
     {%- endif -%}
   {%- if uniqueness_columns and uniqueness_tolerance is not none -%}
-  {{ andsep() }} COALESCE(source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0), 0) <= {{ uniqueness_tolerance }}
-  {{ andsep() }} COALESCE(target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0), 0) <= {{ uniqueness_tolerance }}
+  {% set source_dupe_ratio = "COALESCE((source_count - source_distinct_uniqs) / NULLIF(CAST(source_count AS DOUBLE), 0), 0)" %}
+  {% set target_dupe_ratio = "COALESCE((target_count - target_distinct_uniqs) / NULLIF(CAST(target_count AS DOUBLE), 0), 0)" %}
+  {{ andsep() }} {{ source_dupe_ratio }} <= {{ uniqueness_tolerance }}
+  {{ andsep() }} {{ target_dupe_ratio }} <= {{ uniqueness_tolerance }}
   {%- endif -%}
   {%- if custom_sql_tests -%}
   {%- for custom in custom_sql_tests -%}
@@ -453,7 +488,7 @@ FROM
 
 INSERT INTO {{ results_table }} (task_key, status, run_id, job_id, job_name, job_start_ts, validation_begin_ts, validation_complete_ts, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, business_domain, business_owner, business_priority, expected_sla_hours, estimated_impact_usd, result_payload)
 SELECT '{{ task_key_ }}', CASE WHEN overall_validation_passed THEN 'SUCCESS' ELSE 'FAILURE' END,
-:run_id, :job_id, '{{ job_name }}', :job_start_ts, validation_begin_ts, current_timestamp(), source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, business_domain, business_owner, business_priority, expected_sla_hours, estimated_impact_usd, result_payload FROM final_metrics_view;
+:run_id, :job_id, '{{ job_name }}', :job_start_ts, validation_begin_ts, validation_complete_ts, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, business_domain, business_owner, business_priority, expected_sla_hours, estimated_impact_usd, result_payload FROM final_metrics_view;
 
 SELECT RAISE_ERROR(CONCAT('DataPact validation failed for task: {{ task_key_ }}. Payload: \n', to_json(result_payload, map('pretty', 'true')))) FROM final_metrics_view WHERE overall_validation_passed = false;
 

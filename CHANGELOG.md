@@ -6,9 +6,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- **Single-pass SQL Profiling:** The validation template now derives row counts, per-column null stats, aggregate tolerances, and uniqueness duplicate ratios from shared `source_stats`/`target_stats` CTEs so each table is scanned once per run instead of once per metric, materially reducing Serverless SQL runtime and cost on wide configs.
+- **Docs & Tests:** Snapshot fixtures, SQL generation unit tests, and the README were refreshed to describe and validate the streamlined stats pipeline.
+
+## [2.8.0]
+
 - **Row-Level Filters:** Validation tasks now accept an optional `filter` predicate that scopes row count, PK hash, null, aggregate, and uniqueness tests to a narrow slice without rewriting SQL. The active predicate is captured in `result_payload.applied_filter`.
 - **Demo Enhancements:** The enterprise demo configuration highlights multiple filtered tasks (recent signups, high-value financial transactions, hazmat shipments, and rolling IoT telemetry) so new users have turnkey examples.
 - **Documentation & Samples:** README, sample configs, and changelog document the new filter behavior, and dedicated unit tests cover SQL generation plus validator edge cases.
+- **Primary-Key Visibility:** Result payloads now store the configured primary key list and the Historical Validation Runs widget displays it, so you can match PKs to tables without revisiting the YAML config.
+- **CLI Quality-of-Life:** Added `datapact plan`, `datapact run --dry-run`, and `datapact init` for scaffolding starter configs and previewing validation plans without provisioning Databricks resources.
+- **Platform Compatibility:** Raised the supported floor to Python 3.11, bumped the Databricks SDK requirement to 0.73.0, regenerated `requirements.txt`, and updated CI to install via `pip install -e ".[dev]"` while linting with Ruff and type-checking via mypy.
+- **Runtime Safety:** Databricks job polling now uses capped exponential backoff and raises on any non-success result, while `datapact.__version__` exposes the package version for downstream tooling.
+- **SQL & Dashboard Hardening:** Fully-qualified table names are parsed/escaped via shared helpers, dashboard/widget structures use TypedDicts, and README/CHANGELOG documentation reflects the new flows so behavior is transparent to operators.
 
 ## [2.7.0]
 
@@ -31,7 +41,7 @@ All notable changes to this project will be documented in this file.
 
 - **Fixed Some Precision Issues** Now test results will be more accurate
 - **Better Metadata Tracking** Enhanced how metadata is captured so things like job run time and task run time is better reflected
-- **Naming Consistency** Renamed some columns and visualizations to maintain consistency accross the repo
+- **Naming Consistency** Renamed some columns and visualizations to maintain consistency across the repo
 
 ## [2.5.0] - 2025-09-15
 
@@ -43,7 +53,7 @@ All notable changes to this project will be documented in this file.
 
 ### 🐛 Fixed
 
-- Some of the visualiztion results were not coming in properly.
+- Some of the visualization results were not coming in properly.
 - The filter for the most recent job run was on `run_id`, which is not a reliable indicator of the latest run (it has been switched to `job_start_ts`).
 
 ## [2.0.0] - 2025-08-02

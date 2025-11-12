@@ -13,6 +13,7 @@
 ## Highlights
 - **Executive ROI intelligence** – every run persists curated Delta tables (`exec_run_summary`, `exec_domain_breakdown`, `exec_owner_breakdown`, `exec_priority_breakdown`) that feed impact counters, SLA heatmaps, and accountability views.
 - **Declarative, auditable validation** – describe row-count, hash, null, aggregate, and uniqueness checks in YAML. Add business metadata (domain, owner, priority, SLA, impact) to drive storytelling.
+- **Single-pass SQL profiles** – row counts, column-level null stats, aggregate tolerances, and uniqueness duplicate ratios are computed in one scan per table, dramatically reducing Serverless SQL scans (and spend) even when dozens of checks are configured.
 - **Bring-your-own SQL** – author `custom_sql_tests` to run bespoke SQL on both source and target tables, then compare the result sets for exact equality.
 - **One-click Lakeview experience** – DataPact publishes an interactive dashboard with ROI metrics, trend lines, remediation drill-downs, and check-level payloads. Genie datasets are ready for conversational analytics.
 - **Databricks-first orchestration** – runs natively through Databricks Jobs and Serverless SQL; no clusters to babysit or dashboards to wire manually.
@@ -22,19 +23,20 @@
 
 ### The Business Value: Why DataPact?
 
-| Feature                      | Business Value                                                                                                                                                                                                  |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Automated Observability**  | Every run automatically creates or updates a rich Lakeview Dashboard. Get immediate, zero-maintenance insights into data quality trends, failure rates, and hotspots, turning raw data into business intelligence. |
-| **Declarative & Auditable**  | Define your entire validation suite in a simple `YAML` file. This provides a human-readable, version-controllable audit trail of your data quality rules, perfect for governance and compliance.                  |
-| **CI/CD Native**             | Built for modern data platforms. Seamlessly integrate DataPact into your CI/CD pipelines (GitHub Actions, Azure DevOps) to prevent bad data from ever reaching production.                                       |
-| **Deep Data Forensics**      | Go beyond simple row counts. Perform per-row hash comparisons, multi-column null analysis, and aggregate checks (`SUM`, `AVG`) to pinpoint the exact cause of data corruption.                                      |
-| **Efficient & Scalable**     | Built for performance and cost-efficiency. DataPact leverages the power of Databricks SQL Serverless, automatically scaling to handle billions of rows while minimizing operational overhead.                   |
-| **Persistent Reporting**     | Automatically log detailed validation results to a Delta table. The results are stored in a `VARIANT` column, allowing for easy, powerful, and native querying of your data quality history.                  |
+| Feature                     | Business Value                                                                                                                                                                                                     |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Automated Observability** | Every run automatically creates or updates a rich Lakeview Dashboard. Get immediate, zero-maintenance insights into data quality trends, failure rates, and hotspots, turning raw data into business intelligence. |
+| **Declarative & Auditable** | Define your entire validation suite in a simple `YAML` file. This provides a human-readable, version-controllable audit trail of your data quality rules, perfect for governance and compliance.                   |
+| **CI/CD Native**            | Built for modern data platforms. Seamlessly integrate DataPact into your CI/CD pipelines (GitHub Actions, Azure DevOps) to prevent bad data from ever reaching production.                                         |
+| **Deep Data Forensics**     | Go beyond simple row counts. Perform per-row hash comparisons, multi-column null analysis, and aggregate checks (`SUM`, `AVG`) to pinpoint the exact cause of data corruption.                                     |
+| **Efficient & Scalable**    | Built for performance and cost-efficiency. DataPact leverages the power of Databricks SQL Serverless, automatically scaling to handle billions of rows while minimizing operational overhead.                      |
+| **Persistent Reporting**    | Automatically log detailed validation results to a Delta table. The results are stored in a `VARIANT` column, allowing for easy, powerful, and native querying of your data quality history.                       |
 
 
 ### Core Validation Suite
 
 DataPact provides a rich suite of validations to cover the most critical data quality dimensions.
+
 ### Demo highlights
 
 - Multi-column uniqueness aliasing:
@@ -50,15 +52,15 @@ DataPact provides a rich suite of validations to cover the most critical data qu
   - What it does: Surfaces missing Scope 3 entries and offset misstatements with both aggregate tolerances and bespoke SQL rollups.
   - Where to see it: Inspect the custom SQL payloads to break down variances by emission scope, region, and data source.
 
-| Validation               | **Business Question It Answers**                                                              | **Example Configuration**                                                                                                                                |
-| ------------------------ | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Count Validation**     | _"Did we lose or gain a significant number of records during our ETL process?"_                | <pre lang="yaml">task_key: validate_users<br>...<br>count_tolerance: 0.01</pre>                                                                          |
-| **Row Hash Check**       | _"Have any of our supposedly identical records been subtly corrupted or changed?"_             | <pre lang="yaml">task_key: validate_products<br>...<br>primary_keys: [product_id]<br> pk_row_hash_check: true<br> pk_hash_tolerance: 0.05</pre>           |
-| **Selective Hashing**    | _"How can we check for data integrity on critical columns while ignoring frequently changing ones like timestamps?"_ | <pre lang="yaml">task_key: validate_events<br>...<br>primary_keys: [event_id]<br> pk_row_hash_check: true<br> hash_columns: [user_id, event_type]</pre> |
-| **Aggregate Validation** | _"Has the total revenue, average order value, or max transaction ID changed beyond an acceptable tolerance?"_ | <pre lang="yaml">task_key: validate_finance<br>...<br>agg_validations:<br>  - column: "total_revenue"<br>    validations: [{agg: SUM, tolerance: 0.005}]</pre>   |
-| **Null Count Validation**| _"Has a recent upstream change caused a spike in NULL values in our critical identifier or attribute columns?"_ | <pre lang="yaml">task_key: validate_customers<br>...<br> null_validation_tolerance: 0.02<br> null_validation_columns: [email, country]</pre>       |
-| **Uniqueness Validation**| _"Are key columns unique (e.g., no duplicate emails or IDs) within each side?"_ | <pre lang="yaml">task_key: validate_users<br>...<br> uniqueness_columns: [email]<br> uniqueness_tolerance: 0.0</pre> |
-| **Custom SQL Validation**| _"Can I codify bespoke reconciliation logic without wiring a new harness?"_ | <pre lang="yaml">task_key: validate_finance<br>...<br>custom_sql_tests:<br>  - name: "Revenue by Channel"<br>    sql: \|<br>      SELECT channel, SUM(net_revenue) AS total_revenue<br>      FROM {{ table_fqn }}<br>      GROUP BY channel</pre> |
+| Validation                | **Business Question It Answers**                                                                                     | **Example Configuration**                                                                                                                                                                                                                         |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Count Validation**      | _"Did we lose or gain a significant number of records during our ETL process?"_                                      | <pre lang="yaml">task_key: validate_users<br>...<br>count_tolerance: 0.01</pre>                                                                                                                                                                   |
+| **Row Hash Check**        | _"Have any of our supposedly identical records been subtly corrupted or changed?"_                                   | <pre lang="yaml">task_key: validate_products<br>...<br>primary_keys: [product_id]<br> pk_row_hash_check: true<br> pk_hash_tolerance: 0.05</pre>                                                                                                   |
+| **Selective Hashing**     | _"How can we check for data integrity on critical columns while ignoring frequently changing ones like timestamps?"_ | <pre lang="yaml">task_key: validate_events<br>...<br>primary_keys: [event_id]<br> pk_row_hash_check: true<br> hash_columns: [user_id, event_type]</pre>                                                                                           |
+| **Aggregate Validation**  | _"Has the total revenue, average order value, or max transaction ID changed beyond an acceptable tolerance?"_        | <pre lang="yaml">task_key: validate_finance<br>...<br>agg_validations:<br>  - column: "total_revenue"<br>    validations: [{agg: SUM, tolerance: 0.005}]</pre>                                                                                    |
+| **Null Count Validation** | _"Has a recent upstream change caused a spike in NULL values in our critical identifier or attribute columns?"_      | <pre lang="yaml">task_key: validate_customers<br>...<br> null_validation_tolerance: 0.02<br> null_validation_columns: [email, country]</pre>                                                                                                      |
+| **Uniqueness Validation** | _"Are key columns unique (e.g., no duplicate emails or IDs) within each side?"_                                      | <pre lang="yaml">task_key: validate_users<br>...<br> uniqueness_columns: [email]<br> uniqueness_tolerance: 0.0</pre>                                                                                                                              |
+| **Custom SQL Validation** | _"Can I codify bespoke reconciliation logic without wiring a new harness?"_                                          | <pre lang="yaml">task_key: validate_finance<br>...<br>custom_sql_tests:<br>  - name: "Revenue by Channel"<br>    sql: \|<br>      SELECT channel, SUM(net_revenue) AS total_revenue<br>      FROM {{ table_fqn }}<br>      GROUP BY channel</pre> |
 
 ---
 
@@ -102,7 +104,7 @@ See DataPact's full potential with a realistic, large-scale demo. This will crea
 
 1.  **Databricks Workspace:** A Databricks workspace with Unity Catalog enabled.
 2.  **Permissions:** Permissions to create catalogs, schemas, tables, and run jobs.
-3.  **Python >= 3.13.5:** A local Python environment.
+3.  **Python >= 3.11:** A local Python environment.
 4.  **Databricks CLI:** [Install and configure the Databricks CLI](https://docs.databricks.com/en/dev-tools/cli/install.html). For a seamless experience, we recommend adding a `datapact_warehouse` key to your profile in `~/.databrickscfg`.
 
 ```ini
@@ -119,7 +121,7 @@ git clone https://github.com/skyler-myers-db/datapact.git
 cd datapact
 ```
 
-#### Step 2: Create and Activate a Virtual Environment (Python 3.13.5+)
+#### Step 2: Create and Activate a Virtual Environment (Python 3.11+)
 
 This creates a self-contained environment to avoid conflicts with other Python projects.
 
@@ -140,6 +142,22 @@ Install the package and its dependencies in editable mode.
 ```bash
 pip install -e .
 ```
+
+#### Optional: Preview or Scaffold Configurations
+
+- **Plan/Dry Run:** Validate a configuration without touching Databricks resources.
+
+  ```bash
+  datapact plan --config path/to/validation_config.yml
+  # or
+  datapact run --config path/to/validation_config.yml --dry-run
+  ```
+
+- **Initialize a Starter Config:** Generate a pre-populated YAML file you can customize.
+
+  ```bash
+  datapact init --output my_datapact_config.yml
+  ```
 
 #### Step 2: Set Up the Demo Environment
 
@@ -240,27 +258,29 @@ DataPact intelligently finds your SQL warehouse in the following order of preced
 
 Below are all available parameters for each task in your `validation_config.yml`:
 
-| Parameter                 | Type         | Required | Description                                                                          |
-|---------------------------|--------------|----------|--------------------------------------------------------------------------------------|
-| `task_key`                | string       | Yes      | A unique identifier for the validation task.                                         |
-| `source_catalog`          | string       | Yes      | The Unity Catalog name for your source system.                                       |
-| `source_schema`           | string       | Yes      | The source schema name.                                                              |
-| `source_table`            | string       | Yes      | The source table name.                                                               |
-| `target_catalog`          | string       | Yes      | The target Unity Catalog name (e.g., `main`).                                        |
-| `target_schema`           | string       | Yes      | The target schema name.                                                              |
-| `target_table`            | string       | Yes      | The target table name.                                                               |
-| `primary_keys`            | list[string] | No       | List of primary key columns, required for hash checks.                               |
-| `filter`                  | string       | No       | Optional SQL predicate applied to all built-in validations (count/hash/null/agg/uniqueness). Custom SQL tests are unaffected. |
-| `count_tolerance`         | float        | No       | Allowed relative difference for row counts (e.g., `0.01` for 1%). Defaults to `0.0`. |
-| `pk_row_hash_check`       | boolean      | No       | If `true`, performs a per-row hash comparison. Requires `primary_keys`.              |
-| `pk_hash_tolerance`       | float        | No       | Allowed ratio of mismatched hashes. Requires `pk_row_hash_check`. Defaults to `0.0`. |
-| `hash_columns`            | list[string] | No       | Specific columns to include in the row hash. If omitted, all columns are used.       |
-| `null_validation_tolerance` | float        | No       | Allowed relative difference for null counts in a column.                             |
-| `null_validation_columns` | list[string] | No       | List of columns to perform null count validation on. Requires `null_validation_tolerance`. |
-| `agg_validations`         | list[dict]   | No       | A list of aggregate validations to perform. See structure in examples.               |
-| `uniqueness_columns`      | list[string] | No       | Columns that must be unique within source and within target.                         |
-| `uniqueness_tolerance`    | float        | No       | Allowed duplicate ratio (e.g., 0.0 = strict no duplicates).                          |
-| `results-table` | string | No | FQN of the results table. If omitted, `datapact_main.results.run_history` is used. |
+| Parameter                   | Type         | Required | Description                                                                                                                   |
+| --------------------------- | ------------ | -------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `task_key`                  | string       | Yes      | A unique identifier for the validation task.                                                                                  |
+| `source_catalog`            | string       | Yes      | The Unity Catalog name for your source system.                                                                                |
+| `source_schema`             | string       | Yes      | The source schema name.                                                                                                       |
+| `source_table`              | string       | Yes      | The source table name.                                                                                                        |
+| `target_catalog`            | string       | Yes      | The target Unity Catalog name (e.g., `main`).                                                                                 |
+| `target_schema`             | string       | Yes      | The target schema name.                                                                                                       |
+| `target_table`              | string       | Yes      | The target table name.                                                                                                        |
+| `primary_keys`              | list[string] | No       | List of primary key columns, required for hash checks.                                                                        |
+| `filter`                    | string       | No       | Optional SQL predicate applied to all built-in validations (count/hash/null/agg/uniqueness). Custom SQL tests are unaffected. |
+| `count_tolerance`           | float        | No       | Allowed relative difference for row counts (e.g., `0.01` for 1%). Defaults to `0.0`.                                          |
+| `pk_row_hash_check`         | boolean      | No       | If `true`, performs a per-row hash comparison. Requires `primary_keys`.                                                       |
+| `pk_hash_tolerance`         | float        | No       | Allowed ratio of mismatched hashes. Requires `pk_row_hash_check`. Defaults to `0.0`.                                          |
+| `hash_columns`              | list[string] | No       | Specific columns to include in the row hash. If omitted, all columns are used.                                                |
+| `null_validation_tolerance` | float        | No       | Allowed relative difference for null counts in a column.                                                                      |
+| `null_validation_columns`   | list[string] | No       | List of columns to perform null count validation on. Requires `null_validation_tolerance`.                                    |
+| `agg_validations`           | list[dict]   | No       | A list of aggregate validations to perform. See structure in examples.                                                        |
+| `uniqueness_columns`        | list[string] | No       | Columns that must be unique within source and within target.                                                                  |
+| `uniqueness_tolerance`      | float        | No       | Allowed duplicate ratio (e.g., 0.0 = strict no duplicates).                                                                   |
+| `results-table`             | string       | No       | FQN of the results table. If omitted, `datapact_main.results.run_history` is used.                                            |
+
+> **Heads-up:** Older docs referenced `aggregations` and `uniqueness_validation_columns`. Those keys have been renamed to `agg_validations` and `uniqueness_columns`; be sure to update any local configs accordingly.
 
 ---
 
@@ -316,6 +336,8 @@ export DATAPACT_WAREHOUSE="my_env_var_warehouse"`
 If you provide the `--results-table` argument, DataPact will write a detailed summary of every validation task to the specified Delta table. This allows you to build dashboards in Databricks SQL to monitor data quality trends over time. Otherwise, it will write to the default location: `datapact.results.run_history`.
 
 The autogenerated Lakeview dashboard now includes basic filters for job_name and run_id on both pages. Use these to quickly narrow the view to a specific job or run.
+
+For quick context, every result payload also captures the comma-separated `configured_primary_keys`, and the Historical Validation Runs table on the dashboard shows that value in a dedicated “Primary Keys” column. You no longer need to reopen the YAML config to remember which PKs belong to which validation task.
 
 Uniqueness payload aliasing: The result payload for uniqueness is stored under a field name that encodes the validated columns, e.g., `uniqueness_validation_email` for a single field or `uniqueness_validation_email_domain` for multiple fields. This avoids collisions when multiple uniqueness checks exist in one task.
 
@@ -494,18 +516,18 @@ Add the Genie tables to a Databricks AI/BI space and seed example prompts:
 3. **Share dashboards / query ROI tables** to operationalise insights.
 
 ### Validation schema (per task)
-| Field | Description |
-| --- | --- |
-| `task_key` | Unique identifier |
-| `source_catalog/schema/table`, `target_catalog/schema/table` | Required sources |
-| `primary_keys` | List of key columns for joins |
-| `count_tolerance` | Relative tolerance (0-1) for row counts |
-| `pk_row_hash_check`, `pk_hash_tolerance`, `hash_columns` | Row-level diffing options |
-| `null_validation_tolerance`, `null_validation_columns` | Null drift checks |
-| `agg_validations` | Aggregate checks (`SUM`, `AVG`, `MIN`, `MAX`) |
-| `uniqueness_columns`, `uniqueness_tolerance` | Duplicate detection |
-| `business_domain`, `business_owner`, `business_priority` (Critical/High/Medium/Low) | Executive metadata |
-| `expected_sla_hours`, `estimated_impact_usd` | SLA/impact instrumentation |
+| Field                                                                               | Description                                   |
+| ----------------------------------------------------------------------------------- | --------------------------------------------- |
+| `task_key`                                                                          | Unique identifier                             |
+| `source_catalog/schema/table`, `target_catalog/schema/table`                        | Required sources                              |
+| `primary_keys`                                                                      | List of key columns for joins                 |
+| `count_tolerance`                                                                   | Relative tolerance (0-1) for row counts       |
+| `pk_row_hash_check`, `pk_hash_tolerance`, `hash_columns`                            | Row-level diffing options                     |
+| `null_validation_tolerance`, `null_validation_columns`                              | Null drift checks                             |
+| `agg_validations`                                                                   | Aggregate checks (`SUM`, `AVG`, `MIN`, `MAX`) |
+| `uniqueness_columns`, `uniqueness_tolerance`                                        | Duplicate detection                           |
+| `business_domain`, `business_owner`, `business_priority` (Critical/High/Medium/Low) | Executive metadata                            |
+| `expected_sla_hours`, `estimated_impact_usd`                                        | SLA/impact instrumentation                    |
 
 All metadata flows into dashboards, ROI tables, and Genie datasets.
 
@@ -516,10 +538,28 @@ All metadata flows into dashboards, ROI tables, and Genie datasets.
 
 ---
 
-## Development
-- Activate the virtual environment and install dev extras: `pip install -e .[dev]`
-- Run tests (requires Python 3.13.5+): `pytest`
-- `pre-commit` hooks optional for lint/format
+## Development & Tooling
+
+1. **Environment setup**
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate
+   pip install -e .[dev]
+   ```
+
+2. **Linting & formatting**
+   - Run `ruff check .` for lint feedback (same settings as CI/pre-commit).
+   - Run `ruff format .` for formatting.
+   - Optional but recommended: `pre-commit install` to ensure both steps run on every commit.
+
+3. **Testing**
+   - Fast unit suite: `python -m pytest tests/test_*unit.py tests/test_sql_*`
+   - Dashboard / Lakeview mocks:
+     `DATAPACT_SKIP_EXEC_SUMMARY_BOOTSTRAP=1 python -m pytest tests/test_dashboard_* tests/test_visualization_integration.py`
+   - Full regression (what CI executes):
+     `DATAPACT_SKIP_EXEC_SUMMARY_BOOTSTRAP=1 python -m pytest`
+
+   The `DATAPACT_SKIP_EXEC_SUMMARY_BOOTSTRAP` flag disables the costly bootstrap statements that are unnecessary for mocked dashboard tests, keeping iteration speeds high.
 
 ---
 

@@ -92,6 +92,17 @@ def test_custom_sql_test_requires_unique_names_case_insensitive():
     assert "Duplicate custom SQL test name detected" in str(ei.value)
 
 
+def test_custom_sql_test_detects_identifier_collisions_after_sanitization():
+    with pytest.raises(ValidationError) as ei:
+        _minimal_task(
+            custom_sql_tests=[
+                {"name": "Daily Sales", "sql": "SELECT 1"},
+                {"name": "Daily-Sales", "sql": "SELECT 1"},
+            ]
+        )
+    assert "must remain unique even after sanitization" in str(ei.value)
+
+
 def test_custom_sql_test_rejects_trailing_semicolon():
     with pytest.raises(ValidationError) as ei:
         _minimal_task(
