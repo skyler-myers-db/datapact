@@ -13,6 +13,7 @@
 ## Highlights
 - **Executive ROI intelligence** – every run persists curated Delta tables (`exec_run_summary`, `exec_domain_breakdown`, `exec_owner_breakdown`, `exec_priority_breakdown`) that feed impact counters, SLA heatmaps, and accountability views.
 - **Declarative, auditable validation** – describe row-count, hash, null, aggregate, and uniqueness checks in YAML. Add business metadata (domain, owner, priority, SLA, impact) to drive storytelling.
+- **Single-pass SQL profiles** – row counts, column-level null stats, aggregate tolerances, and uniqueness duplicate ratios are computed in one scan per table, dramatically reducing Serverless SQL scans (and spend) even when dozens of checks are configured.
 - **Bring-your-own SQL** – author `custom_sql_tests` to run bespoke SQL on both source and target tables, then compare the result sets for exact equality.
 - **One-click Lakeview experience** – DataPact publishes an interactive dashboard with ROI metrics, trend lines, remediation drill-downs, and check-level payloads. Genie datasets are ready for conversational analytics.
 - **Databricks-first orchestration** – runs natively through Databricks Jobs and Serverless SQL; no clusters to babysit or dashboards to wire manually.

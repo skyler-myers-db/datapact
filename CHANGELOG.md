@@ -4,6 +4,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+- **Single-pass SQL Profiling:** The validation template now derives row counts, per-column null stats, aggregate tolerances, and uniqueness duplicate ratios from shared `source_stats`/`target_stats` CTEs so each table is scanned once per run instead of once per metric, materially reducing Serverless SQL runtime and cost on wide configs.
+- **Docs & Tests:** Snapshot fixtures, SQL generation unit tests, and the README were refreshed to describe and validate the streamlined stats pipeline.
+
 ## [2.8.0]
 
 - **Row-Level Filters:** Validation tasks now accept an optional `filter` predicate that scopes row count, PK hash, null, aggregate, and uniqueness tests to a narrow slice without rewriting SQL. The active predicate is captured in `result_payload.applied_filter`.

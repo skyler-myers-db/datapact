@@ -3,10 +3,22 @@ DECLARE VARIABLE validation_begin_ts TIMESTAMP DEFAULT current_timestamp();
 CREATE OR REPLACE TEMP VIEW final_metrics_view AS
 
 WITH
-count_metrics AS (
+source_stats AS (
   SELECT
-    (SELECT COUNT(1) FROM `cat`.`sch`.`src`) AS source_count,
-    (SELECT COUNT(1) FROM `cat`.`sch`.`tgt`) AS target_count
+    COUNT(1) AS source_count
+    ,TRY_CAST(SUM(`v1`) AS DECIMAL(38, 6)) AS source_value_v1_SUM
+    ,TRY_CAST(AVG(`v1`) AS DECIMAL(38, 6)) AS source_value_v1_AVG
+    ,TRY_CAST(SUM(`v2`) AS DECIMAL(38, 6)) AS source_value_v2_SUM
+  FROM `cat`.`sch`.`src`
+)
+,
+target_stats AS (
+  SELECT
+    COUNT(1) AS target_count
+    ,TRY_CAST(SUM(`v1`) AS DECIMAL(38, 6)) AS target_value_v1_SUM
+    ,TRY_CAST(AVG(`v1`) AS DECIMAL(38, 6)) AS target_value_v1_AVG
+    ,TRY_CAST(SUM(`v2`) AS DECIMAL(38, 6)) AS target_value_v2_SUM
+  FROM `cat`.`sch`.`tgt`
 )
 ,
 row_hash_metrics AS (
@@ -26,36 +38,14 @@ row_hash_metrics AS (
   ) t
   ON s.`id1` = t.`id1` AND s.`id2` = t.`id2`)
 ,
-null_metrics_v1 AS (
+null_join_metrics AS (
   SELECT
-    SUM(CASE WHEN s.`v1` IS NULL THEN 1 ELSE 0 END) as source_nulls_v1,
-    SUM(CASE WHEN t.`v1` IS NULL THEN 1 ELSE 0 END) as target_nulls_v1,
-    COUNT(1) as total_compared_v1
-  FROM `cat`.`sch`.`src` s JOIN `cat`.`sch`.`tgt` t
-    ON s.`id1` = t.`id1` AND s.`id2` = t.`id2`),
-null_metrics_v2 AS (
-  SELECT
-    SUM(CASE WHEN s.`v2` IS NULL THEN 1 ELSE 0 END) as source_nulls_v2,
-    SUM(CASE WHEN t.`v2` IS NULL THEN 1 ELSE 0 END) as target_nulls_v2,
-    COUNT(1) as total_compared_v2
-  FROM `cat`.`sch`.`src` s JOIN `cat`.`sch`.`tgt` t
+    SUM(CASE WHEN s.`v1` IS NULL THEN 1 ELSE 0 END) AS source_nulls_v1,
+    SUM(CASE WHEN t.`v1` IS NULL THEN 1 ELSE 0 END) AS target_nulls_v1,
+    SUM(CASE WHEN s.`v2` IS NULL THEN 1 ELSE 0 END) AS source_nulls_v2,
+    SUM(CASE WHEN t.`v2` IS NULL THEN 1 ELSE 0 END) AS target_nulls_v2  FROM `cat`.`sch`.`src` s
+  INNER JOIN `cat`.`sch`.`tgt` t
     ON s.`id1` = t.`id1` AND s.`id2` = t.`id2`)
-,
-agg_metrics_v1_SUM AS (
-  SELECT
-    TRY_CAST((SELECT SUM(`v1`) FROM `cat`.`sch`.`src`) AS DECIMAL(38, 6)) AS source_value_v1_SUM,
-    TRY_CAST((SELECT SUM(`v1`) FROM `cat`.`sch`.`tgt`) AS DECIMAL(38, 6)) AS target_value_v1_SUM
-),
-agg_metrics_v1_AVG AS (
-  SELECT
-    TRY_CAST((SELECT AVG(`v1`) FROM `cat`.`sch`.`src`) AS DECIMAL(38, 6)) AS source_value_v1_AVG,
-    TRY_CAST((SELECT AVG(`v1`) FROM `cat`.`sch`.`tgt`) AS DECIMAL(38, 6)) AS target_value_v1_AVG
-),
-agg_metrics_v2_SUM AS (
-  SELECT
-    TRY_CAST((SELECT SUM(`v2`) FROM `cat`.`sch`.`src`) AS DECIMAL(38, 6)) AS source_value_v2_SUM,
-    TRY_CAST((SELECT SUM(`v2`) FROM `cat`.`sch`.`tgt`) AS DECIMAL(38, 6)) AS target_value_v2_SUM
-)
 SELECT
   validation_begin_ts AS validation_begin_ts,
   current_timestamp() AS validation_complete_ts,
@@ -76,54 +66,50 @@ SELECT
     'id1, id2' AS configured_primary_keys
 ,
     struct(
-      FORMAT_NUMBER(source_count, '#,##0') AS source_count,
-      FORMAT_NUMBER(target_count, '#,##0') AS target_count,
+      FORMAT_NUMBER(source_count, 0) AS source_count,
+      FORMAT_NUMBER(target_count, 0) AS target_count,
       FORMAT_STRING('%.2f%%', CAST(COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) * 100 AS DOUBLE)) as relative_diff_percent,
       FORMAT_STRING('%.2f%%', CAST(0.05 * 100 AS DOUBLE)) AS tolerance_percent,
       CASE WHEN COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= 0.05 THEN 'PASS' ELSE 'FAIL' END AS status
     ) AS count_validation,
     struct(
-      FORMAT_NUMBER(total_compared_rows, '#,##0') AS compared_rows,
-      FORMAT_NUMBER(mismatch_count, '#,##0') AS mismatch_count,
+      FORMAT_NUMBER(total_compared_rows, 0) AS compared_rows,
+      FORMAT_NUMBER(mismatch_count, 0) AS mismatch_count,
       FORMAT_STRING('%.2f%%', CAST(COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) * 100 AS DOUBLE)) as mismatch_percent,
       FORMAT_STRING('%.2f%%', CAST(1e-06 * 100 AS DOUBLE)) AS tolerance_percent,
       CASE WHEN COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= 1e-06 THEN 'PASS' ELSE 'FAIL' END AS status
     ) AS row_hash_validation,
     struct(
-      FORMAT_NUMBER(source_nulls_v1, '#,##0') AS source_nulls,
-      FORMAT_NUMBER(target_nulls_v1, '#,##0') AS target_nulls,FORMAT_STRING('%.2f%%', CAST(
+      FORMAT_NUMBER(source_nulls_v1, 0) AS source_nulls,
+      FORMAT_NUMBER(target_nulls_v1, 0) AS target_nulls,FORMAT_STRING('%.2f%%', CAST(
         CASE
-          WHEN source_nulls_v1 = 0 AND target_nulls_v1 > 0 THEN 100.0
-          WHEN source_nulls_v1 = 0 THEN 0.0
-          WHEN target_nulls_v1 = 0 AND source_nulls_v1 > 0 THEN 100.0
-          ELSE COALESCE(ABS(source_nulls_v1 - target_nulls_v1) / NULLIF(CAST(source_nulls_v1 AS DOUBLE), 0), 0) * 100
+          WHEN source_nulls_v1 = 0 THEN CASE WHEN target_nulls_v1 = 0 THEN 0.0 ELSE 100.0 END
+          ELSE ABS(source_nulls_v1 - target_nulls_v1) / CAST(source_nulls_v1 AS DOUBLE) * 100
         END AS DOUBLE
       )) as relative_diff_percent,FORMAT_STRING('%.2f%%', CAST(0.0 * 100 AS DOUBLE)) AS tolerance_percent,
   CASE WHEN     CASE
       WHEN source_nulls_v1 = 0 THEN target_nulls_v1 = 0
-      ELSE COALESCE(ABS(source_nulls_v1 - target_nulls_v1) / NULLIF(CAST(source_nulls_v1 AS DOUBLE), 0), 0) <= 0.0
+      ELSE ABS(source_nulls_v1 - target_nulls_v1) / CAST(source_nulls_v1 AS DOUBLE) <= 0.0
     END
  THEN 'PASS' ELSE 'FAIL' END AS status
     ) AS null_validation_v1,
     struct(
-      FORMAT_NUMBER(source_nulls_v2, '#,##0') AS source_nulls,
-      FORMAT_NUMBER(target_nulls_v2, '#,##0') AS target_nulls,FORMAT_STRING('%.2f%%', CAST(
+      FORMAT_NUMBER(source_nulls_v2, 0) AS source_nulls,
+      FORMAT_NUMBER(target_nulls_v2, 0) AS target_nulls,FORMAT_STRING('%.2f%%', CAST(
         CASE
-          WHEN source_nulls_v2 = 0 AND target_nulls_v2 > 0 THEN 100.0
-          WHEN source_nulls_v2 = 0 THEN 0.0
-          WHEN target_nulls_v2 = 0 AND source_nulls_v2 > 0 THEN 100.0
-          ELSE COALESCE(ABS(source_nulls_v2 - target_nulls_v2) / NULLIF(CAST(source_nulls_v2 AS DOUBLE), 0), 0) * 100
+          WHEN source_nulls_v2 = 0 THEN CASE WHEN target_nulls_v2 = 0 THEN 0.0 ELSE 100.0 END
+          ELSE ABS(source_nulls_v2 - target_nulls_v2) / CAST(source_nulls_v2 AS DOUBLE) * 100
         END AS DOUBLE
       )) as relative_diff_percent,FORMAT_STRING('%.2f%%', CAST(0.0 * 100 AS DOUBLE)) AS tolerance_percent,
   CASE WHEN     CASE
       WHEN source_nulls_v2 = 0 THEN target_nulls_v2 = 0
-      ELSE COALESCE(ABS(source_nulls_v2 - target_nulls_v2) / NULLIF(CAST(source_nulls_v2 AS DOUBLE), 0), 0) <= 0.0
+      ELSE ABS(source_nulls_v2 - target_nulls_v2) / CAST(source_nulls_v2 AS DOUBLE) <= 0.0
     END
  THEN 'PASS' ELSE 'FAIL' END AS status
     ) AS null_validation_v2    ,
     struct(
-      FORMAT_NUMBER(source_value_v1_SUM, '#,##0.00') as source_value,
-      FORMAT_NUMBER(target_value_v1_SUM, '#,##0.00') as target_value,
+      FORMAT_NUMBER(source_value_v1_SUM, 2) as source_value,
+      FORMAT_NUMBER(target_value_v1_SUM, 2) as target_value,
       FORMAT_STRING('%.2f%%', CAST((CASE
   WHEN source_value_v1_SUM IS NULL OR target_value_v1_SUM IS NULL THEN NULL
   WHEN source_value_v1_SUM = target_value_v1_SUM THEN CAST(0 AS DECIMAL(38, 12))
@@ -143,8 +129,8 @@ END) * 100 AS DOUBLE)) as relative_diff_percent,
 END, CAST(0 AS DECIMAL(38, 12))) <= 0.0 THEN 'PASS' ELSE 'FAIL' END AS status
     ) AS agg_validation_v1_SUM    ,
     struct(
-      FORMAT_NUMBER(source_value_v1_AVG, '#,##0.00') as source_value,
-      FORMAT_NUMBER(target_value_v1_AVG, '#,##0.00') as target_value,
+      FORMAT_NUMBER(source_value_v1_AVG, 2) as source_value,
+      FORMAT_NUMBER(target_value_v1_AVG, 2) as target_value,
       FORMAT_STRING('%.2f%%', CAST((CASE
   WHEN source_value_v1_AVG IS NULL OR target_value_v1_AVG IS NULL THEN NULL
   WHEN source_value_v1_AVG = target_value_v1_AVG THEN CAST(0 AS DECIMAL(38, 12))
@@ -164,8 +150,8 @@ END) * 100 AS DOUBLE)) as relative_diff_percent,
 END, CAST(0 AS DECIMAL(38, 12))) <= 1e-06 THEN 'PASS' ELSE 'FAIL' END AS status
     ) AS agg_validation_v1_AVG    ,
     struct(
-      FORMAT_NUMBER(source_value_v2_SUM, '#,##0.00') as source_value,
-      FORMAT_NUMBER(target_value_v2_SUM, '#,##0.00') as target_value,
+      FORMAT_NUMBER(source_value_v2_SUM, 2) as source_value,
+      FORMAT_NUMBER(target_value_v2_SUM, 2) as target_value,
       FORMAT_STRING('%.2f%%', CAST((CASE
   WHEN source_value_v2_SUM IS NULL OR target_value_v2_SUM IS NULL THEN NULL
   WHEN source_value_v2_SUM = target_value_v2_SUM THEN CAST(0 AS DECIMAL(38, 12))
@@ -186,10 +172,10 @@ END, CAST(0 AS DECIMAL(38, 12))) <= 0.1 THEN 'PASS' ELSE 'FAIL' END AS status
     ) AS agg_validation_v2_SUM))) as result_payload,
   ( COALESCE(ABS(source_count - target_count) / NULLIF(CAST(source_count AS DOUBLE), 0), 0) <= 0.05 AND  COALESCE((mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)), 0) <= 1e-06 AND CASE
         WHEN source_nulls_v1 = 0 THEN target_nulls_v1 = 0
-        ELSE COALESCE(ABS(source_nulls_v1 - target_nulls_v1) / NULLIF(CAST(source_nulls_v1 AS DOUBLE), 0), 0) <= 0.0
+        ELSE ABS(source_nulls_v1 - target_nulls_v1) / CAST(source_nulls_v1 AS DOUBLE) <= 0.0
       END AND CASE
         WHEN source_nulls_v2 = 0 THEN target_nulls_v2 = 0
-        ELSE COALESCE(ABS(source_nulls_v2 - target_nulls_v2) / NULLIF(CAST(source_nulls_v2 AS DOUBLE), 0), 0) <= 0.0
+        ELSE ABS(source_nulls_v2 - target_nulls_v2) / CAST(source_nulls_v2 AS DOUBLE) <= 0.0
       END AND  COALESCE(CASE
   WHEN source_value_v1_SUM IS NULL OR target_value_v1_SUM IS NULL THEN NULL
   WHEN source_value_v1_SUM = target_value_v1_SUM THEN CAST(0 AS DECIMAL(38, 12))
@@ -213,7 +199,7 @@ END, CAST(0 AS DECIMAL(38, 12))) <= 1e-06 AND  COALESCE(CASE
     CAST(GREATEST(ABS(source_value_v2_SUM), ABS(target_value_v2_SUM)) AS DECIMAL(38, 12))
 END, CAST(0 AS DECIMAL(38, 12))) <= 0.1) AS overall_validation_passed
 FROM
-count_metrics CROSS JOIN row_hash_metrics CROSS JOIN null_metrics_v1 CROSS JOIN null_metrics_v2 CROSS JOIN agg_metrics_v1_SUM CROSS JOIN agg_metrics_v1_AVG CROSS JOIN agg_metrics_v2_SUM
+source_stats CROSS JOIN target_stats CROSS JOIN row_hash_metrics CROSS JOIN null_join_metrics
 ;
 
 INSERT INTO `cat`.`res`.`history` (task_key, status, run_id, job_id, job_name, job_start_ts, validation_begin_ts, validation_complete_ts, source_catalog, source_schema, source_table, target_catalog, target_schema, target_table, business_domain, business_owner, business_priority, expected_sla_hours, estimated_impact_usd, result_payload)

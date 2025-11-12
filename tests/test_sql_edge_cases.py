@@ -73,10 +73,11 @@ def test_multiple_pks_and_null_columns_and_aggs():
     }
     sql = _render(p)
     assert "ON s.`id1` = t.`id1` AND s.`id2` = t.`id2`" in sql
-    assert "null_metrics_v1 AS (" in sql and "null_metrics_v2 AS (" in sql
-    assert (
-        "agg_metrics_v1_SUM AS (" in sql
-        and "agg_metrics_v1_AVG AS (" in sql
-        and "agg_metrics_v2_SUM AS (" in sql
-    )
+    assert "null_join_metrics AS (" in sql
+    assert "SUM(CASE WHEN s.`v1` IS NULL THEN 1 ELSE 0 END) AS source_nulls_v1" in sql
+    assert "SUM(CASE WHEN t.`v2` IS NULL THEN 1 ELSE 0 END) AS target_nulls_v2" in sql
+    assert "source_stats AS (" in sql and "target_stats AS (" in sql
+    assert "TRY_CAST(SUM(`v1`) AS DECIMAL(38, 6)) AS source_value_v1_SUM" in sql
+    assert "TRY_CAST(AVG(`v1`) AS DECIMAL(38, 6)) AS source_value_v1_AVG" in sql
+    assert "TRY_CAST(SUM(`v2`) AS DECIMAL(38, 6)) AS source_value_v2_SUM" in sql
     assert "1e-06" in sql  # very small tolerance is rendered
