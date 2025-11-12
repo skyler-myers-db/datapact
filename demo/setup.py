@@ -11,17 +11,17 @@ import argparse
 import os
 import re
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
-from datetime import timedelta, datetime
+
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import sql as sql_service
 from loguru import logger
 
+from datapact.client import resolve_warehouse_name
 
-def get_warehouse_by_name(
-    w: WorkspaceClient, name: str
-) -> Optional[sql_service.EndpointInfo]:
+
+def get_warehouse_by_name(w: WorkspaceClient, name: str) -> sql_service.EndpointInfo | None:
     """
     Finds a SQL warehouse by its display name.
 
@@ -48,49 +48,13 @@ def parse_args() -> argparse.Namespace:
             --warehouse (str, optional): Name of the Serverless SQL Warehouse. Overrides all other settings.
             --profile (str, optional): Databricks CLI profile to use. Defaults to "DEFAULT".
     """
-    parser = argparse.ArgumentParser(
-        description="Set up the DataPact demo environment."
-    )
+    parser = argparse.ArgumentParser(description="Set up the DataPact demo environment.")
     parser.add_argument(
         "--warehouse",
         help="Name of the Serverless SQL Warehouse. Overrides all other settings.",
     )
-    parser.add_argument(
-        "--profile", default="DEFAULT", help="Databricks CLI profile to use."
-    )
+    parser.add_argument("--profile", default="DEFAULT", help="Databricks CLI profile to use.")
     return parser.parse_args()
-
-
-def resolve_warehouse_name(args, w: WorkspaceClient) -> str:
-    """
-    Resolves the warehouse name from command-line arguments, environment variables, or Databricks config.
-
-    The function checks for the warehouse name in the following order:
-    1. The `--warehouse` argument provided in `args`.
-    2. The `DATAPACT_WAREHOUSE` environment variable.
-    3. The `datapact_warehouse` attribute in the Databricks config profile (`w.config`).
-
-    Args:
-        args: An object with a `warehouse` attribute, typically parsed from command-line arguments.
-        w (WorkspaceClient): A Databricks WorkspaceClient instance with a `config` attribute.
-
-    Returns:
-        str: The resolved warehouse name.
-
-    Raises:
-        ValueError: If the warehouse name cannot be determined from any of the sources.
-    """
-    warehouse_name = args.warehouse
-    if not warehouse_name:
-        warehouse_name = os.getenv("DATAPACT_WAREHOUSE")
-        if not warehouse_name and hasattr(w.config, "datapact_warehouse"):
-            warehouse_name = w.config.datapact_warehouse
-    if not warehouse_name:
-        raise ValueError(
-            "A warehouse must be provided via the --warehouse flag, the DATAPACT_WAREHOUSE "
-            "environment variable, or a 'datapact_warehouse' key in your Databricks config profile."
-        )
-    return warehouse_name
 
 
 def read_sql_commands(sql_file_path: Path) -> list[str]:
@@ -104,16 +68,14 @@ def read_sql_commands(sql_file_path: Path) -> list[str]:
         list[str]: A list of SQL command strings, with comments removed and whitespace trimmed.
     """
     logger.info(f"Reading and parsing setup script from: {sql_file_path}")
-    with open(sql_file_path, "r", encoding="utf-8") as f:
+    with open(sql_file_path, encoding="utf-8") as f:
         sql_script = f.read()
     sql_script = re.sub(r"/\*.*?\*/", "", sql_script, flags=re.DOTALL)
     sql_script = re.sub(r"--.*", "", sql_script)
     return [cmd.strip() for cmd in sql_script.split(";") if cmd.strip()]
 
 
-def execute_sql_commands(
-    w: WorkspaceClient, warehouse, sql_commands: list[str]
-) -> None:
+def execute_sql_commands(w: WorkspaceClient, warehouse, sql_commands: list[str]) -> None:
     """
     Executes a list of SQL commands sequentially on a specified warehouse using the provided WorkspaceClient.
 
@@ -130,9 +92,7 @@ def execute_sql_commands(
         Exception: If a statement fails, is canceled, closed, or encounters an error during execution.
         TimeoutError: If a statement does not complete within the allotted timeout period.
     """
-    logger.info(
-        f"Found {len(sql_commands)} individual SQL statements to execute sequentially."
-    )
+    logger.info(f"Found {len(sql_commands)} individual SQL statements to execute sequentially.")
     logger.info(
         "Creating hyperscale demo data (25M+ financial transactions, 15M sessions, 12M streaming events)..."
     )
@@ -180,9 +140,7 @@ def execute_sql_commands(
                     sql_service.StatementState.CLOSED,
                 ]:
                     error = status.status.error
-                    error_message = (
-                        error.message if error else "No error message provided."
-                    )
+                    error_message = error.message if error else "No error message provided."
                     raise RuntimeError(
                         f"Statement {i + 1} failed with state {current_state}. Reason: {error_message}"
                     )
@@ -279,17 +237,13 @@ def run_demo_setup() -> None:
     # Configure longer timeout for enterprise-scale data operations
     from databricks.sdk.config import Config
 
-    config = Config(
-        profile=profile_name, http_timeout_seconds=1200
-    )  # 20 minute timeout
+    config = Config(profile=profile_name, http_timeout_seconds=1200)  # 20 minute timeout
     w = WorkspaceClient(config=config)
-    warehouse_name = resolve_warehouse_name(args, w)
+    warehouse_name = resolve_warehouse_name(workspace_client=w, explicit_name=args.warehouse)
     logger.info(f"Using warehouse: {warehouse_name}")
     warehouse = get_warehouse_by_name(w, warehouse_name)
     if not warehouse:
-        logger.critical(
-            f"Failed to find warehouse '{warehouse_name}'. Please ensure it exists."
-        )
+        logger.critical(f"Failed to find warehouse '{warehouse_name}'. Please ensure it exists.")
         return
     logger.info(f"Found warehouse '{warehouse_name}' (ID: {warehouse.id}).")
     sql_file_path = Path(__file__).parent / "setup.sql"

@@ -10,11 +10,17 @@ features work correctly together, including:
 
 import json
 from unittest.mock import MagicMock, patch
+
 import pytest
 from databricks.sdk.errors import NotFound
 
 from datapact.client import DataPactClient
-from datapact.config import DataPactConfig, ValidationTask
+from datapact.config import (
+    AggValidation,
+    AggValidationDetail,
+    DataPactConfig,
+    ValidationTask,
+)
 
 
 class TestVisualizationIntegration:
@@ -26,9 +32,7 @@ class TestVisualizationIntegration:
         with patch("datapact.client.WorkspaceClient") as mock_ws:
             mock_ws_instance = MagicMock()
             mock_ws.return_value = mock_ws_instance
-            mock_ws_instance.current_user.me.return_value = MagicMock(
-                user_name="test_user"
-            )
+            mock_ws_instance.current_user.me.return_value = MagicMock(user_name="test_user")
             mock_ws_instance.workspace.mkdirs = MagicMock()
             mock_ws_instance.config.host = "https://test.databricks.com"
 
@@ -54,14 +58,12 @@ class TestVisualizationIntegration:
                     pk_hash_tolerance=0.05,
                     null_validation_columns=["email", "phone"],
                     null_validation_tolerance=0.1,
-                    uniqueness_validation_columns=["email"],
-                    aggregations=[
-                        {
-                            "column": "total_spent",
-                            "type": "SUM",
-                            "group_by": ["region"],
-                            "tolerance": 0.02,
-                        }
+                    uniqueness_columns=["email"],
+                    agg_validations=[
+                        AggValidation(
+                            column="total_spent",
+                            validations=[AggValidationDetail(agg="SUM", tolerance=0.02)],
+                        )
                     ],
                 ),
                 ValidationTask(
@@ -95,9 +97,7 @@ class TestVisualizationIntegration:
         """Test complete dashboard creation with all visualization features."""
         # Setup mocks
         mock_client.w.workspace.mkdirs = MagicMock()
-        mock_client.w.workspace.get_status = MagicMock(
-            side_effect=NotFound("Not found")
-        )
+        mock_client.w.workspace.get_status = MagicMock(side_effect=NotFound("Not found"))
         mock_client.w.lakeview.create = MagicMock(
             return_value=MagicMock(dashboard_id="test_dashboard_id")
         )
@@ -135,9 +135,7 @@ class TestVisualizationIntegration:
             "ds_business_impact",
             "ds_validation_details",
         }
-        assert expected_datasets.issubset(dataset_names), (
-            "All required datasets should be present"
-        )
+        assert expected_datasets.issubset(dataset_names), "All required datasets should be present"
 
         # Verify all widget types are present
         widget_types = set()
@@ -149,17 +147,13 @@ class TestVisualizationIntegration:
                     widget_types.add(widget_type)
 
         expected_widget_types = {"counter", "pie", "line", "bar", "table"}
-        assert expected_widget_types.issubset(widget_types), (
-            "All widget types should be present"
-        )
+        assert expected_widget_types.issubset(widget_types), "All widget types should be present"
 
     def test_sql_queries_handle_json_extraction_correctly(self, mock_client):
         """Test that SQL queries properly extract data from JSON payloads."""
         # Setup mocks
         mock_client.w.workspace.mkdirs = MagicMock()
-        mock_client.w.workspace.get_status = MagicMock(
-            side_effect=NotFound("Not found")
-        )
+        mock_client.w.workspace.get_status = MagicMock(side_effect=NotFound("Not found"))
         mock_client.w.lakeview.create = MagicMock(
             return_value=MagicMock(dashboard_id="test_dashboard_id")
         )
@@ -198,9 +192,7 @@ class TestVisualizationIntegration:
         """Test that KPI metrics use correct calculations."""
         # Setup mocks
         mock_client.w.workspace.mkdirs = MagicMock()
-        mock_client.w.workspace.get_status = MagicMock(
-            side_effect=NotFound("Not found")
-        )
+        mock_client.w.workspace.get_status = MagicMock(side_effect=NotFound("Not found"))
         mock_client.w.lakeview.create = MagicMock(
             return_value=MagicMock(dashboard_id="test_dashboard_id")
         )
@@ -242,9 +234,7 @@ class TestVisualizationIntegration:
         """Test that failure classification uses correct JSON field names."""
         # Setup mocks
         mock_client.w.workspace.mkdirs = MagicMock()
-        mock_client.w.workspace.get_status = MagicMock(
-            side_effect=NotFound("Not found")
-        )
+        mock_client.w.workspace.get_status = MagicMock(side_effect=NotFound("Not found"))
         mock_client.w.lakeview.create = MagicMock(
             return_value=MagicMock(dashboard_id="test_dashboard_id")
         )
@@ -264,11 +254,7 @@ class TestVisualizationIntegration:
 
         # Find failures by type dataset
         failures_dataset = next(
-            (
-                ds
-                for ds in dashboard_json["datasets"]
-                if ds["name"] == "ds_failures_by_type"
-            ),
+            (ds for ds in dashboard_json["datasets"] if ds["name"] == "ds_failures_by_type"),
             None,
         )
 
@@ -281,20 +267,14 @@ class TestVisualizationIntegration:
             "Should use row_hash_validation not pk_hash_validation"
         )
         assert "null_validation_" in query, "Should check for null validation failures"
-        assert "uniqueness_validation_" in query, (
-            "Should check for uniqueness validation failures"
-        )
-        assert "agg_validation_" in query, (
-            "Should check for aggregation validation failures"
-        )
+        assert "uniqueness_validation_" in query, "Should check for uniqueness validation failures"
+        assert "agg_validation_" in query, "Should check for aggregation validation failures"
 
     def test_widget_configurations_match_datasets(self, mock_client):
         """Test that widget configurations correctly reference their datasets."""
         # Setup mocks
         mock_client.w.workspace.mkdirs = MagicMock()
-        mock_client.w.workspace.get_status = MagicMock(
-            side_effect=NotFound("Not found")
-        )
+        mock_client.w.workspace.get_status = MagicMock(side_effect=NotFound("Not found"))
         mock_client.w.lakeview.create = MagicMock(
             return_value=MagicMock(dashboard_id="test_dashboard_id")
         )
@@ -330,9 +310,7 @@ class TestVisualizationIntegration:
         """Test that dashboard filters are correctly set up."""
         # Setup mocks
         mock_client.w.workspace.mkdirs = MagicMock()
-        mock_client.w.workspace.get_status = MagicMock(
-            side_effect=NotFound("Not found")
-        )
+        mock_client.w.workspace.get_status = MagicMock(side_effect=NotFound("Not found"))
         mock_client.w.lakeview.create = MagicMock(
             return_value=MagicMock(dashboard_id="test_dashboard_id")
         )
@@ -369,9 +347,7 @@ class TestVisualizationIntegration:
         """Test that counter widgets use appropriate formats for their values."""
         # Setup mocks
         mock_client.w.workspace.mkdirs = MagicMock()
-        mock_client.w.workspace.get_status = MagicMock(
-            side_effect=NotFound("Not found")
-        )
+        mock_client.w.workspace.get_status = MagicMock(side_effect=NotFound("Not found"))
         mock_client.w.lakeview.create = MagicMock(
             return_value=MagicMock(dashboard_id="test_dashboard_id")
         )
@@ -411,9 +387,7 @@ class TestVisualizationIntegration:
         """Test that Business Impact Assessment correctly groups by schema."""
         # Setup mocks
         mock_client.w.workspace.mkdirs = MagicMock()
-        mock_client.w.workspace.get_status = MagicMock(
-            side_effect=NotFound("Not found")
-        )
+        mock_client.w.workspace.get_status = MagicMock(side_effect=NotFound("Not found"))
         mock_client.w.lakeview.create = MagicMock(
             return_value=MagicMock(dashboard_id="test_dashboard_id")
         )
@@ -433,11 +407,7 @@ class TestVisualizationIntegration:
 
         # Find Business Impact dataset
         business_impact = next(
-            (
-                ds
-                for ds in dashboard_json["datasets"]
-                if ds["name"] == "ds_business_impact"
-            ),
+            (ds for ds in dashboard_json["datasets"] if ds["name"] == "ds_business_impact"),
             None,
         )
 

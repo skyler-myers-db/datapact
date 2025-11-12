@@ -4,6 +4,7 @@ This test module validates that the dashboard SQL queries are correctly formed.
 """
 
 from unittest.mock import MagicMock, patch
+
 from datapact.client import DataPactClient
 
 
@@ -20,13 +21,9 @@ class TestDashboardQueryFixes:
             client.w = MagicMock()
             client.w.workspace = MagicMock()
             client.w.workspace.mkdirs = MagicMock()
-            client.w.workspace.get_status = MagicMock(
-                side_effect=Exception("Not found")
-            )
+            client.w.workspace.get_status = MagicMock(side_effect=Exception("Not found"))
             client.w.lakeview = MagicMock()
-            client.w.lakeview.create = MagicMock(
-                return_value=MagicMock(dashboard_id="test_id")
-            )
+            client.w.lakeview.create = MagicMock(return_value=MagicMock(dashboard_id="test_id"))
             client.w.lakeview.publish = MagicMock()
             client.user_name = "test_user"
             client.root_path = "/test"
@@ -40,9 +37,7 @@ class TestDashboardQueryFixes:
 
             # Get the dashboard payload from the create call
             create_call = client.w.lakeview.create.call_args
-            dashboard_obj = create_call[0][
-                0
-            ]  # First positional argument is the Dashboard object
+            dashboard_obj = create_call[0][0]  # First positional argument is the Dashboard object
             dashboard_json = dashboard_obj.serialized_dashboard
 
             import json
@@ -59,9 +54,7 @@ class TestDashboardQueryFixes:
             assert "exec_run_summary" in kpi_query
 
             # Test 1: Validation details should check individual validation statuses
-            validation_details = next(
-                d for d in datasets if d["name"] == "ds_validation_details"
-            )
+            validation_details = next(d for d in datasets if d["name"] == "ds_validation_details")
             query = (
                 " ".join(validation_details["queryLines"])
                 if "queryLines" in validation_details
@@ -82,9 +75,7 @@ class TestDashboardQueryFixes:
                 or "to_json(result_payload) LIKE '%null_validation%FAIL%'" in query
             )
             assert "to_json(result_payload) LIKE '%agg_validation%FAIL%'" in query
-            assert (
-                "to_json(result_payload) LIKE '%custom_sql_validation%FAIL%'" in query
-            )
+            assert "to_json(result_payload) LIKE '%custom_sql_validation%FAIL%'" in query
             assert "WITH latest_run AS" in query
             assert (
                 "row_number() over (partition by task_key order by job_start_ts desc, run_id desc)"
@@ -116,9 +107,7 @@ class TestDashboardQueryFixes:
             assert "business_priority" in query
             assert "estimated_impact_usd" in query
 
-            failures_by_type = next(
-                d for d in datasets if d["name"] == "ds_failures_by_type"
-            )
+            failures_by_type = next(d for d in datasets if d["name"] == "ds_failures_by_type")
             failure_query = (
                 " ".join(failures_by_type["queryLines"])
                 if "queryLines" in failures_by_type
@@ -127,9 +116,7 @@ class TestDashboardQueryFixes:
             assert "'Custom SQL Mismatch' AS validation_type" in failure_query
 
             # Test 4: Business impact should handle null schemas gracefully
-            business_impact = next(
-                d for d in datasets if d["name"] == "ds_business_impact"
-            )
+            business_impact = next(d for d in datasets if d["name"] == "ds_business_impact")
             bi_query = (
                 " ".join(business_impact["queryLines"])
                 if "queryLines" in business_impact
@@ -138,9 +125,7 @@ class TestDashboardQueryFixes:
             assert "business_domain" in bi_query
             assert "sla_profile" in bi_query
 
-            owner_dataset = next(
-                d for d in datasets if d["name"] == "ds_owner_accountability"
-            )
+            owner_dataset = next(d for d in datasets if d["name"] == "ds_owner_accountability")
             owner_query = (
                 " ".join(owner_dataset["queryLines"])
                 if "queryLines" in owner_dataset
@@ -150,9 +135,7 @@ class TestDashboardQueryFixes:
             assert "business_owner" in owner_query
             assert "potential_impact_usd" in owner_query
 
-            priority_dataset = next(
-                d for d in datasets if d["name"] == "ds_priority_profile"
-            )
+            priority_dataset = next(d for d in datasets if d["name"] == "ds_priority_profile")
             priority_query = (
                 " ".join(priority_dataset["queryLines"])
                 if "queryLines" in priority_dataset
@@ -162,24 +145,18 @@ class TestDashboardQueryFixes:
             assert "business_priority" in priority_query
 
             # Test 5: Exploded checks should not have UDTF alias mismatch
-            exploded_checks = next(
-                d for d in datasets if d["name"] == "ds_exploded_checks"
-            )
+            exploded_checks = next(d for d in datasets if d["name"] == "ds_exploded_checks")
             ec_query = (
                 " ".join(exploded_checks["queryLines"])
                 if "queryLines" in exploded_checks
                 else exploded_checks.get("query", "")
             )
             # Should use dynamic extraction with from_json
-            assert (
-                "from_json(to_json(result_payload), 'map<string,string>')" in ec_query
-            )
+            assert "from_json(to_json(result_payload), 'map<string,string>')" in ec_query
             assert "WHERE key LIKE 'agg_validation_%'" in ec_query
 
             # Test 6: Latest run details should be renamed
-            latest_run = next(
-                d for d in datasets if d["name"] == "ds_latest_run_details"
-            )
+            latest_run = next(d for d in datasets if d["name"] == "ds_latest_run_details")
             assert latest_run["displayName"] == "All Run Details"
 
             # Should use result_payload not payload_json
@@ -195,19 +172,14 @@ class TestDashboardQueryFixes:
 
             # Main page should have status filter
             main_page = next(p for p in pages if p["name"] == "main_page")
-            assert any(
-                "status" in f.get("field", "").lower()
-                for f in main_page.get("filters", [])
-            )
+            assert any("status" in f.get("field", "").lower() for f in main_page.get("filters", []))
 
             # Details page should have status filter
             details_page = next(p for p in pages if p["name"] == "details_page")
             details_filters = details_page.get("filters", [])
             # Check if filters were added
             if details_filters:
-                assert any(
-                    f["name"] == "status_filter_details" for f in details_filters
-                )
+                assert any(f["name"] == "status_filter_details" for f in details_filters)
 
             # Test 8: Details page widget should have payload field
             details_widget = details_page["layout"][0]["widget"]
@@ -230,13 +202,9 @@ class TestDashboardQueryFixes:
             client.w = MagicMock()
             client.w.workspace = MagicMock()
             client.w.workspace.mkdirs = MagicMock()
-            client.w.workspace.get_status = MagicMock(
-                side_effect=Exception("Not found")
-            )
+            client.w.workspace.get_status = MagicMock(side_effect=Exception("Not found"))
             client.w.lakeview = MagicMock()
-            client.w.lakeview.create = MagicMock(
-                return_value=MagicMock(dashboard_id="test_id")
-            )
+            client.w.lakeview.create = MagicMock(return_value=MagicMock(dashboard_id="test_id"))
             client.w.lakeview.publish = MagicMock()
             client.user_name = "test_user"
             client.root_path = "/test"
@@ -281,13 +249,9 @@ class TestDashboardQueryFixes:
             client.w = MagicMock()
             client.w.workspace = MagicMock()
             client.w.workspace.mkdirs = MagicMock()
-            client.w.workspace.get_status = MagicMock(
-                side_effect=Exception("Not found")
-            )
+            client.w.workspace.get_status = MagicMock(side_effect=Exception("Not found"))
             client.w.lakeview = MagicMock()
-            client.w.lakeview.create = MagicMock(
-                return_value=MagicMock(dashboard_id="test_id")
-            )
+            client.w.lakeview.create = MagicMock(return_value=MagicMock(dashboard_id="test_id"))
             client.w.lakeview.publish = MagicMock()
             client.user_name = "test_user"
             client.root_path = "/test"
@@ -309,9 +273,7 @@ class TestDashboardQueryFixes:
             datasets = dashboard["datasets"]
 
             # Check exploded checks includes all validation types
-            exploded_checks = next(
-                d for d in datasets if d["name"] == "ds_exploded_checks"
-            )
+            exploded_checks = next(d for d in datasets if d["name"] == "ds_exploded_checks")
             query = (
                 " ".join(exploded_checks["queryLines"])
                 if "queryLines" in exploded_checks

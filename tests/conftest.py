@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import os
 import sys
+
 import pytest
 
 os.environ.setdefault("DATAPACT_SKIP_EXEC_SUMMARY_BOOTSTRAP", "1")
 
 
-MIN_PY = (3, 13, 5)
+MIN_PY = (3, 11, 0)
 
 
 def pytest_collection_modifyitems(config, items):

@@ -1,12 +1,13 @@
 """Test SQL security functions to prevent injection attacks."""
 
 import pytest
+
 from datapact.sql_utils import (
+    build_safe_filter,
     escape_sql_identifier,
     escape_sql_string,
-    validate_job_name,
-    build_safe_filter,
     make_sql_identifier,
+    validate_job_name,
 )
 
 
@@ -31,9 +32,7 @@ class TestSQLSecurity:
         """Test escaping SQL string values."""
         assert escape_sql_string("normal string") == "'normal string'"
         assert escape_sql_string("string with 'quotes'") == "'string with ''quotes'''"
-        assert (
-            escape_sql_string("'; DROP TABLE users; --") == "'''; DROP TABLE users; --'"
-        )
+        assert escape_sql_string("'; DROP TABLE users; --") == "'''; DROP TABLE users; --'"
         assert escape_sql_string("O'Reilly") == "'O''Reilly'"
 
     def test_validate_job_name_valid(self):
@@ -41,9 +40,7 @@ class TestSQLSecurity:
         assert validate_job_name("My Job") == "My Job"
         assert validate_job_name("job_123") == "job_123"
         assert validate_job_name("test-job.v2") == "test-job.v2"
-        assert (
-            validate_job_name("Data Validation Job 2024") == "Data Validation Job 2024"
-        )
+        assert validate_job_name("Data Validation Job 2024") == "Data Validation Job 2024"
 
     def test_validate_job_name_invalid(self):
         """Test that invalid job names raise errors."""
@@ -76,10 +73,7 @@ class TestSQLSecurity:
 
         # NULL values
         assert build_safe_filter("optional_field", None) == "`optional_field` IS NULL"
-        assert (
-            build_safe_filter("required_field", None, "!=")
-            == "`required_field` IS NOT NULL"
-        )
+        assert build_safe_filter("required_field", None, "!=") == "`required_field` IS NOT NULL"
 
         # LIKE operator
         assert build_safe_filter("name", "%john%", "LIKE") == "`name` LIKE '%john%'"
@@ -110,14 +104,13 @@ class TestSQLSecurity:
 
         # These should all be safe to use in queries now
         safe_query = f"SELECT * FROM table WHERE name = {escaped}"
-        assert (
-            "DROP TABLE" not in safe_query or "''" in safe_query
-        )  # DROP TABLE is escaped
+        assert "DROP TABLE" not in safe_query or "''" in safe_query  # DROP TABLE is escaped
 
     def test_genie_room_sql_is_safe(self):
         """Test that Genie room SQL generation uses safe escaping."""
-        from datapact.client import DataPactClient
         from unittest.mock import MagicMock, patch
+
+        from datapact.client import DataPactClient
 
         with patch("datapact.client.WorkspaceClient") as mock_ws:
             mock_ws_instance = MagicMock()
@@ -135,7 +128,7 @@ class TestSQLSecurity:
             try:
                 sql = client._generate_genie_room_sql(results_table, job_name)
                 # Should fail validation
-                assert False, "Should have raised ValueError for invalid job name"
+                raise AssertionError("Should have raised ValueError for invalid job name")
             except ValueError as e:
                 assert "Invalid job name" in str(e)
 

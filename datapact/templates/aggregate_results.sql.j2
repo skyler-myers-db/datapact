@@ -10,7 +10,11 @@
 {% macro fq(name) -%}
 `{{ catalog }}`.`{{ schema }}`.`{{ name }}`
 {%- endmacro %}
-{% set run_id_literal = run_id_literal | default("CAST('{{job.run_id}}' AS BIGINT)") %}
+{% if run_id_literal is not defined %}
+{% set run_id_literal %}
+{% raw %}{{run_id}}{% endraw %}
+{% endset %}
+{% endif %}
 
 CREATE OR REPLACE TEMP VIEW agg_run_results AS
 SELECT *

@@ -41,9 +41,7 @@ def test_snapshot_full():
         "hash_columns": ["id", "v"],
         "null_validation_tolerance": 0.02,
         "null_validation_columns": ["v"],
-        "agg_validations": [
-            {"column": "v", "validations": [{"agg": "sum", "tolerance": 0.05}]}
-        ],
+        "agg_validations": [{"column": "v", "validations": [{"agg": "sum", "tolerance": 0.05}]}],
         "results_table": "`datapact`.`results`.`run_history`",
         "job_name": "job_name_here",
     }

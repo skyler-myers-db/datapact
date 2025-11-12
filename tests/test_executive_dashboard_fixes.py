@@ -3,9 +3,9 @@ Comprehensive tests for executive dashboard fixes and enhancements.
 Tests all recent fixes from an executive stakeholder perspective.
 """
 
+import importlib
 import json
 from unittest.mock import MagicMock, patch
-import importlib
 
 
 class TestExecutiveDashboardFixes:
@@ -90,10 +90,7 @@ class TestExecutiveDashboardFixes:
         sql = template.render(**payload)
 
         # Check for the fix: CASE WHEN source = 0 AND target > 0 THEN 100.0
-        assert (
-            "CASE WHEN source_nulls_col1 = 0 AND target_nulls_col1 > 0 THEN 100.0"
-            in sql
-        )
+        assert "CASE WHEN source_nulls_col1 = 0 AND target_nulls_col1 > 0 THEN 100.0" in sql
 
     def test_dashboard_total_validations_count(self):
         """Test that Total Validations widget counts all validations correctly."""
@@ -105,13 +102,9 @@ class TestExecutiveDashboardFixes:
             client.w = MagicMock()
             client.w.workspace = MagicMock()
             client.w.workspace.mkdirs = MagicMock()
-            client.w.workspace.get_status = MagicMock(
-                side_effect=Exception("Not found")
-            )
+            client.w.workspace.get_status = MagicMock(side_effect=Exception("Not found"))
             client.w.lakeview = MagicMock()
-            client.w.lakeview.create = MagicMock(
-                return_value=MagicMock(dashboard_id="test_id")
-            )
+            client.w.lakeview.create = MagicMock(return_value=MagicMock(dashboard_id="test_id"))
             client.w.lakeview.publish = MagicMock()
             client.user_name = "test_user"
             client.root_path = "/test"
@@ -128,9 +121,7 @@ class TestExecutiveDashboardFixes:
             dashboard = json.loads(dashboard_json)
 
             # Find the KPI dataset
-            kpi_dataset = next(
-                d for d in dashboard["datasets"] if d["name"] == "ds_kpi"
-            )
+            kpi_dataset = next(d for d in dashboard["datasets"] if d["name"] == "ds_kpi")
             query = " ".join(kpi_dataset["queryLines"])
 
             # Should source metrics from the aggregated run summary table
@@ -147,14 +138,11 @@ class TestExecutiveDashboardFixes:
             # Find the Total Validations widget
             for widget_def in widgets:
                 widget = widget_def.get("widget", {})
-                if (
-                    widget.get("spec", {}).get("frame", {}).get("title")
-                    == "Total Validations"
-                ):
+                if widget.get("spec", {}).get("frame", {}).get("title") == "Total Validations":
                     assert True
                     break
             else:
-                assert False, "Total Validations widget not found"
+                raise AssertionError("Total Validations widget not found")
 
     def test_validation_status_display_simplified(self):
         """Test that validation status shows clear checkmarks or X marks."""
@@ -166,13 +154,9 @@ class TestExecutiveDashboardFixes:
             client.w = MagicMock()
             client.w.workspace = MagicMock()
             client.w.workspace.mkdirs = MagicMock()
-            client.w.workspace.get_status = MagicMock(
-                side_effect=Exception("Not found")
-            )
+            client.w.workspace.get_status = MagicMock(side_effect=Exception("Not found"))
             client.w.lakeview = MagicMock()
-            client.w.lakeview.create = MagicMock(
-                return_value=MagicMock(dashboard_id="test_id")
-            )
+            client.w.lakeview.create = MagicMock(return_value=MagicMock(dashboard_id="test_id"))
             client.w.lakeview.publish = MagicMock()
             client.user_name = "test_user"
             client.root_path = "/test"
@@ -211,13 +195,9 @@ class TestExecutiveDashboardFixes:
             client.w = MagicMock()
             client.w.workspace = MagicMock()
             client.w.workspace.mkdirs = MagicMock()
-            client.w.workspace.get_status = MagicMock(
-                side_effect=Exception("Not found")
-            )
+            client.w.workspace.get_status = MagicMock(side_effect=Exception("Not found"))
             client.w.lakeview = MagicMock()
-            client.w.lakeview.create = MagicMock(
-                return_value=MagicMock(dashboard_id="test_id")
-            )
+            client.w.lakeview.create = MagicMock(return_value=MagicMock(dashboard_id="test_id"))
             client.w.lakeview.publish = MagicMock()
             client.user_name = "test_user"
             client.root_path = "/test"
@@ -258,9 +238,7 @@ class TestExecutiveDashboardFixes:
                     ]
                     for check in check_columns:
                         if check in column_names:
-                            assert column_names.index(check) < column_names.index(
-                                "source_table"
-                            )
+                            assert column_names.index(check) < column_names.index("source_table")
                     break
 
     def test_schema_quality_summary_clarity(self):
@@ -273,13 +251,9 @@ class TestExecutiveDashboardFixes:
             client.w = MagicMock()
             client.w.workspace = MagicMock()
             client.w.workspace.mkdirs = MagicMock()
-            client.w.workspace.get_status = MagicMock(
-                side_effect=Exception("Not found")
-            )
+            client.w.workspace.get_status = MagicMock(side_effect=Exception("Not found"))
             client.w.lakeview = MagicMock()
-            client.w.lakeview.create = MagicMock(
-                return_value=MagicMock(dashboard_id="test_id")
-            )
+            client.w.lakeview.create = MagicMock(return_value=MagicMock(dashboard_id="test_id"))
             client.w.lakeview.publish = MagicMock()
             client.user_name = "test_user"
             client.root_path = "/test"
@@ -316,13 +290,9 @@ class TestExecutiveDashboardFixes:
             client.w = MagicMock()
             client.w.workspace = MagicMock()
             client.w.workspace.mkdirs = MagicMock()
-            client.w.workspace.get_status = MagicMock(
-                side_effect=Exception("Not found")
-            )
+            client.w.workspace.get_status = MagicMock(side_effect=Exception("Not found"))
             client.w.lakeview = MagicMock()
-            client.w.lakeview.create = MagicMock(
-                return_value=MagicMock(dashboard_id="test_id")
-            )
+            client.w.lakeview.create = MagicMock(return_value=MagicMock(dashboard_id="test_id"))
             client.w.lakeview.publish = MagicMock()
             client.user_name = "test_user"
             client.root_path = "/test"
@@ -339,9 +309,7 @@ class TestExecutiveDashboardFixes:
             dashboard = json.loads(dashboard_json)
 
             # Find exploded checks dataset
-            exploded = next(
-                d for d in dashboard["datasets"] if d["name"] == "ds_exploded_checks"
-            )
+            exploded = next(d for d in dashboard["datasets"] if d["name"] == "ds_exploded_checks")
             query = " ".join(exploded["queryLines"])
 
             # Should use new dynamic extraction approach
@@ -359,13 +327,9 @@ class TestExecutiveDashboardFixes:
             client.w = MagicMock()
             client.w.workspace = MagicMock()
             client.w.workspace.mkdirs = MagicMock()
-            client.w.workspace.get_status = MagicMock(
-                side_effect=Exception("Not found")
-            )
+            client.w.workspace.get_status = MagicMock(side_effect=Exception("Not found"))
             client.w.lakeview = MagicMock()
-            client.w.lakeview.create = MagicMock(
-                return_value=MagicMock(dashboard_id="test_id")
-            )
+            client.w.lakeview.create = MagicMock(return_value=MagicMock(dashboard_id="test_id"))
             client.w.lakeview.publish = MagicMock()
             client.user_name = "test_user"
             client.root_path = "/test"
@@ -382,9 +346,7 @@ class TestExecutiveDashboardFixes:
             dashboard = json.loads(dashboard_json)
 
             # Check KPI metrics
-            kpi_dataset = next(
-                d for d in dashboard["datasets"] if d["name"] == "ds_kpi"
-            )
+            kpi_dataset = next(d for d in dashboard["datasets"] if d["name"] == "ds_kpi")
             query = " ".join(kpi_dataset["queryLines"])
 
             # Should have executive-friendly metrics
@@ -410,9 +372,7 @@ class TestExecutiveDashboardFixes:
             assert "sla_profile" in impact_query
 
             owner_dataset = next(
-                d
-                for d in dashboard["datasets"]
-                if d["name"] == "ds_owner_accountability"
+                d for d in dashboard["datasets"] if d["name"] == "ds_owner_accountability"
             )
             owner_query = " ".join(owner_dataset["queryLines"])
             assert "WITH latest_run_ts AS" in owner_query
@@ -433,13 +393,9 @@ class TestExecutiveUsability:
             client.w = MagicMock()
             client.w.workspace = MagicMock()
             client.w.workspace.mkdirs = MagicMock()
-            client.w.workspace.get_status = MagicMock(
-                side_effect=Exception("Not found")
-            )
+            client.w.workspace.get_status = MagicMock(side_effect=Exception("Not found"))
             client.w.lakeview = MagicMock()
-            client.w.lakeview.create = MagicMock(
-                return_value=MagicMock(dashboard_id="test_id")
-            )
+            client.w.lakeview.create = MagicMock(return_value=MagicMock(dashboard_id="test_id"))
             client.w.lakeview.publish = MagicMock()
             client.user_name = "test_user"
             client.root_path = "/test"
@@ -486,13 +442,9 @@ class TestExecutiveUsability:
             client.w = MagicMock()
             client.w.workspace = MagicMock()
             client.w.workspace.mkdirs = MagicMock()
-            client.w.workspace.get_status = MagicMock(
-                side_effect=Exception("Not found")
-            )
+            client.w.workspace.get_status = MagicMock(side_effect=Exception("Not found"))
             client.w.lakeview = MagicMock()
-            client.w.lakeview.create = MagicMock(
-                return_value=MagicMock(dashboard_id="test_id")
-            )
+            client.w.lakeview.create = MagicMock(return_value=MagicMock(dashboard_id="test_id"))
             client.w.lakeview.publish = MagicMock()
             client.user_name = "test_user"
             client.root_path = "/test"
@@ -515,10 +467,7 @@ class TestExecutiveUsability:
             widget_titles = []
             for widget_def in main_page["layout"]:
                 title = (
-                    widget_def.get("widget", {})
-                    .get("spec", {})
-                    .get("frame", {})
-                    .get("title", "")
+                    widget_def.get("widget", {}).get("spec", {}).get("frame", {}).get("title", "")
                 )
                 widget_titles.append(title)
 

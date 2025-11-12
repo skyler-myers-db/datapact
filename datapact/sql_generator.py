@@ -8,9 +8,8 @@ from __future__ import annotations
 
 from jinja2 import Environment
 
-from .sql_utils import make_sql_identifier
-
 from .config import ValidationTask
+from .sql_utils import make_sql_identifier
 
 
 def render_validation_sql(

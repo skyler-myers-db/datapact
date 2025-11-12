@@ -3,11 +3,12 @@
 # pylint: disable=protected-access
 
 from datetime import datetime
-from unittest.mock import Mock, patch, call
+from unittest.mock import Mock, call, patch
 
 import pytest
-from databricks.sdk.service import sql as sql_service, jobs
 from databricks.sdk.errors import NotFound
+from databricks.sdk.service import jobs
+from databricks.sdk.service import sql as sql_service
 
 from datapact.client import DataPactClient
 from datapact.config import DataPactConfig, ValidationTask
@@ -45,10 +46,7 @@ class TestDataPactClientInit:
             client = DataPactClient(profile="SP")
 
             assert client.user_name == "12345678-1234-1234-1234-123456789012"
-            assert (
-                client.root_path
-                == "/Users/12345678-1234-1234-1234-123456789012/datapact"
-            )
+            assert client.root_path == "/Users/12345678-1234-1234-1234-123456789012/datapact"
 
 
 class TestExecuteSql:
@@ -92,9 +90,7 @@ class TestExecuteSql:
         mock_status.status.error.message = "SQL syntax error"
         client.w.statement_execution.get_statement.return_value = mock_status
 
-        with pytest.raises(
-            RuntimeError, match="SQL execution failed: SQL syntax error"
-        ):
+        with pytest.raises(RuntimeError, match="SQL execution failed: SQL syntax error"):
             client._execute_sql("SELECT bad", "warehouse-123")
 
     def test_execute_sql_timeout(self):
@@ -299,20 +295,14 @@ class TestUploadSqlScripts:
             ]
         )
 
-        asset_paths = client._upload_sql_scripts(
-            config, "`results`.`table`", "Test Job"
-        )
+        asset_paths = client._upload_sql_scripts(config, "`results`.`table`", "Test Job")
 
         assert "task1" in asset_paths
         assert "task2" in asset_paths
         assert "aggregate_results" in asset_paths
         assert "setup_genie_datasets" in asset_paths  # Genie datasets setup task
-        assert (
-            asset_paths["task1"] == "/Users/test/datapact/job_assets/Test Job/task1.sql"
-        )
-        assert (
-            client.w.workspace.upload.call_count == 4
-        )  # 2 tasks + 1 aggregate + 1 genie datasets
+        assert asset_paths["task1"] == "/Users/test/datapact/job_assets/Test Job/task1.sql"
+        assert client.w.workspace.upload.call_count == 4  # 2 tasks + 1 aggregate + 1 genie datasets
 
 
 class TestRunValidation:
@@ -468,8 +458,10 @@ class TestRunValidation:
             ]
         )
 
-        # Run should complete but log warning (not raise)
-        client.run_validation(config, "Test Job", "test_warehouse")
+        # Run should surface failure to callers
+        with pytest.raises(RuntimeError) as excinfo:
+            client.run_validation(config, "Test Job", "test_warehouse")
+        assert "RunResultState.FAILED" in str(excinfo.value)
 
     @patch("datapact.client.datetime")
     @patch("time.sleep")

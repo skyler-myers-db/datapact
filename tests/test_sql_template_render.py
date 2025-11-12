@@ -49,9 +49,7 @@ def test_template_renders_no_validations():
     assert "CREATE OR REPLACE TEMP VIEW final_metrics_view AS" in sql
     assert "overall_validation_passed" in sql
     assert "No validations configured for task" in sql
-    assert (
-        "INSERT INTO" in sql and "SELECT RAISE_ERROR" in sql and "SELECT to_json" in sql
-    )
+    assert "INSERT INTO" in sql and "SELECT RAISE_ERROR" in sql and "SELECT to_json" in sql
 
 
 def test_counts_only_block_exact_fragments():
@@ -161,20 +159,14 @@ def test_nulls_with_pk_join_and_without_pk():
     sql2 = _render(p2)
     assert "null_metrics_v AS (" in sql2
     assert "JOIN" not in sql2
-    assert (
-        "(SELECT COUNT(1) FROM `c`.`s`.`a` WHERE `v` IS NULL) as source_nulls_v" in sql2
-    )
+    assert "(SELECT COUNT(1) FROM `c`.`s`.`a` WHERE `v` IS NULL) as source_nulls_v" in sql2
     assert "CASE WHEN source_nulls_v = 0 THEN target_nulls_v = 0 ELSE" in sql2
 
 
 def test_aggregate_validations_block_exact_fragments():
     p = _base_payload()
     p.update(
-        {
-            "agg_validations": [
-                {"column": "v", "validations": [{"agg": "sum", "tolerance": 0.05}]}
-            ]
-        }
+        {"agg_validations": [{"column": "v", "validations": [{"agg": "sum", "tolerance": 0.05}]}]}
     )
     sql = _render(p)
     assert "agg_metrics_v_SUM AS (" in sql
@@ -187,10 +179,7 @@ def test_aggregate_validations_block_exact_fragments():
         in sql
     )
     assert "FORMAT_NUMBER(source_value_v_SUM, '#,##0.00') as source_value," in sql
-    assert (
-        "FORMAT_STRING('%.2f%%', CAST(0.05 * 100 AS DOUBLE)) AS tolerance_percent,"
-        in sql
-    )
+    assert "FORMAT_STRING('%.2f%%', CAST(0.05 * 100 AS DOUBLE)) AS tolerance_percent," in sql
     assert "source_value_v_SUM - target_value_v_SUM" in sql
     assert "<= 0.05 THEN 'PASS'" in sql
 
@@ -221,9 +210,7 @@ def test_full_combo_contains_all_sections_and_cross_joins_in_order():
     )
     # Ensure overall_validation_passed has all four conditions
     assert sql.count("<= 0.01") >= 1  # count
-    assert (
-        "mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)" in sql
-    )  # pk hash
+    assert "mismatch_count / NULLIF(CAST(total_compared_rows AS DOUBLE), 0)" in sql  # pk hash
     assert "total_compared_v" in sql  # nulls joined
     assert "source_value_v_SUM - target_value_v_SUM" in sql  # agg
 
@@ -247,14 +234,8 @@ def test_uniqueness_only_block_exact_fragments():
     assert "source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0)" in sql
     assert "target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0)" in sql
     # Overall pass condition includes both source and target constraints
-    assert (
-        "COALESCE(source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0), 0) <= 0.0"
-        in sql
-    )
-    assert (
-        "COALESCE(target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0), 0) <= 0.0"
-        in sql
-    )
+    assert "COALESCE(source_duplicates / NULLIF(CAST(source_total AS DOUBLE), 0), 0) <= 0.0" in sql
+    assert "COALESCE(target_duplicates / NULLIF(CAST(target_total AS DOUBLE), 0), 0) <= 0.0" in sql
 
 
 def test_full_combo_includes_uniqueness_cross_join_order():

@@ -11,8 +11,9 @@ This test module validates all dashboard-related fixes including:
 """
 
 import json
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 from databricks.sdk.errors import NotFound
 
 
@@ -81,12 +82,8 @@ class TestDashboardVisualizationFixes:
     def _get_dashboard_json(self, mock_client):
         """Helper to setup mocks and get dashboard JSON."""
         mock_client.w.workspace.mkdirs = MagicMock()
-        mock_client.w.workspace.get_status = MagicMock(
-            side_effect=NotFound("Not found")
-        )
-        mock_client.w.lakeview.create = MagicMock(
-            return_value=MagicMock(dashboard_id="test_id")
-        )
+        mock_client.w.workspace.get_status = MagicMock(side_effect=NotFound("Not found"))
+        mock_client.w.lakeview.create = MagicMock(return_value=MagicMock(dashboard_id="test_id"))
         mock_client.w.lakeview.publish = MagicMock()
 
         mock_client.ensure_dashboard_exists(
@@ -99,17 +96,13 @@ class TestDashboardVisualizationFixes:
         dashboard_obj = create_call[0][0]
         return json.loads(dashboard_obj.serialized_dashboard)
 
-    def test_validation_results_status_accuracy(
-        self, mock_client, sample_result_payload
-    ):
+    def test_validation_results_status_accuracy(self, mock_client, sample_result_payload):
         """Test that Status column correctly reflects actual validation results."""
         dashboard_json = self._get_dashboard_json(mock_client)
 
         # Find the validation details dataset
         datasets = dashboard_json["datasets"]
-        validation_details = next(
-            d for d in datasets if d["name"] == "ds_validation_details"
-        )
+        validation_details = next(d for d in datasets if d["name"] == "ds_validation_details")
 
         # Verify the status logic uses simple CASE statement
         query = " ".join(validation_details["queryLines"])
@@ -124,20 +117,16 @@ class TestDashboardVisualizationFixes:
         dashboard_json = self._get_dashboard_json(mock_client)
 
         datasets = dashboard_json["datasets"]
-        validation_details = next(
-            d for d in datasets if d["name"] == "ds_validation_details"
-        )
+        validation_details = next(d for d in datasets if d["name"] == "ds_validation_details")
 
         query = " ".join(validation_details["queryLines"])
 
         # Verify null handling for source and target tables
         assert (
-            "CONCAT_WS('.', source_catalog, source_schema, source_table) AS source_table"
-            in query
+            "CONCAT_WS('.', source_catalog, source_schema, source_table) AS source_table" in query
         )
         assert (
-            "CONCAT_WS('.', target_catalog, target_schema, target_table) AS target_table"
-            in query
+            "CONCAT_WS('.', target_catalog, target_schema, target_table) AS target_table" in query
         )
 
     def test_agg_validation_status_logic(self, mock_client):
@@ -145,9 +134,7 @@ class TestDashboardVisualizationFixes:
         dashboard_json = self._get_dashboard_json(mock_client)
 
         datasets = dashboard_json["datasets"]
-        validation_details = next(
-            d for d in datasets if d["name"] == "ds_validation_details"
-        )
+        validation_details = next(d for d in datasets if d["name"] == "ds_validation_details")
 
         query = " ".join(validation_details["queryLines"])
 
@@ -192,15 +179,12 @@ class TestDashboardVisualizationFixes:
         assert "CAST(result_payload:configured_primary_keys AS STRING)" in query
         assert "trim(CAST(result_payload:applied_filter AS STRING))" in query
 
-        details_page = next(
-            p for p in dashboard_json["pages"] if p["name"] == "details_page"
-        )
+        details_page = next(p for p in dashboard_json["pages"] if p["name"] == "details_page")
         details_widget = next(
             w for w in details_page["layout"] if w["widget"]["name"] == "details_table"
         )
         column_fields = [
-            col["fieldName"]
-            for col in details_widget["widget"]["spec"]["encodings"]["columns"]
+            col["fieldName"] for col in details_widget["widget"]["spec"]["encodings"]["columns"]
         ]
         assert "configured_primary_keys" in column_fields
 
@@ -209,9 +193,7 @@ class TestDashboardVisualizationFixes:
         dashboard_json = self._get_dashboard_json(mock_client)
 
         datasets = dashboard_json["datasets"]
-        exploded_checks = next(
-            (d for d in datasets if d["name"] == "ds_exploded_checks"), None
-        )
+        exploded_checks = next((d for d in datasets if d["name"] == "ds_exploded_checks"), None)
 
         if exploded_checks:
             query = " ".join(exploded_checks["queryLines"])
@@ -244,8 +226,7 @@ class TestDashboardVisualizationFixes:
         status_filters = [
             f
             for f in main_page.get("filters", [])
-            if "status" in f.get("field", "").lower()
-            or f.get("name", "") == "status_filter"
+            if "status" in f.get("field", "").lower() or f.get("name", "") == "status_filter"
         ]
         assert len(status_filters) > 0
 
@@ -266,9 +247,7 @@ class TestDashboardVisualizationFixes:
         datasets = dashboard_json["datasets"]
 
         # Check ds_latest_run_details dataset
-        latest_run_details = next(
-            d for d in datasets if d["name"] == "ds_latest_run_details"
-        )
+        latest_run_details = next(d for d in datasets if d["name"] == "ds_latest_run_details")
         query = " ".join(latest_run_details["queryLines"])
         assert "to_json(result_payload) as result_payload" in query
 
@@ -304,12 +283,8 @@ class TestExecutiveDashboardPerspective:
     def _get_dashboard_json(self, mock_client):
         """Helper to setup mocks and get dashboard JSON."""
         mock_client.w.workspace.mkdirs = MagicMock()
-        mock_client.w.workspace.get_status = MagicMock(
-            side_effect=NotFound("Not found")
-        )
-        mock_client.w.lakeview.create = MagicMock(
-            return_value=MagicMock(dashboard_id="test_id")
-        )
+        mock_client.w.workspace.get_status = MagicMock(side_effect=NotFound("Not found"))
+        mock_client.w.lakeview.create = MagicMock(return_value=MagicMock(dashboard_id="test_id"))
         mock_client.w.lakeview.publish = MagicMock()
 
         mock_client.ensure_dashboard_exists(
@@ -352,9 +327,7 @@ class TestExecutiveDashboardPerspective:
         datasets = dashboard_json["datasets"]
 
         # Check validation details
-        validation_details = next(
-            d for d in datasets if d["name"] == "ds_validation_details"
-        )
+        validation_details = next(d for d in datasets if d["name"] == "ds_validation_details")
         query = " ".join(validation_details["queryLines"])
 
         # Should use checkmarks and X marks
@@ -376,9 +349,7 @@ class TestExecutiveDashboardPerspective:
         dashboard_json = self._get_dashboard_json(mock_client)
 
         # Check KPI dataset
-        kpi_dataset = next(
-            d for d in dashboard_json["datasets"] if d["name"] == "ds_kpi"
-        )
+        kpi_dataset = next(d for d in dashboard_json["datasets"] if d["name"] == "ds_kpi")
         query = " ".join(kpi_dataset["queryLines"])
 
         # Should format percentages properly
@@ -394,8 +365,7 @@ class TestExecutiveDashboardPerspective:
                 if "Data Quality Score" in title:
                     # Should use percentage format
                     assert (
-                        widget["spec"]["encodings"]["value"]["format"]["type"]
-                        == "number-percent"
+                        widget["spec"]["encodings"]["value"]["format"]["type"] == "number-percent"
                     )
 
     def test_actionable_insights_for_executives(self, mock_client):
@@ -404,9 +374,7 @@ class TestExecutiveDashboardPerspective:
 
         # Check for failure classification
         datasets = dashboard_json["datasets"]
-        failures_dataset = next(
-            d for d in datasets if d["name"] == "ds_failures_by_type"
-        )
+        failures_dataset = next(d for d in datasets if d["name"] == "ds_failures_by_type")
         query = " ".join(failures_dataset["queryLines"])
 
         # Should categorize failures for action

@@ -11,6 +11,7 @@ These models are intended to be used for parsing and validating DataPact YAML co
 """
 
 import re
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .sql_utils import make_sql_identifier
@@ -195,9 +196,7 @@ class ValidationTask(BaseModel):
         allowed = {"critical", "high", "medium", "low"}
         normalized = value.strip().lower()
         if normalized not in allowed:
-            raise ValueError(
-                "business_priority must be one of: Critical, High, Medium, Low"
-            )
+            raise ValueError("business_priority must be one of: Critical, High, Medium, Low")
         return normalized.upper()
 
     @field_validator("expected_sla_hours", "estimated_impact_usd")

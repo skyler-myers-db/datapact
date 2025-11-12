@@ -4,20 +4,22 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "datapact"
-version = "2.5.1"
+version = "2.8.0"
 description = "DataPact: An enterprise-grade, programmatic data validation accelerator for Databricks."
 readme = "README.md"
-requires-python = ">=3.13.5"
+requires-python = ">=3.11"
 authors = [
   { name = "Skyler Myers", email = "myers_skyler@icloud.com" },
 ]
 classifiers = [
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Development Status :: 5 - Production/Stable",
 ]
 dependencies = [
-    "databricks-sdk>=0.65.0",
+    "databricks-sdk>=0.73.0",
     "databricks-sql-connector",
     "pyarrow",
     "pyyaml",
@@ -29,7 +31,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
-    "pre-commit"
+    "pre-commit",
+    "mypy"
 ]
 
 [project.urls]
@@ -41,3 +44,25 @@ datapact = "datapact.main:main"
 
 [tool.setuptools.packages.find]
 include = ["datapact*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["demo/setup.sql"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E203", "E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+ignore_missing_imports = true
+strict_optional = true
+files = ["datapact"]
+follow_imports = "normal"

@@ -8,33 +8,40 @@ where each task executes one of the generated SQL scripts on a specified
 Serverless SQL Warehouse. Finally, it can create a results dashboard.
 """
 
-import os
-import time
 import json
+import os
 import textwrap
-from datetime import timedelta, datetime
-from typing import Any, Final
+import time
+from datetime import datetime, timedelta
+from typing import Any, Final, TypedDict, cast
 
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service import sql as sql_service, workspace
-from databricks.sdk.service.jobs import (
-    RunLifeCycleState,
-    Task,
-)
-from databricks.sdk.service.dashboards import Dashboard
 from databricks.sdk.errors import NotFound
-from loguru import logger
+from databricks.sdk.service import sql as sql_service
+from databricks.sdk.service import workspace
+from databricks.sdk.service.dashboards import Dashboard
+from databricks.sdk.service.jobs import RunLifeCycleState, Task
 from jinja2 import Environment, PackageLoader
+from loguru import logger
+
 from .config import DataPactConfig, ValidationTask
-from .sql_generator import render_validation_sql, render_aggregate_sql
-from .sql_utils import escape_sql_string, validate_job_name
 from .job_orchestrator import (
-    build_tasks,
     add_dashboard_refresh_task,
     add_genie_room_task,
+    build_tasks,
     ensure_job,
     run_and_wait,
 )
+from .sql_generator import render_aggregate_sql, render_validation_sql
+from .sql_utils import (
+    escape_sql_identifier,
+    escape_sql_string,
+    format_fully_qualified_name,
+    parse_fully_qualified_name,
+    validate_job_name,
+)
+
+__all__ = ["DataPactClient", "resolve_warehouse_name"]
 
 TERMINAL_STATES: list[RunLifeCycleState] = [
     RunLifeCycleState.TERMINATED,
@@ -44,6 +51,82 @@ TERMINAL_STATES: list[RunLifeCycleState] = [
 DEFAULT_CATALOG: Final[str] = "datapact"
 DEFAULT_SCHEMA: Final[str] = "results"
 DEFAULT_TABLE: Final[str] = "run_history"
+
+
+class WidgetPosition(TypedDict):
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+class WidgetDefinitionBase(TypedDict):
+    ds_name: str
+    type: str
+    title: str
+    pos: WidgetPosition
+
+
+class WidgetDefinition(WidgetDefinitionBase, total=False):
+    value_col: str
+    x_field: str
+    y_field: str | None
+    y_display: str
+    y_agg: str | None
+    show_targets: bool
+    x_display: str
+
+
+class DatasetDefinitionBase(TypedDict):
+    name: str
+    queryLines: list[str]
+
+
+class DatasetDefinition(DatasetDefinitionBase, total=False):
+    displayName: str
+    filters: list[dict[str, Any]]
+
+
+class DashboardPageBase(TypedDict):
+    name: str
+    displayName: str
+    layout: list[dict[str, Any]]
+
+
+class DashboardPage(DashboardPageBase, total=False):
+    pageType: str
+    filters: list[dict[str, Any]]
+
+
+class DashboardPayloadBase(TypedDict):
+    datasets: list[DatasetDefinition]
+    pages: list[DashboardPage]
+
+
+class DashboardPayload(DashboardPayloadBase, total=False):
+    uiSettings: dict[str, Any]
+
+
+def resolve_warehouse_name(
+    workspace_client: WorkspaceClient,
+    *,
+    explicit_name: str | None = None,
+) -> str:
+    """Resolve the SQL warehouse name using CLI args, env vars, or Databricks config."""
+
+    warehouse_name = explicit_name or os.getenv("DATAPACT_WAREHOUSE")
+    if warehouse_name:
+        return warehouse_name
+
+    config = getattr(workspace_client, "config", None)
+    config_value = getattr(config, "datapact_warehouse", None) if config else None
+    if config_value:
+        return config_value
+
+    raise ValueError(
+        "A warehouse must be provided via the --warehouse flag, the DATAPACT_WAREHOUSE "
+        "environment variable, or a 'datapact_warehouse' key in your Databricks config profile."
+    )
 
 
 class DataPactClient:
@@ -102,9 +185,7 @@ class DataPactClient:
         if workspace_client is not None:
             self.w: WorkspaceClient = workspace_client
         elif workspace_is_mock:
-            logger.debug(
-                "WorkspaceClient patched; using mock instance for initialization."
-            )
+            logger.debug("WorkspaceClient patched; using mock instance for initialization.")
             self.w = workspace_ctor()
         else:
             logger.info(f"Initializing WorkspaceClient with profile '{profile}'...")
@@ -112,9 +193,7 @@ class DataPactClient:
             try:
                 from databricks.sdk.config import Config
 
-                config = Config(
-                    profile=profile, http_timeout_seconds=1200
-                )  # 20 minute timeout
+                config = Config(profile=profile, http_timeout_seconds=1200)  # 20 minute timeout
                 self.w = workspace_ctor(config=config)
             except ValueError:
                 # Fallback for tests or environments without profile configured
@@ -139,23 +218,6 @@ class DataPactClient:
             # Cache on self for subsequent calls (works even if __init__ was bypassed)
             self._env = env
         return env
-
-    # Resource management helpers
-    def close(self: "DataPactClient") -> None:
-        """Release cached resources held by this client.
-
-        Currently clears the cached Jinja2 Environment to avoid keeping template
-        loader references alive for long-lived client instances.
-        """
-        self._env = None
-
-    def __enter__(self: "DataPactClient") -> "DataPactClient":
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        self.close()
-        # Do not suppress exceptions; returning False explicitly communicates this.
-        return False
 
     def _execute_sql(
         self: "DataPactClient",
@@ -214,9 +276,7 @@ class DataPactClient:
         logger.info(
             f"Ensuring default infrastructure ('{DEFAULT_CATALOG}.{DEFAULT_SCHEMA}') exists..."
         )
-        self._execute_sql(
-            f"CREATE CATALOG IF NOT EXISTS `{DEFAULT_CATALOG}`", warehouse_id
-        )
+        self._execute_sql(f"CREATE CATALOG IF NOT EXISTS `{DEFAULT_CATALOG}`", warehouse_id)
         self._execute_sql(
             f"GRANT USAGE ON CATALOG `{DEFAULT_CATALOG}` TO `{self.user_name}`;",
             warehouse_id,
@@ -263,15 +323,12 @@ class DataPactClient:
             )
             return
 
-        cleaned = results_table_fqn.replace("`", "").replace("\n", " ").strip()
-        parts = [p for p in cleaned.split(".") if p]
-
-        if len(parts) >= 3:
-            catalog, schema = parts[0], parts[1]
-        else:
+        try:
+            catalog, schema, _ = parse_fully_qualified_name(results_table_fqn)
+        except ValueError:
             catalog, schema = DEFAULT_CATALOG, DEFAULT_SCHEMA
 
-        base_path = f"`{catalog}`.`{schema}`"
+        base_path = f"{escape_sql_identifier(catalog)}.{escape_sql_identifier(schema)}"
 
         logger.debug(
             f"Ensuring executive summary tables exist in {base_path} using warehouse {warehouse_id}."
@@ -369,15 +426,13 @@ class DataPactClient:
         safe_job_name = escape_sql_string(validate_job_name(job_name))
 
         # Extract catalog and schema from results table to put genie tables in same location
-        # Handle formats like `catalog`.`schema`.`table` or catalog.schema.table
-        parts = results_table.replace("`", "").split(".")
-        if len(parts) >= 3:
-            genie_catalog = f"`{parts[0]}`"
-            genie_schema = f"`{parts[1]}`"
-        else:
-            # Fallback to default if cannot parse
-            genie_catalog = "`datapact`"
-            genie_schema = "`results`"
+        try:
+            genie_catalog_raw, genie_schema_raw, _ = parse_fully_qualified_name(results_table)
+        except ValueError:
+            genie_catalog_raw, genie_schema_raw = DEFAULT_CATALOG, DEFAULT_SCHEMA
+
+        genie_catalog = escape_sql_identifier(genie_catalog_raw)
+        genie_schema = escape_sql_identifier(genie_schema_raw)
 
         return f"""-- DataPact Genie Room Data Preparation
 -- Creates curated datasets for natural language analysis in Databricks AI/BI Genie
@@ -656,18 +711,14 @@ Once created, users can ask questions in natural language to analyze data qualit
             - Top Failing Tasks (bar chart)
             - Detailed Run History (table)
         """
-        display_name: str = (
-            f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
-        )
+        display_name: str = f"DataPact_Results_{job_name.replace(' ', '_').replace(':', '')}"
         parent_path: str = f"{self.root_path}/dashboards"
         draft_path: str = f"{parent_path}/{display_name}.lvdash.json"
         self.w.workspace.mkdirs(parent_path)
 
         # Ensure supporting executive summary tables exist before the dashboard is created
         if os.getenv("DATAPACT_SKIP_EXEC_SUMMARY_BOOTSTRAP") == "1":
-            logger.debug(
-                "Skipping executive summary bootstrap via environment override."
-            )
+            logger.debug("Skipping executive summary bootstrap via environment override.")
         else:
             self._bootstrap_exec_summary_tables(warehouse_id, results_table_fqn)
 
@@ -683,23 +734,23 @@ Once created, users can ask questions in natural language to analyze data qualit
             logger.info("Dashboard file does not yet exist – will create")
         except (PermissionError, OSError) as e:
             # Log specific filesystem/permission errors but continue with dashboard creation
-            logger.warning(
-                f"Error accessing dashboard file: {e}. Proceeding with creation."
-            )
-        except (
-            Exception
-        ) as exc:  # pragma: no cover - safeguard for unexpected SDK responses
+            logger.warning(f"Error accessing dashboard file: {e}. Proceeding with creation.")
+        except Exception as exc:  # pragma: no cover - safeguard for unexpected SDK responses
             logger.warning(
                 f"Unexpected error checking dashboard file: {exc}. Proceeding with creation."
             )
 
-        cleaned_fqn = results_table_fqn.replace("`", "").replace("\n", " ").strip()
-        parts = [p for p in cleaned_fqn.split(".") if p]
-        catalog = parts[0] if len(parts) >= 3 else DEFAULT_CATALOG
-        schema = parts[1] if len(parts) >= 3 else DEFAULT_SCHEMA
+        try:
+            catalog, schema, _ = parse_fully_qualified_name(results_table_fqn)
+        except ValueError:
+            catalog, schema = DEFAULT_CATALOG, DEFAULT_SCHEMA
 
         def fq(name: str) -> str:
-            return f"`{catalog}`.`{schema}`.`{name}`"
+            return (
+                f"{escape_sql_identifier(catalog)}."
+                f"{escape_sql_identifier(schema)}."
+                f"{escape_sql_identifier(name)}"
+            )
 
         run_summary_table = fq("exec_run_summary")
         domain_breakdown_table = fq("exec_domain_breakdown")
@@ -719,7 +770,7 @@ Once created, users can ask questions in natural language to analyze data qualit
             )
 
         # Define all datasets needed for the dashboard
-        datasets: list[dict[str, Any]] = [
+        datasets: list[DatasetDefinition] = [
             {
                 "name": "ds_kpi",
                 "displayName": "Executive KPI Dashboard",
@@ -1811,7 +1862,7 @@ Once created, users can ask questions in natural language to analyze data qualit
             },
         ]
 
-        widget_definitions: list[dict[str, Any]] = [
+        widget_definitions: list[WidgetDefinition] = [
             {
                 "ds_name": "ds_kpi",
                 "type": "SUCCESS_RATE_COUNTER",
@@ -2155,7 +2206,9 @@ Once created, users can ask questions in natural language to analyze data qualit
         ]
 
         for i, w_def in enumerate(widget_definitions):
-            spec, query_fields = {}, []
+            spec: dict[str, Any] = {}
+            query_fields: list[dict[str, str]] = []
+            encodings: dict[str, Any] = {}
 
             if w_def["type"] == "COUNTER":
                 query_fields = [
@@ -2464,9 +2517,12 @@ Once created, users can ask questions in natural language to analyze data qualit
                     ]
 
             elif w_def["type"] == "BAR":
-                x_field = w_def.get("x_field", "task_key")
-                y_field = w_def.get("y_field", "failure_count")
-                y_agg = w_def.get("y_agg", "SUM")
+                x_field = cast(str, w_def.get("x_field", "task_key"))
+                raw_y_field = w_def.get("y_field")
+                y_field = raw_y_field if raw_y_field else "failure_count"
+                y_agg = w_def.get("y_agg")
+                if y_agg is None and "y_agg" not in w_def:
+                    y_agg = "SUM"
 
                 if y_agg:
                     y_agg = y_agg.upper()
@@ -2484,9 +2540,8 @@ Once created, users can ask questions in natural language to analyze data qualit
                     ]
 
                 # Use custom display names for aggregated fields
-                y_display_name = w_def.get(
-                    "y_display", "Failures" if "failure" in y_field.lower() else "Count"
-                )
+                default_display = "Failures" if "failure" in y_field.lower() else "Count"
+                y_display_name = w_def.get("y_display", default_display)
 
                 encodings = {
                     "x": {
@@ -2683,7 +2738,7 @@ Once created, users can ask questions in natural language to analyze data qualit
 
                 # Build column encodings with conditional formatting
                 column_encodings = []
-                for col, display in zip(columns, display_names):
+                for col, display in zip(columns, display_names, strict=False):
                     col_encoding: dict[str, Any] = {
                         "fieldName": col,
                         "displayName": display,
@@ -2811,7 +2866,7 @@ Once created, users can ask questions in natural language to analyze data qualit
 
         layout_widgets.extend(dashboard_filters)
 
-        dashboard_payload: dict[str, Any] = {
+        dashboard_payload: DashboardPayload = {
             "datasets": datasets,
             "pages": [
                 {
@@ -3614,24 +3669,25 @@ Once created, users can ask questions in natural language to analyze data qualit
             - Uploads SQL scripts to the workspace.
             - Logs job progress and results.
         """
-        warehouse: sql_service.GetWarehouseResponse = self._ensure_sql_warehouse(
-            warehouse_name
-        )
-        final_results_table = (
-            f"`{results_table}`"
-            if results_table
-            else f"`{DEFAULT_CATALOG}`.`{DEFAULT_SCHEMA}`.`{DEFAULT_TABLE}`"
-        )
+        warehouse: sql_service.GetWarehouseResponse = self._ensure_sql_warehouse(warehouse_name)
+        if results_table:
+            try:
+                catalog, schema, table = parse_fully_qualified_name(results_table)
+            except ValueError as exc:
+                raise ValueError(
+                    "Results table must be provided as catalog.schema.table (three parts)."
+                ) from exc
+        else:
+            catalog, schema, table = DEFAULT_CATALOG, DEFAULT_SCHEMA, DEFAULT_TABLE
+
+        final_results_table = format_fully_qualified_name(catalog, schema, table)
+
         if not results_table:
             if warehouse.id is None:
-                raise ValueError(
-                    "SQL Warehouse ID is None. Cannot set up infrastructure."
-                )
+                raise ValueError("SQL Warehouse ID is None. Cannot set up infrastructure.")
             self._setup_default_infrastructure(warehouse.id)
         if warehouse.id is None:
-            raise ValueError(
-                "SQL Warehouse ID is None. Cannot ensure results table exists."
-            )
+            raise ValueError("SQL Warehouse ID is None. Cannot ensure results table exists.")
         self._ensure_results_table_exists(final_results_table, warehouse.id)
 
         dashboard_id: str = self.ensure_dashboard_exists(
@@ -3658,18 +3714,14 @@ Once created, users can ask questions in natural language to analyze data qualit
             validation_task_keys=validation_task_keys,
             sql_params=sql_params,
         )
-        add_dashboard_refresh_task(
-            tasks, dashboard_id=dashboard_id, warehouse_id=warehouse.id
-        )
+        add_dashboard_refresh_task(tasks, dashboard_id=dashboard_id, warehouse_id=warehouse.id)
         add_genie_room_task(
             tasks=tasks,
             asset_paths=asset_paths,
             warehouse_id=warehouse.id,
         )
 
-        job_id: int = ensure_job(
-            self.w, job_name=job_name, tasks=tasks, user_name=self.user_name
-        )
+        job_id: int = ensure_job(self.w, job_name=job_name, tasks=tasks, user_name=self.user_name)
         # Inject time providers so tests can patch datapact.client.datetime and time.sleep
         run_and_wait(
             self.w,
@@ -3708,17 +3760,13 @@ Once created, users can ask questions in natural language to analyze data qualit
         if not warehouse:
             raise ValueError(f"SQL Warehouse '{name}' not found.")
 
-        logger.info(
-            f"Found warehouse '{name}' (ID: {warehouse.id}). State: {warehouse.state}"
-        )
+        logger.info(f"Found warehouse '{name}' (ID: {warehouse.id}). State: {warehouse.state}")
 
         if warehouse.state not in [
             sql_service.State.RUNNING,
             sql_service.State.STARTING,
         ]:
-            logger.info(
-                f"Warehouse '{name}' is {warehouse.state}. Attempting to start..."
-            )
+            logger.info(f"Warehouse '{name}' is {warehouse.state}. Attempting to start...")
             if warehouse.id is None:
                 raise ValueError(f"Warehouse '{name}' has no ID and cannot be started.")
             # Trigger start and poll the warehouse state until RUNNING or timeout
@@ -3738,15 +3786,11 @@ Once created, users can ask questions in natural language to analyze data qualit
                     sql_service.State.DELETING,
                     sql_service.State.DELETED,
                 ):
-                    raise RuntimeError(
-                        f"Warehouse '{name}' failed to start. State: {state}"
-                    )
+                    raise RuntimeError(f"Warehouse '{name}' failed to start. State: {state}")
                 # Allow STOPPED/STOPPING/STARTING to continue polling
                 time.sleep(5)
             else:
-                raise TimeoutError(
-                    f"Timed out waiting for warehouse '{name}' to start."
-                )
+                raise TimeoutError(f"Timed out waiting for warehouse '{name}' to start.")
 
         if warehouse.id is None:
             raise ValueError(f"Warehouse '{name}' has no ID and cannot be retrieved.")

@@ -3,10 +3,10 @@
 import importlib
 
 from datapact.config import (
-    ValidationTask,
     AggValidation,
     AggValidationDetail,
     CustomSqlTest,
+    ValidationTask,
 )
 from datapact.sql_generator import render_validation_sql
 

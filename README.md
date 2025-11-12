@@ -103,7 +103,7 @@ See DataPact's full potential with a realistic, large-scale demo. This will crea
 
 1.  **Databricks Workspace:** A Databricks workspace with Unity Catalog enabled.
 2.  **Permissions:** Permissions to create catalogs, schemas, tables, and run jobs.
-3.  **Python >= 3.13.5:** A local Python environment.
+3.  **Python >= 3.11:** A local Python environment.
 4.  **Databricks CLI:** [Install and configure the Databricks CLI](https://docs.databricks.com/en/dev-tools/cli/install.html). For a seamless experience, we recommend adding a `datapact_warehouse` key to your profile in `~/.databrickscfg`.
 
 ```ini
@@ -120,7 +120,7 @@ git clone https://github.com/skyler-myers-db/datapact.git
 cd datapact
 ```
 
-#### Step 2: Create and Activate a Virtual Environment (Python 3.13.5+)
+#### Step 2: Create and Activate a Virtual Environment (Python 3.11+)
 
 This creates a self-contained environment to avoid conflicts with other Python projects.
 
@@ -141,6 +141,22 @@ Install the package and its dependencies in editable mode.
 ```bash
 pip install -e .
 ```
+
+#### Optional: Preview or Scaffold Configurations
+
+- **Plan/Dry Run:** Validate a configuration without touching Databricks resources.
+
+  ```bash
+  datapact plan --config path/to/validation_config.yml
+  # or
+  datapact run --config path/to/validation_config.yml --dry-run
+  ```
+
+- **Initialize a Starter Config:** Generate a pre-populated YAML file you can customize.
+
+  ```bash
+  datapact init --output my_datapact_config.yml
+  ```
 
 #### Step 2: Set Up the Demo Environment
 
@@ -262,6 +278,8 @@ Below are all available parameters for each task in your `validation_config.yml`
 | `uniqueness_columns`        | list[string] | No       | Columns that must be unique within source and within target.                                                                  |
 | `uniqueness_tolerance`      | float        | No       | Allowed duplicate ratio (e.g., 0.0 = strict no duplicates).                                                                   |
 | `results-table`             | string       | No       | FQN of the results table. If omitted, `datapact_main.results.run_history` is used.                                            |
+
+> **Heads-up:** Older docs referenced `aggregations` and `uniqueness_validation_columns`. Those keys have been renamed to `agg_validations` and `uniqueness_columns`; be sure to update any local configs accordingly.
 
 ---
 

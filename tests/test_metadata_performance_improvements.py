@@ -4,10 +4,11 @@ Validates that metadata is outside payload, timestamps are tracked,
 and performance metrics are available.
 """
 
-import json
-import pytest
-from unittest.mock import MagicMock, patch
 import importlib
+import json
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 class TestMetadataAndPerformanceImprovements:
@@ -58,10 +59,7 @@ class TestMetadataAndPerformanceImprovements:
             "'src_cat' AS source_catalog"
             not in sql.split("parse_json(to_json(struct(")[1].split("))")[0]
         )
-        assert (
-            "business_domain"
-            not in sql.split("parse_json(to_json(struct(")[1].split("))")[0]
-        )
+        assert "business_domain" not in sql.split("parse_json(to_json(struct(")[1].split("))")[0]
 
     def test_timestamps_added_as_columns(self):
         """Test that validation_begin_ts and validation_complete_ts are top-level columns."""
@@ -166,12 +164,8 @@ class TestMetadataAndPerformanceImprovements:
     def _get_dashboard_json(self, mock_client):
         """Helper to setup mocks and get dashboard JSON."""
         mock_client.w.workspace.mkdirs = MagicMock()
-        mock_client.w.workspace.get_status = MagicMock(
-            side_effect=Exception("Not found")
-        )
-        mock_client.w.lakeview.create = MagicMock(
-            return_value=MagicMock(dashboard_id="test_id")
-        )
+        mock_client.w.workspace.get_status = MagicMock(side_effect=Exception("Not found"))
+        mock_client.w.lakeview.create = MagicMock(return_value=MagicMock(dashboard_id="test_id"))
         mock_client.w.lakeview.publish = MagicMock()
 
         mock_client.ensure_dashboard_exists(
@@ -215,9 +209,7 @@ class TestMetadataAndPerformanceImprovements:
 
         # Find performance datasets
         perf_metrics = next(
-            d
-            for d in dashboard_json["datasets"]
-            if d["name"] == "ds_performance_metrics"
+            d for d in dashboard_json["datasets"] if d["name"] == "ds_performance_metrics"
         )
         query = " ".join(perf_metrics["queryLines"])
 
@@ -225,8 +217,7 @@ class TestMetadataAndPerformanceImprovements:
         assert "validation_begin_ts" in query
         assert "validation_complete_ts" in query
         assert (
-            "unix_timestamp(validation_complete_ts) - unix_timestamp(validation_begin_ts)"
-            in query
+            "unix_timestamp(validation_complete_ts) - unix_timestamp(validation_begin_ts)" in query
         )
 
     def test_bar_chart_labels_are_clean(self, mock_client):
@@ -256,9 +247,7 @@ class TestMetadataAndPerformanceImprovements:
         dashboard_json = self._get_dashboard_json(mock_client)
 
         # Find exploded checks dataset
-        exploded = next(
-            d for d in dashboard_json["datasets"] if d["name"] == "ds_exploded_checks"
-        )
+        exploded = next(d for d in dashboard_json["datasets"] if d["name"] == "ds_exploded_checks")
         query = " ".join(exploded["queryLines"])
 
         # Check for consistent separators (using |)
@@ -275,9 +264,7 @@ class TestMetadataAndPerformanceImprovements:
         dashboard_json = self._get_dashboard_json(mock_client)
 
         # Find exploded checks dataset
-        exploded = next(
-            d for d in dashboard_json["datasets"] if d["name"] == "ds_exploded_checks"
-        )
+        exploded = next(d for d in dashboard_json["datasets"] if d["name"] == "ds_exploded_checks")
         query = " ".join(exploded["queryLines"])
 
         # Should use dynamic extraction for aggregations
@@ -291,9 +278,7 @@ class TestMetadataAndPerformanceImprovements:
 
         # Find latest run details dataset
         latest_details = next(
-            d
-            for d in dashboard_json["datasets"]
-            if d["name"] == "ds_latest_run_details"
+            d for d in dashboard_json["datasets"] if d["name"] == "ds_latest_run_details"
         )
         query = " ".join(latest_details["queryLines"])
 
@@ -302,9 +287,7 @@ class TestMetadataAndPerformanceImprovements:
         assert "CONCAT(target_catalog, '.', target_schema, '.', target_table)" in query
 
         # Should not extract these from payload
-        assert (
-            "get_json_object(to_json(result_payload), '$.source_catalog')" not in query
-        )
+        assert "get_json_object(to_json(result_payload), '$.source_catalog')" not in query
 
     def test_business_impact_uses_new_schema_column(self, mock_client):
         """Test that business impact assessment uses the new schema column."""

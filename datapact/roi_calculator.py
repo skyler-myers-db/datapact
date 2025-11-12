@@ -5,9 +5,9 @@ This module provides comprehensive ROI calculations and performance metrics
 for enterprise data quality initiatives, demonstrating quantifiable business value.
 """
 
-from typing import Dict, Optional
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 
 @dataclass
@@ -48,53 +48,44 @@ class ROIMetrics:
     """ROI and business impact calculations."""
 
     # Cost factors (in USD)
-    avg_data_incident_cost: float = 150000  # Average cost per data quality incident
-    manual_validation_hour_cost: float = (
-        125  # Fully loaded hourly cost for data engineer
-    )
-    compliance_violation_cost: float = 500000  # Average regulatory fine
+    avg_data_incident_cost: float = 150000.0  # Average cost per data quality incident
+    manual_validation_hour_cost: float = 125.0  # Fully loaded hourly cost for data engineer
+    compliance_violation_cost: float = 500000.0  # Average regulatory fine
 
     # Time factors
-    manual_validation_hours_weekly: float = 40  # Hours spent on manual validation
-    incident_resolution_hours: float = 8  # Average hours to resolve data incident
+    manual_validation_hours_weekly: float = 40.0  # Hours spent on manual validation
+    incident_resolution_hours: float = 8.0  # Average hours to resolve data incident
 
     # Business factors
-    annual_revenue: float = 1000000000  # $1B annual revenue for context
+    annual_revenue: float = 1_000_000_000.0  # $1B annual revenue for context
     data_dependent_revenue_pct: float = 0.30  # 30% of revenue depends on data quality
 
-    def calculate_monthly_savings(
-        self, metrics: DataQualityMetrics
-    ) -> Dict[str, float]:
+    def calculate_monthly_savings(self, metrics: DataQualityMetrics) -> dict[str, float]:
         """Calculate monthly cost savings from DataPact implementation."""
 
         # Labor savings from automation
         monthly_labor_savings = (
-            self.manual_validation_hours_weekly
-            * 4.33
-            * self.manual_validation_hour_cost
+            self.manual_validation_hours_weekly * 4.33 * self.manual_validation_hour_cost
         )
 
         # Incident prevention savings (based on failure detection rate)
-        incidents_prevented_monthly = (
-            metrics.critical_failures * 0.8
-        )  # 80% would become incidents
-        incident_prevention_savings = (
-            incidents_prevented_monthly * self.avg_data_incident_cost
-        )
+        incidents_prevented_monthly = metrics.critical_failures * 0.8  # 80% would become incidents
+        incident_prevention_savings = incidents_prevented_monthly * self.avg_data_incident_cost
 
         # Compliance risk reduction (if maintaining > 95% quality score)
-        compliance_savings = 0
+        compliance_savings = 0.0
         if metrics.data_quality_score >= 95:
-            compliance_savings = (
-                self.compliance_violation_cost / 12 * 0.1
-            )  # 10% risk reduction
+            compliance_savings = self.compliance_violation_cost / 12 * 0.1  # 10% risk reduction
 
         # Revenue protection (preventing bad data decisions)
-        revenue_at_risk_monthly = (
-            self.annual_revenue * self.data_dependent_revenue_pct / 12
-        )
-        revenue_protection = (
-            revenue_at_risk_monthly * (metrics.failure_rate / 100) * 0.05
+        revenue_at_risk_monthly = self.annual_revenue * self.data_dependent_revenue_pct / 12
+        revenue_protection = revenue_at_risk_monthly * (metrics.failure_rate / 100) * 0.05
+
+        total_monthly_savings = (
+            monthly_labor_savings
+            + incident_prevention_savings
+            + compliance_savings
+            + revenue_protection
         )
 
         return {
@@ -102,30 +93,19 @@ class ROIMetrics:
             "incident_prevention": incident_prevention_savings,
             "compliance_savings": compliance_savings,
             "revenue_protection": revenue_protection,
-            "total_monthly_savings": sum(
-                [
-                    monthly_labor_savings,
-                    incident_prevention_savings,
-                    compliance_savings,
-                    revenue_protection,
-                ]
-            ),
+            "total_monthly_savings": total_monthly_savings,
         }
 
     def calculate_annual_roi(
         self, metrics: DataQualityMetrics, annual_license_cost: float = 250000
-    ) -> Dict[str, float]:
+    ) -> dict[str, float]:
         """Calculate annual ROI from DataPact investment."""
 
         monthly_savings = self.calculate_monthly_savings(metrics)
         annual_savings = monthly_savings["total_monthly_savings"] * 12
 
-        roi_percentage = (
-            (annual_savings - annual_license_cost) / annual_license_cost
-        ) * 100
-        payback_period_months = (
-            annual_license_cost / monthly_savings["total_monthly_savings"]
-        )
+        roi_percentage = ((annual_savings - annual_license_cost) / annual_license_cost) * 100
+        payback_period_months = annual_license_cost / monthly_savings["total_monthly_savings"]
 
         return {
             "annual_savings": annual_savings,
@@ -141,13 +121,11 @@ class PerformanceBenchmarker:
     """Benchmark and track performance metrics over time."""
 
     @staticmethod
-    def calculate_processing_speed(
-        records: int, runtime_seconds: float
-    ) -> Dict[str, float]:
+    def calculate_processing_speed(records: int, runtime_seconds: float) -> dict[str, float | str]:
         """Calculate data processing performance metrics."""
 
         if runtime_seconds == 0:
-            return {"records_per_second": 0, "millions_per_hour": 0}
+            return {"records_per_second": 0.0, "millions_per_hour": 0.0, "throughput_grade": "N/A"}
 
         records_per_second = records / runtime_seconds
         millions_per_hour = (records_per_second * 3600) / 1_000_000
@@ -155,9 +133,7 @@ class PerformanceBenchmarker:
         return {
             "records_per_second": round(records_per_second, 2),
             "millions_per_hour": round(millions_per_hour, 2),
-            "throughput_grade": PerformanceBenchmarker._grade_throughput(
-                records_per_second
-            ),
+            "throughput_grade": PerformanceBenchmarker._grade_throughput(records_per_second),
         }
 
     @staticmethod
@@ -175,7 +151,7 @@ class PerformanceBenchmarker:
             return "Development Grade (<1K rec/sec)"
 
     @staticmethod
-    def benchmark_against_industry(metrics: DataQualityMetrics) -> Dict[str, any]:
+    def benchmark_against_industry(metrics: DataQualityMetrics) -> dict[str, Any]:
         """Benchmark metrics against industry standards."""
 
         # Industry benchmarks for reference (future enhancement)
@@ -241,7 +217,7 @@ class PerformanceBenchmarker:
 
 
 def generate_executive_summary(
-    metrics: DataQualityMetrics, roi_calc: Optional[ROIMetrics] = None
+    metrics: DataQualityMetrics, roi_calc: ROIMetrics | None = None
 ) -> str:
     """Generate an executive summary of data quality and ROI metrics."""
 
@@ -299,7 +275,7 @@ def generate_executive_summary(
     return summary
 
 
-def format_roi_dashboard(metrics: DataQualityMetrics) -> Dict[str, any]:
+def format_roi_dashboard(metrics: DataQualityMetrics) -> dict[str, Any]:
     """Format ROI metrics for dashboard display."""
 
     roi_calc = ROIMetrics()
@@ -339,9 +315,7 @@ def format_roi_dashboard(metrics: DataQualityMetrics) -> Dict[str, any]:
         },
         "executive_metrics": {
             "incidents_prevented_monthly": int(metrics.critical_failures * 0.8),
-            "compliance_risk_reduction": "90%"
-            if metrics.data_quality_score >= 95
-            else "Limited",
+            "compliance_risk_reduction": "90%" if metrics.data_quality_score >= 95 else "Limited",
             "productivity_gain": f"{roi_calc.manual_validation_hours_weekly * 4.33:.0f} hours/month",
             "decision_confidence": f"{metrics.data_quality_score:.1f}%",
         },
