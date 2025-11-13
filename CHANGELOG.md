@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ## [2.8.2]
 
 **Build As Wheel:** DataPact can now be installed as a `.whl` file on a Databricks cluster (or other machine).
+**Databricks Template:** A new template `.ipynb` file has been added as a skeleton to run on a Databricks notebook.
 
 ## [2.8.1]
 
