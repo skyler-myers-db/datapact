@@ -4,10 +4,11 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [2.8.1]
 
 - **Single-pass SQL Profiling:** The validation template now derives row counts, per-column null stats, aggregate tolerances, and uniqueness duplicate ratios from shared `source_stats`/`target_stats` CTEs so each table is scanned once per run instead of once per metric, materially reducing Serverless SQL runtime and cost on wide configs.
 - **Docs & Tests:** Snapshot fixtures, SQL generation unit tests, and the README were refreshed to describe and validate the streamlined stats pipeline.
+- **Runtime Environemnt:** DataPact now detects where it's being run (locally or from a Databricks notebook), and if run from a Databricks notebook it will automatically take the notebook's context for authentication rather than looking for environmental variables or the `~/.databrickscfg` file.
 
 ## [2.8.0]
 
