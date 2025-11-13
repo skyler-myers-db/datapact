@@ -192,10 +192,10 @@ class DataPactClient:
             self.w: WorkspaceClient = workspace_client
         elif in_dbr_runtime:
             # Inside a Databricks notebook / job: use runtime native auth
-            self.w: WorkspaceClient = workspace_ctor()
+            self.w = workspace_ctor()
         elif workspace_is_mock:
             logger.debug("WorkspaceClient patched; using mock instance for initialization.")
-            self.w: WorkspaceClient = workspace_ctor()
+            self.w = workspace_ctor()
         else:
             # Local / external: fall back to profile / env / .databrickscfg
             logger.info(f"Initializing WorkspaceClient with profile '{profile}'...")
@@ -2397,16 +2397,10 @@ Once created, users can ask questions in natural language to analyze data qualit
                     "encodings": encodings,
                 }
             elif w_def["type"] == "SUCCESS_RATE_COUNTER":
-                # Safely obtain the optional 'value_col' key from the TypedDict
-                value_col = w_def.get("value_col")
-                if not isinstance(value_col, str):
-                    # Fallback to a safe default name when not provided
-                    value_col = "value_col"
-
                 query_fields = [
                     {
-                        "name": value_col,
-                        "expression": f"`{value_col}`",
+                        "name": w_def["value_col"],
+                        "expression": f"`{w_def['value_col']}`",
                     }
                 ]
                 spec = {
@@ -2414,7 +2408,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                     "widgetType": "counter",
                     "encodings": {
                         "value": {
-                            "fieldName": value_col,
+                            "fieldName": w_def["value_col"],
                             "format": {
                                 "type": "number-percent",
                                 "decimalPlaces": {"type": "max", "places": 2},
