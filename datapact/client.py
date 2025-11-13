@@ -2397,10 +2397,16 @@ Once created, users can ask questions in natural language to analyze data qualit
                     "encodings": encodings,
                 }
             elif w_def["type"] == "SUCCESS_RATE_COUNTER":
+                # value_col is optional in the WidgetDefinition TypedDict; use .get() and validate
+                value_col = w_def.get("value_col")
+                if not isinstance(value_col, str):
+                    # fallback to a safe default when not provided
+                    value_col = "value_col"
+
                 query_fields = [
                     {
-                        "name": w_def["value_col"],
-                        "expression": f"`{w_def['value_col']}`",
+                        "name": value_col,
+                        "expression": f"`{value_col}`",
                     }
                 ]
                 spec = {
@@ -2408,7 +2414,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                     "widgetType": "counter",
                     "encodings": {
                         "value": {
-                            "fieldName": w_def["value_col"],
+                            "fieldName": value_col,
                             "format": {
                                 "type": "number-percent",
                                 "decimalPlaces": {"type": "max", "places": 2},
