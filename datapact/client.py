@@ -179,17 +179,26 @@ class DataPactClient:
             Creates the datapact root directory in the user's Databricks workspace if it does not already exist.
         """
         workspace_ctor = WorkspaceClient
+
+        # Detect Databricks runtime (serverless or classic)
+        in_dbr_runtime = os.getenv("DATABRICKS_RUNTIME_VERSION") is not None
+
         workspace_is_mock = workspace_client is None and getattr(
             workspace_ctor, "__module__", ""
         ).startswith("unittest.mock")
+
         if workspace_client is not None:
+            # Caller handed us an already authenticated client
             self.w: WorkspaceClient = workspace_client
+        elif in_dbr_runtime:
+            # Inside a Databricks notebook / job: use runtime native auth
+            self.w: WorkspaceClient = workspace_ctor()
         elif workspace_is_mock:
             logger.debug("WorkspaceClient patched; using mock instance for initialization.")
-            self.w = workspace_ctor()
+            self.w: WorkspaceClient = workspace_ctor()
         else:
+            # Local / external: fall back to profile / env / .databrickscfg
             logger.info(f"Initializing WorkspaceClient with profile '{profile}'...")
-            # Configure for enterprise-scale operations with extended timeout
             try:
                 from databricks.sdk.config import Config
 
@@ -2211,13 +2220,19 @@ Once created, users can ask questions in natural language to analyze data qualit
             encodings: dict[str, Any] = {}
 
             if w_def["type"] == "COUNTER":
+                # Safely obtain the optional 'value_col' key from the TypedDict
+                value_col = w_def.get("value_col")
+                if not isinstance(value_col, str):
+                    # Fallback to a safe default name when not provided
+                    value_col = "value_col"
+
                 query_fields = [
                     {
-                        "name": w_def["value_col"],
-                        "expression": f"`{w_def['value_col']}`",
+                        "name": value_col,
+                        "expression": f"`{value_col}`",
                     }
                 ]
-                encodings = {"value": {"fieldName": w_def["value_col"]}}
+                encodings = {"value": {"fieldName": value_col}}
 
                 # Add conditional formatting for counters
                 if w_def.get("title") == "Critical Issues":
@@ -2382,10 +2397,16 @@ Once created, users can ask questions in natural language to analyze data qualit
                     "encodings": encodings,
                 }
             elif w_def["type"] == "SUCCESS_RATE_COUNTER":
+                # Safely obtain the optional 'value_col' key from the TypedDict
+                value_col = w_def.get("value_col")
+                if not isinstance(value_col, str):
+                    # Fallback to a safe default name when not provided
+                    value_col = "value_col"
+
                 query_fields = [
                     {
-                        "name": w_def["value_col"],
-                        "expression": f"`{w_def['value_col']}`",
+                        "name": value_col,
+                        "expression": f"`{value_col}`",
                     }
                 ]
                 spec = {
@@ -2393,7 +2414,7 @@ Once created, users can ask questions in natural language to analyze data qualit
                     "widgetType": "counter",
                     "encodings": {
                         "value": {
-                            "fieldName": w_def["value_col"],
+                            "fieldName": value_col,
                             "format": {
                                 "type": "number-percent",
                                 "decimalPlaces": {"type": "max", "places": 2},
