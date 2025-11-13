@@ -4,6 +4,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.8.2]
+
+**Build As Wheel:** DataPact can now be installed as a `.whl` file on a Databricks cluster (or other machine).
+
 ## [2.8.1]
 
 - **Single-pass SQL Profiling:** The validation template now derives row counts, per-column null stats, aggregate tolerances, and uniqueness duplicate ratios from shared `source_stats`/`target_stats` CTEs so each table is scanned once per run instead of once per metric, materially reducing Serverless SQL runtime and cost on wide configs.
